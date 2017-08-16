@@ -1,0 +1,33 @@
+{
+  "name": "discordpaste",
+  "version": "1.0.0",
+  "description": "Hastebin-like website but for Discord Users",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/minemidnight/discordpaste.git"
+  },
+  "keywords": [
+    "paste",
+    "discord"
+  ],
+  "author": "minemidnight",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/minemidnight/discordpaste/issues"
+  },
+  "homepage": "https://github.com/minemidnight/discordpaste#readme",
+  "dependencies": {
+    "bluebird": "^3.5.0",
+    "body-parser": "^1.17.2",
+    "cookie-parser": "^1.4.3",
+    "express": "^4.15.4",
+    "express-babelify-middleware": "^0.2.1",
+    "handlebars": "^4.0.10",
+    "rethinkdbdash": "^2.3.31",
+    "shortid": "^2.2.8"
+  }
+}
