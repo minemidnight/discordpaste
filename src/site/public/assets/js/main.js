@@ -4,6 +4,7 @@ $(window).on("load", () => {
 		lineNumbers: true,
 		indentWithTabs: true,
 		tabSize: 2,
-		autofocus: true
+		autofocus: true,
+		theme: "pastel-on-dark"
 	});
 });
