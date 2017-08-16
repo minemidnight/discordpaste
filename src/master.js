@@ -16,3 +16,4 @@ async function init() {
 		port++;
 	}
 }
+init();
