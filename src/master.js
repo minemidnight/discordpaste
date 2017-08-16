@@ -7,6 +7,7 @@ async function init() {
 	let website = cluster.fork();
 	website.once("online", () => {
 		website.send({ type: "startup", processType: "website", port });
+		port++;
 	});
 
 	let apiVersions = await fs.readdirAsync(`${__dirname}/api/`);
@@ -14,8 +15,8 @@ async function init() {
 		version = version.substring(1);
 		let worker = cluster.fork();
 		worker.once("online", () => {
-			port++;
 			worker.send({ type: "startup", processType: "api", version, port });
+			port++;
 		});
 	}
 }
