@@ -12,7 +12,7 @@ module.exports = {
 
 		let dbs = await r.dbList().run();
 		if(!~dbs.indexOf(dbName)) {
-			console.info(`Creating database ${dbName}...`);
+			console.log(`Creating database ${dbName}...`);
 			await r.dbCreate(dbName).run();
 		}
 
@@ -26,7 +26,7 @@ module.exports = {
 		for(let table of tablesExpected) {
 			if(~tableList.indexOf(table.name)) continue;
 
-			console.info(`Creating "${table.name}" table...`);
+			console.log(`Creating "${table.name}" table...`);
 			await r.tableCreate(table.name, { primaryKey: table.primary }).run();
 
 			if(table.indexes) {
@@ -37,7 +37,7 @@ module.exports = {
 			}
 		}
 
-		console.startup(`RethinkDB initated on master`);
+		console.log(`RethinkDB initated on master`);
 		await r.getPoolMaster().drain();
 		return true;
 	},
