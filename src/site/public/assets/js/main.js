@@ -5,6 +5,7 @@ $(window).on("load", () => {
 		indentWithTabs: true,
 		tabSize: 2,
 		autofocus: true,
-		theme: "pastel-on-dark"
+		theme: "pastel-on-dark",
+		scrollbarStyle: "overlay"
 	});
 });

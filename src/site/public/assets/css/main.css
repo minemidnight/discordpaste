@@ -1,3 +1,7 @@
+.CodeMirror {
+	height: 100vh;
+}
+
 #legend {
 	position: fixed;
 	top: 0;
