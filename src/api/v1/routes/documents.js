@@ -7,8 +7,8 @@ router.post("/", async (req, res) => {
 
 	if(!content) {
 		res.status(400).json({ message: "No content" }).end();
-	} else if(content.length >= 250000) {
-		res.status(400).json({ message: "Content over 250,000 characters" }).end();
+	} else if(content.length >= 100000) {
+		res.status(400).json({ message: "Content over 100,000 characters" }).end();
 	} else {
 		let id = shortid.generate();
 		await r.table("documents").insert({ id, content }).run();
