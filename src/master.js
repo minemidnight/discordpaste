@@ -14,8 +14,8 @@ async function init() {
 		version = version.substring(1);
 		let worker = cluster.fork();
 		worker.once("online", () => {
-			worker.send({ type: "startup", processType: "api", version, port });
 			port++;
+			worker.send({ type: "startup", processType: "api", version, port });
 		});
 	}
 }
