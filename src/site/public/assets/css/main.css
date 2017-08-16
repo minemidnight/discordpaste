@@ -1,0 +1,34 @@
+#legend {
+	position: fixed;
+	top: 0;
+	right: 0;
+	z-index: 1000;
+}
+
+#header {
+	padding: 5px;
+	text-align: center;
+	background: #1e2124;
+}
+
+#buttons {
+	font-size: 0px;
+	padding: 0 5px;
+	background: #282b30;
+}
+
+#tooltips {
+	display: none;
+	background: #2e3136;
+}
+
+#editor {
+	background: #36393e;
+	resize: none;
+	outline: none;
+	border: 0px;
+	padding: 0px;
+	width: 100%;
+	height: 100%;
+	display: inline-block;
+}
