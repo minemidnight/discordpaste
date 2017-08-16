@@ -2,7 +2,7 @@ const fs = Promise.promisifyAll(require("fs"));
 let port = 7500;
 
 async function init() {
-	await (require("./misc/rethink")).init();
+	await (require(`${__dirname}/rethink`)).init();
 
 	let website = cluster.fork();
 	website.once("online", () => website.send({ type: "startup", processType: "website", port }));
