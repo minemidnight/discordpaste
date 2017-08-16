@@ -4,7 +4,7 @@ let port = 7500;
 async function init() {
 	await (require(`${__dirname}/rethink`)).init();
 
-	let website = cluster.fork();
+	const website = cluster.fork();
 	await new Promise(resolve => {
 		website.once("online", () => {
 			website.send({ type: "startup", processType: "website", port });
@@ -17,10 +17,10 @@ async function init() {
 	let apiVersions = await fs.readdirAsync(`${__dirname}/api/`);
 	for(let version of apiVersions) {
 		version = version.substring(1);
-		let worker = cluster.fork();
+		const api = cluster.fork();
 		await new Promise(resolve => {
-			website.once("online", () => {
-				worker.send({ type: "startup", processType: "api", version, port });
+			api.once("online", () => {
+				api.send({ type: "startup", processType: "api", version, port });
 				port++;
 
 				resolve(true);
