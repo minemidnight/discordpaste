@@ -1,7 +1,7 @@
 const rethinkdbdash = require("rethinkdbdash");
 module.exports = {
 	init: async () => {
-		const config = require(`${__dirname}../config.json`);
+		const config = require(`${__dirname}/../config.json`);
 		if(!config.database) process.exit("No database in config");
 
 		let dbName = config.databaseName || "DiscordPaste";
@@ -42,7 +42,7 @@ module.exports = {
 		return true;
 	},
 	connect: async () => {
-		const config = require(`${__dirname}../config.json`);
+		const config = require(`${__dirname}/../config.json`);
 		if(!config.database) return;
 
 		let dbName = config.databaseName || "DiscordPaste";
