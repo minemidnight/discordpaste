@@ -11,7 +11,7 @@ const views = fs.readdirSync(`${__dirname}/views`);
 module.exports = async port => {
 	global.app = express();
 	app.server = require("http").createServer(app);
-	app.server.listen(port, () => `Website listening on ${port}`);
+	app.server.listen(port, () => console.log(`Website listening on ${port}`));
 	app.config = require(`${__dirname}/../../config.json`);
 
 	app.use(`/assets/js`, babelify(`${__dirname}/public/assets/js`));

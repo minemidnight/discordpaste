@@ -4,7 +4,7 @@ const routes = require("fs").readdirSync(`${__dirname}/routes`);
 module.exports = async port => {
 	global.app = express();
 	app.server = require("http").createServer(app);
-	app.server.listen(port, () => `API V1 Listening on ${port}`);
+	app.server.listen(port, () => console.log(`API V1 Listening on ${port}`));
 	app.use(bodyParser.json());
 	app.use(bodyParser.urlencoded({ extended: false }));
 
