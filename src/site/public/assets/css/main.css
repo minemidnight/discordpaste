@@ -37,6 +37,7 @@
 
 #tooltips {
 	background: #2e3136;
+	text-align: center;
 }
 
 #tooltips:not(.shown) {
