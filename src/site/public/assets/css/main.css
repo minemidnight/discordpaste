@@ -1,3 +1,7 @@
+*:not(.fa) {
+	font-family: Arial,"Helvetica Neue", Helvetica, sans-serif;
+}
+
 .CodeMirror {
 	height: 100vh;
 }
@@ -5,9 +9,9 @@
 #legend {
 	position: fixed;
 	top: 0;
-	left: 80%;
-	width: 250px;
-	margin-left: -125px;
+	left: 100%;
+	width: 175px;
+	margin-left: -200px;
 	z-index: 1000;
 }
 
@@ -25,13 +29,14 @@
 }
 
 #buttons button {
-	color: rgba(255, 255, 255, 0.85);
+	background: transparent;
+	color: rgba(255, 255, 255, 0.7);
 	border: none;
 	position: relative;
 	display: inline-block;
 	width: 30px;
 	height: 30px;
-	margin: 4px;
+	font-size: 20px;
 }
 
 #buttons button:not(.disabled) {
@@ -39,12 +44,13 @@
 }
 
 #buttons button.disabled {
-	color: rgba(255, 255, 255, 0.5);
+	color: rgba(255, 255, 255, 0.25);
 }
 
 #tooltips {
 	background: #2e3136;
 	text-align: center;
+	color: rgba(255, 255, 255, 0.7);
 }
 
 #tooltips:not(.shown) {
