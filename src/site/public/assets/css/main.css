@@ -4,8 +4,10 @@
 
 #legend {
 	position: fixed;
-	top: 0;
-	right: 0;
+	bottom: 0;
+	left: 50%;
+	width: 100px;
+	margin-left: -50px;
 	z-index: 1000;
 }
 
@@ -13,17 +15,31 @@
 	padding: 5px;
 	text-align: center;
 	background: #1e2124;
+	color: white;
 }
 
 #buttons {
-	font-size: 0px;
 	padding: 0 5px;
 	background: #282b30;
 }
 
+#buttons button {
+	font-size: 0px;
+	border: none;
+	position: relative;
+	display: inline-block;
+}
+
+#buttons button:not(disabled) {
+	cursor: pointer;
+}
+
 #tooltips {
-	display: none;
 	background: #2e3136;
+}
+
+#tooltips:not(.shown) {
+	display: none;
 }
 
 #editor {

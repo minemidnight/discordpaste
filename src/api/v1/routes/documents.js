@@ -11,8 +11,9 @@ router.post("/", async (req, res) => {
 		res.status(400).json({ message: "Content over 100,000 characters" }).end();
 	} else {
 		let id = shortid.generate();
-		await r.table("documents").insert({ id, content }).run();
-		res.status(201).end();
+		let insertion = { id, content };
+		await r.table("documents").insert(insertion).run();
+		res.status(201).json(insertion).end();
 	}
 });
 

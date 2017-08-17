@@ -8,4 +8,7 @@ $(window).on("load", () => {
 		theme: "pastel-on-dark",
 		scrollbarStyle: "overlay"
 	});
+
+	$("#buttons").hover(event => $("#tooltips").addClass("shown").text(event.target.text()),
+		event => $("#tooltips").removeClass("shown"));
 });
