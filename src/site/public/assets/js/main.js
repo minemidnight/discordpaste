@@ -9,6 +9,7 @@ $(window).on("load", () => {
 		scrollbarStyle: "overlay"
 	});
 
-	$("#buttons").children().hover(event => $("#tooltips").addClass("shown").text($(event.target).attr("label")),
-		event => $("#tooltips").removeClass("shown"));
+	$("#buttons").children().hover(event => {
+		$("#tooltips").addClass("shown").text(`${$(event.target).attr("label")}\n${$(event.target).attr("shortcut")}`);
+	}, event => $("#tooltips").removeClass("shown"));
 });
