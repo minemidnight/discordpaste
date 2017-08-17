@@ -28,6 +28,7 @@
 	border: none;
 	position: relative;
 	display: inline-block;
+	width: 25%;
 }
 
 #buttons button:not(disabled) {
