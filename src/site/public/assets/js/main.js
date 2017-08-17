@@ -10,7 +10,7 @@ $(window).on("load", () => {
 	});
 
 	$("#buttons").each((i, ele) => {
-		ele.hover(event => $("#tooltips").addClass("shown").text($(event.target).text()),
+		$(ele).hover(event => $("#tooltips").addClass("shown").text($(event.target).text()),
 			event => $("#tooltips").removeClass("shown"));
 	});
 });
