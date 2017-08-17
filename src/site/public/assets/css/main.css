@@ -9,9 +9,9 @@
 #legend {
 	position: fixed;
 	top: 1%;
-	left: 100%;
+	left: 99%;
 	width: 175px;
-	margin-left: -200px;
+	margin-left: -175px;
 	z-index: 1000;
 }
 
