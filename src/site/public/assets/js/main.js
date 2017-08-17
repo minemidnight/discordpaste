@@ -11,6 +11,6 @@ $(window).on("load", () => {
 
 	$("#buttons").each((i, ele) => {
 		ele.hover(event => $("#tooltips").addClass("shown").text($(event.target).text()),
-			event => $("#tooltips").removeClass("shown")
+			event => $("#tooltips").removeClass("shown"));
 	});
 });
