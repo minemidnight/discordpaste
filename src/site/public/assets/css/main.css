@@ -1,17 +1,14 @@
-*:not(.fa) {
-	font-family: Arial,"Helvetica Neue", Helvetica, sans-serif;
-}
-
 .CodeMirror {
 	height: 100vh;
 }
 
 #legend {
+	font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
 	position: fixed;
 	top: 1%;
 	left: 99%;
-	width: 175px;
-	margin-left: -175px;
+	width: 200px;
+	margin-left: -200px;
 	z-index: 1000;
 }
 
