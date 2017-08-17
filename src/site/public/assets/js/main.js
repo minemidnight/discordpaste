@@ -9,6 +9,8 @@ $(window).on("load", () => {
 		scrollbarStyle: "overlay"
 	});
 
-	$("#buttons").hover(event => $("#tooltips").addClass("shown").text(event.target.text()),
-		event => $("#tooltips").removeClass("shown"));
+	$("#buttons").each((i, ele) => {
+		ele.hover(event => $("#tooltips").addClass("shown").text($(event.target).text()),
+			event => $("#tooltips").removeClass("shown")
+	});
 });
