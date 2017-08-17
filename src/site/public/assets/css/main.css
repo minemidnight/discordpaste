@@ -4,8 +4,8 @@
 
 #legend {
 	position: fixed;
-	bottom: 0;
-	left: 50%;
+	top: 0;
+	left: 80%;
 	width: 250px;
 	margin-left: -125px;
 	z-index: 1000;
@@ -29,6 +29,8 @@
 	position: relative;
 	display: inline-block;
 	width: 25%;
+	margin: 0;
+	padding: 5%;
 }
 
 #buttons button:not(disabled) {
