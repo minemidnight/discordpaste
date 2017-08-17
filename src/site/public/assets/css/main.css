@@ -21,20 +21,25 @@
 #buttons {
 	padding: 0 5px;
 	background: #282b30;
+	text-align: center;
 }
 
 #buttons button {
-	font-size: 0px;
+	color: rgba(255, 255, 255, 0.85);
 	border: none;
 	position: relative;
 	display: inline-block;
-	width: 25%;
-	margin: 0;
-	padding: 5%;
+	width: 30px;
+	height: 30px;
+	margin: 4px;
 }
 
-#buttons button:not(disabled) {
+#buttons button:not(.disabled) {
 	cursor: pointer;
+}
+
+#buttons button.disabled {
+	color: rgba(255, 255, 255, 0.5);
 }
 
 #tooltips {
