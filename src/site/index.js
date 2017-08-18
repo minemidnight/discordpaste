@@ -45,6 +45,14 @@ module.exports = async port => {
 		}
 	}
 
+	app.page = (req, page, context = {}) => {
+		context.baseURL = app.config.baseURL;
+		if(req.user) context.user = req.user;
+
+		for(let block in app.blocks) context[block] = handlebars.compile(app.blocks[block])(context);
+		return handlebars.compile(app.hbs[page])(context);
+	};
+
 	const infoCache = new Map();
 	app.discordInfo = async (apipath, req) => {
 		let token = req.token;
@@ -79,12 +87,10 @@ module.exports = async port => {
 		}
 	};
 
-	app.use((req, res, next) => {
+	app.use(async (req, res, next) => {
 		res.page = (page, context) => res.send(app.page(req, page, context));
 		req.discordInfo = apipath => app.discordInfo(apipath, req);
-	});
 
-	app.use(async (req, res, next) => {
 		req.scriptAddition = "";
 		if(req.cookies.token) {
 			try {
@@ -99,13 +105,6 @@ module.exports = async port => {
 		next();
 	});
 
-	app.page = (req, page, context = {}) => {
-		context.baseURL = app.config.baseURL;
-		if(req.user) context.user = req.user;
-
-		for(let block in app.blocks) context[block] = handlebars.compile(app.blocks[block])(context);
-		return handlebars.compile(app.hbs[page])(context);
-	};
 
 	routes.forEach(script => {
 		let scriptName = script.substring(0, script.lastIndexOf("."));
