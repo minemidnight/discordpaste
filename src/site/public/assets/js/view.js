@@ -17,11 +17,11 @@ $(window).on("load", () => {
 		editor.setValue("");
 		editor.clearHistory();
 
+		$("#buttons").children().removeClass("disabled").off("click");
 		$("#duplicate").addClass("disabled");
 		$("#raw").addClass("disabled");
-		$("#buttons").children().off("click");
 
-		$("#save").removeClass("disabled").on("click", async () => {
+		$("#save").on("click", async () => {
 			let content = editor.getValue();
 			if(!content) return;
 
@@ -40,11 +40,12 @@ $(window).on("load", () => {
 		window.history.pushState("", "", "/");
 		editor.setOption("readOnly", false);
 
+		$("#buttons").children().removeClass("disabled").off("click");
+
 		$("#duplicate").addClass("disabled");
 		$("#raw").addClass("disabled");
-		$("#buttons").children().off("click");
 
-		$("#save").removeClass("disabled").on("click", async () => {
+		$("#save").on("click", async () => {
 			let content = editor.getValue();
 			if(!content) return;
 
