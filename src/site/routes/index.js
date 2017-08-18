@@ -5,6 +5,45 @@ router.get("/", async (req, res) => {
 	res.status(200).send(await app.page(req, "index", { post: true, content: "" })).end();
 });
 
+/* eslint-disable id-length */
+const extensionMaps = {
+	action: "java",
+	c: "clike",
+	"c++": "clike",
+	cc: "clike",
+	class: "java",
+	cpp: "clike",
+	cs: "clike",
+	cxX: "clike",
+	do: "java",
+	h: "clike",
+	hbs: "handlebars",
+	hpp: "clike",
+	htm: "html",
+	hxx: "clike",
+	jhtml: "html",
+	js: "javascript",
+	jsp: "java",
+	jspx: "java",
+	php3: "php",
+	php4: "php",
+	php5: "php",
+	phtml: "php",
+	pl: "perl",
+	pm: "perl",
+	py: "python",
+	rb: "ruby",
+	rhtml: "ruby",
+	rss: "xml",
+	sh: "shell",
+	shtml: "html",
+	wss: "java",
+	xhtml: "html",
+	yaws: "erlang",
+	yml: "yaml"
+};
+/* eslint-enable id-length */
+
 const validLangs = ["apl", "asciiarmor", "asn.1", "asterisk", "brainfuck", "clike", "clojure",
 	"cmake", "cobol", "coffeescript", "commonlisp", "crystal", "css", "cypher", "d", "dart",
 	"diff", "django", "dockerfile", "dtd", "dylan", "ebnf", "ecl", "eiffel", "elm", "erlang",
@@ -22,8 +61,10 @@ const validLangs = ["apl", "asciiarmor", "asn.1", "asterisk", "brainfuck", "clik
 router.get("/:id", async (req, res) => {
 	let lang = false, id = req.params.id;
 	if(~id.indexOf(".")) {
-		id = id.substring(0, id.indexOf("."));
 		lang = id.substring(id.indexOf(".") + 1).toLowerCase();
+		id = id.substring(0, id.indexOf("."));
+
+		if(extensionMaps[lang]) lang = extensionMaps[lang];
 		if(!~validLangs.indexOf(lang)) lang = false;
 	}
 
