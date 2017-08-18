@@ -21,7 +21,7 @@ $(window).on("load", () => {
 		$("#raw").addClass("disabled");
 		$("#buttons").children().off("click");
 
-		$("#save").on("click", async () => {
+		$("#save").removeClass("disabled").on("click", async () => {
 			let content = editor.getValue();
 			if(!content) return;
 
@@ -44,7 +44,7 @@ $(window).on("load", () => {
 		$("#raw").addClass("disabled");
 		$("#buttons").children().off("click");
 
-		$("#save").on("click", async () => {
+		$("#save").removeClass("disabled").on("click", async () => {
 			let content = editor.getValue();
 			if(!content) return;
 
