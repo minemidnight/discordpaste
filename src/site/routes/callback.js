@@ -23,12 +23,11 @@ router.get("/", async (req, res) => {
 		body.time = Date.now();
 		let stringified = JSON.stringify(body);
 		res.status(200).send(`<script>` +
-			`document.cookie = "token=${stringified.replace(/"/g, `\\"`)}";` +
+			`document.cookie = "token=${stringified.replace(/"/g, `\\"`)};` +
 			`expires=Fri, 31 Dec 2020 23:59:59 GMT";` +
 			`window.location.href = "${app.config.baseURL}"` +
-			`</script>`);
+			`</script>`).end();
 	} else {
-		res.status(200).redirect(app.config.website.baseURL);
+		res.redirect(app.config.website.baseURL).end();
 	}
-	res.end();
 });

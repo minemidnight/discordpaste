@@ -67,7 +67,7 @@ module.exports = async port => {
 			} else {
 				token = req.token = newToken;
 				req.scriptAddition += `<script>` +
-					`document.cookie = "token=${JSON.stringify(token).replace(/"/g, `\\"`)}";` +
+					`document.cookie = "token=${JSON.stringify(token).replace(/"/g, `\\"`)};` +
 					`expires=Fri, 31 Dec 2020 23:59:59 GMT";` +
 					`window.location.href = "${app.config.baseURL}"` +
 					`</script>`;
