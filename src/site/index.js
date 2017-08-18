@@ -41,5 +41,5 @@ module.exports = async port => {
 		if(scriptName === "index") app.use(`/`, require(`${__dirname}/routes/${script}`));
 		else app.use(`/${scriptName}`, require(`${__dirname}/routes/${script}`));
 	});
-	app.all("*", async (req, res) => res.redirect(app.config.baseURL).end());
+	app.all("*", async (req, res) => res.redirect(app.config.baseURL));
 };
