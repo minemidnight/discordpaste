@@ -7,6 +7,10 @@
 <link rel="stylesheet" href="https://codemirror.net/lib/codemirror.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/codemirror.min.js"></script>
 
+{{#if lang}}
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/{{lang}}/{{lang}}.min.js"></script>
+{{/if}}
+
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/simplescrollbars.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/simplescrollbars.min.js"></script>
 
@@ -16,7 +20,15 @@
 <link rel="stylesheet" href="{{baseURL}}/assets/css/main.css" />
 <script src="{{baseURL}}/assets/js/main.js"></script>
 
+{{#if post}}
+	<script src="{{baseURL}}/assets/js/post.js"></script>
+{{else}}
+	<script src="{{baseURL}}/assets/js/view.js"></script>
+{{/if}}
+
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mousetrap/1.6.1/mousetrap.min.js"></script>
 
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />

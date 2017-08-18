@@ -33,7 +33,7 @@ module.exports = async port => {
 		if(req.user) context.user = req.user;
 
 		for(let block in app.blocks) context[block] = handlebars.compile(app.blocks[block])(context);
-		return handlebars.compile(app.hbs[page] || app.hbs["404"])(context);
+		return handlebars.compile(app.hbs[page])(context);
 	};
 
 	routes.forEach(script => {
@@ -41,5 +41,5 @@ module.exports = async port => {
 		if(scriptName === "index") app.use(`/`, require(`${__dirname}/routes/${script}`));
 		else app.use(`/${scriptName}`, require(`${__dirname}/routes/${script}`));
 	});
-	app.all("*", async (req, res) => res.status(404).send(await app.page(req, "404")).end());
+	app.all("*", async (req, res) => res.redirect(app.config.baseURL).end());
 };

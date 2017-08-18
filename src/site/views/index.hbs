@@ -1,6 +1,11 @@
 <!DOCTYPE html>
 <head>
-	<title>DiscordPaste - Home</title>
+	{{#if id}}
+		<title>DiscordPaste - {{id}}</title>
+	{{else}}
+		<title>DiscordPaste</title>
+	{{/if}}
+
 	{{{headStuff}}}
 </head>
 <body>
@@ -9,8 +14,8 @@
 		<div id="buttons">
 			<button id="save" label="Save" shortcut="ctrl + s"><i class="fa fa-floppy-o"></i></button>
 			<button id="new" label="New" shortcut="ctrl + n"><i class="fa fa-file-code-o"></i></button>
-			<button id="duplicate" label="Duplicate &amp; Edit" shortcut="ctrl + shift + d" class="disabled"><i class="fa fa-files-o"></i></button>
-			<button id="raw" label="Raw" shortcut="ctrl + shift + r" class="disabled"><i class="fa fa-file-text-o"></i></button>
+			<button id="duplicate" label="Duplicate &amp; Edit" shortcut="ctrl + shift + d"><i class="fa fa-files-o"></i></button>
+			<button id="raw" label="Raw" shortcut="ctrl + shift + r"><i class="fa fa-file-text-o"></i></button>
 			<button id="login" label="Sign in with Discord" shortcut="ctrl + shift + l"><i class="fa fa-sign-in"></i></button>
 		</div>
 		<div id="tooltips">

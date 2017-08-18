@@ -1,15 +1,11 @@
-const superagent = require("superagent");
 $(window).on("load", () => {
-	const editor = CodeMirror.fromTextArea($("#editor")[0], { // eslint-disable-line no-undef
-		lineNumbers: true,
-		indentWithTabs: true,
-		tabSize: 2,
-		autofocus: true,
-		theme: "pastel-on-dark",
-		scrollbarStyle: "overlay"
-	});
+	$("#buttons").children().each((i, ele) => {
+		ele = $(ele);
 
-	$("#buttons").children().hover(event => {
-		$("#tooltips").addClass("shown").text(`${$(event.target).attr("label")}\n${$(event.target).attr("shortcut")}`);
-	}, event => $("#tooltips").removeClass("shown"));
+		ele.hover(event => {
+			$("#tooltips").addClass("shown").text(`${ele.attr("label")}\n${ele.attr("shortcut")}`);
+		}, event => $("#tooltips").removeClass("shown"));
+
+		Mousetrap.bind(ele.attr("shortcut").replace(/ /g, ""), ele.trigger("click")); // eslint-disable-line no-undef
+	});
 });
