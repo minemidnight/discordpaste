@@ -2,7 +2,7 @@ const router = module.exports = express.Router(); // eslint-disable-line new-cap
 const superagent = require("superagent");
 
 router.get("/", async (req, res) => {
-	res.status(200).send(await app.page(req, "index", { post: true })).end();
+	res.status(200).send(await app.page(req, "index", { post: true, content: "" })).end();
 });
 
 const validLangs = ["apl", "asciiarmor", "asn.1", "asterisk", "brainfuck", "clike", "clojure",
@@ -21,7 +21,7 @@ const validLangs = ["apl", "asciiarmor", "asn.1", "asterisk", "brainfuck", "clik
 
 router.get("/:id", async (req, res) => {
 	let lang = false, id = req.params.id;
-	if(id.indexOf(".")) {
+	if(~id.indexOf(".")) {
 		id = id.substring(0, id.indexOf("."));
 		lang = id.substring(id.indexOf(".") + 1).toLowerCase();
 		if(!~validLangs.indexOf(lang)) lang = false;
