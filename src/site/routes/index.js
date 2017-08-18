@@ -7,40 +7,13 @@ router.get("/", async (req, res) => {
 
 /* eslint-disable id-length */
 const extensionMaps = {
-	action: "java",
-	c: "clike",
-	"c++": "clike",
-	cc: "clike",
-	class: "java",
-	cpp: "clike",
-	cs: "clike",
-	cxX: "clike",
-	do: "java",
-	h: "clike",
-	hbs: "handlebars",
-	hpp: "clike",
-	htm: "html",
-	hxx: "clike",
-	jhtml: "html",
-	js: "javascript",
-	jsp: "java",
-	jspx: "java",
-	php3: "php",
-	php4: "php",
-	php5: "php",
-	phtml: "php",
-	pl: "perl",
-	pm: "perl",
-	py: "python",
-	rb: "ruby",
-	rhtml: "ruby",
-	rss: "xml",
-	sh: "shell",
-	shtml: "html",
-	wss: "java",
-	xhtml: "html",
-	yaws: "erlang",
-	yml: "yaml"
+	action: "java", c: "clike", "c++": "clike", cc: "clike", class: "java",
+	cpp: "clike", cs: "clike", cxX: "clike", do: "java", h: "clike",
+	hbs: "handlebars", hpp: "clike", htm: "html", hxx: "clike", jhtml: "html",
+	js: "javascript", jsp: "java", jspx: "java", php3: "php", php4: "php",
+	php5: "php", phtml: "php", pl: "perl", pm: "perl", py: "python", rb: "ruby",
+	rhtml: "ruby", rss: "xml", sh: "shell", shtml: "html", wss: "java",
+	xhtml: "html", yaws: "erlang", yml: "yaml"
 };
 /* eslint-enable id-length */
 
@@ -70,7 +43,7 @@ router.get("/:id", async (req, res) => {
 
 	try {
 		let { body: { content } } = await superagent.get(`${app.config.baseURL}/api/v1/documents/${id}`);
-		res.status(200).send(await app.page(req, "index", { content, lang, view: true, id })).end();
+		res.status(200).page("index", { content, lang, view: true, id }).end();
 	} catch(err) {
 		res.redirect(app.config.baseURL);
 	}

@@ -16,8 +16,9 @@ $(window).on("load", () => {
 		editor.setOption("readOnly", false);
 		editor.setValue("");
 		editor.clearHistory();
+		editor.setOption("mode", "text");
 
-		$("#buttons").children().removeClass("disabled").off("click");
+		$("#buttons").children().not(".nochange").removeClass("disabled").off("click");
 		$("#duplicate").addClass("disabled");
 		$("#raw").addClass("disabled");
 
@@ -40,7 +41,7 @@ $(window).on("load", () => {
 		window.history.pushState("", "", "/");
 		editor.setOption("readOnly", false);
 
-		$("#buttons").children().removeClass("disabled").off("click");
+		$("#buttons").children().not(".nochange").removeClass("disabled").off("click");
 
 		$("#duplicate").addClass("disabled");
 		$("#raw").addClass("disabled");
