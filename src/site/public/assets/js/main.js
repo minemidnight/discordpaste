@@ -16,4 +16,9 @@ $(window).on("load", () => {
 		window.location.assign(`https://discordapp.com/oauth2/authorize?response_type=code&client_id=347217381128404994` +
 			`&redirect_uri=${encodeURIComponent(`${window.location.origin}/callback`)}&scope=identify`);
 	});
+
+	$("#logout").click(() => {
+		document.cookie = "token=; expires=Thu, 01 Jan 1970 00:00:00 UTC";
+		window.location.reload();
+	});
 });
