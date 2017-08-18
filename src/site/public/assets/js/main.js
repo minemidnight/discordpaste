@@ -6,7 +6,7 @@ $(window).on("load", () => {
 			$("#tooltips").addClass("shown").text(`${ele.attr("label")}\n${ele.attr("shortcut")}`);
 		}, event => $("#tooltips").removeClass("shown"));
 
-		Mousetrap.bind(ele.attr("shortcut").replace(/ /g, ""), event => { // eslint-disable-line no-undef
+		Mousetrap.bindGlobal(ele.attr("shortcut").replace(/ /g, ""), event => { // eslint-disable-line no-undef
 			event.preventDefault();
 			ele.trigger("click");
 		});
