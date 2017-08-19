@@ -7,8 +7,8 @@
 	position: fixed;
 	top: 1%;
 	left: 99%;
-	width: 200px;
-	margin-left: -200px;
+	width: 225px;
+	margin-left: -225px;
 	z-index: 1000;
 }
 
@@ -35,10 +35,12 @@
 	height: 30px;
 	font-size: 20px;
 	outline: none;
+	transition: 0.3s ease-out;
 }
 
-#buttons button:not(.disabled) {
+#buttons button:not(.disabled):hover {
 	cursor: pointer;
+	color: white;
 }
 
 #buttons button.disabled {
@@ -70,4 +72,8 @@
 
 body {
 	margin: 0;
+}
+
+#footer {
+	display: none;
 }

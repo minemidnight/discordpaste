@@ -17,6 +17,7 @@
 {{else if lang}}
 	<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/{{lang}}/{{lang}}.min.js"></script>
 {{/if}}
+<script>CodeMirror.toUse = "{{lang}}"</script>
 
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/simplescrollbars.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/simplescrollbars.min.js"></script>

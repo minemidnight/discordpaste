@@ -9,7 +9,8 @@ $(window).on("load", () => {
 		tabSize: 2,
 		autofocus: true,
 		theme: "pastel-on-dark",
-		scrollbarStyle: "overlay"
+		scrollbarStyle: "overlay",
+		mode: CodeMirrorMode.toUse // eslint-disable-line no-undef
 	});
 
 	$("#save").on("click", async () => {
