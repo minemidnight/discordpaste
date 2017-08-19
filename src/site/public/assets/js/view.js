@@ -51,8 +51,9 @@ $(window).on("load", () => {
 			let content = editor.getValue();
 			if(!content) return;
 
-			let { body: { id } } = await superagent.post(`${window.location.origin}/api/v1/documents`).send({ content });
-			window.location.assign(`${window.location.origin}/${id}`);
+			let { body: { id, possibleLanguage } } = await superagent
+				.post(`${window.location.origin}/api/v1/documents`).send({ content });
+			window.location.assign(`${window.location.origin}/${id}.${possibleLanguage}`);
 		});
 
 		$("#new").on("click", () => {
