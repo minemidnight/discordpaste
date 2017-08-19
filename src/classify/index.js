@@ -11,7 +11,7 @@ async function init() {
 init();
 
 function getWords(code) {
-	return code.split(/^a-z/i).filter(word => word);
+	return code.split(/[^a-z]/i).filter(word => word);
 }
 
 function train(lang, code) {
@@ -21,10 +21,13 @@ function train(lang, code) {
 	if(!trains[lang]) trains[lang] = trainCount;
 	else trains[lang] += trainCount;
 
+	let tempData = {};
 	getWords(code).forEach(word => {
-		if(!langData[lang][word]) langData[lang][word] = 1;
-		else langData[lang][word]++;
+		if(!tempData[word]) tempData[word] = 1;
+		else tempData[word]++;
 	});
+
+	langData[lang] = Object.assign(langData[lang], tempData);
 }
 
 function classify(code) {
