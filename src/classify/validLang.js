@@ -62,6 +62,7 @@ const extensionMaps = {
 	scm: "scheme", sch: "scheme", sld: "scheme", sls: "scheme", sps: "scheme", ss: "scheme",
 	sh: "shell", bash: "shell", bats: "shell", command: "shell", ksh: "shell",
 	"sh.in": "shell", tmux: "shell", tool: "shell", zsh: "shell",
+	sk: "skript",
 	cs: "smalltalk",
 	tpl: "smarty",
 	styl: "stylus",
@@ -98,7 +99,7 @@ const validLangs = ["apl", "asciiarmor", "asn.1", "asterisk", "brainfuck", "clik
 	"mbox", "meta", "mirc", "mllike", "modelica", "mscgen", "mumps", "nginx", "nsis", "ntriples",
 	"octave", "oz", "pascal", "pegjs", "perl", "php", "pig", "powershell", "properties", "protobuf",
 	"pug", "puppet", "python", "q", "r", "rpm", "rst", "ruby", "rust", "sas", "sass", "scheme", "shell",
-	"sieve", "slim", "smalltalk", "smarty", "solr", "soy", "sparql", "spreadsheet", "sql", "stex",
+	"sieve", "skript", "slim", "smalltalk", "smarty", "solr", "soy", "sparql", "spreadsheet", "sql", "stex",
 	"stylus", "swift", "tcl", "textile", "tiddlywiki", "tiki", "toml", "tornado", "troff", "ttcn-cfg",
 	"ttcn", "turtle", "twig", "vb", "vbscript", "velocity", "verilog", "vhdl", "vue", "webidl", "xml",
 	"xquery", "yacas", "yaml-frontmatter", "yaml", "z80"];
