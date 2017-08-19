@@ -8,16 +8,16 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/codemirror.min.js"></script>
 
 <script>
-	CodeMirror.toUse = "{{lang}}"
+	CodeMirror.toUse = "{{lang}}";
 	if(CodeMirror.toUse === "html") {
 		$(head).append("<script src=\"https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/xml/xml.min.js\"></script>");
 		$(head).append("<script src=\"https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/javascript/javascript.min.js\"></script>");
 		$(head).append("<script src=\"https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/css/css.min.js\"></script>");
 	} else if(CodeMirror.toUse === "skript") {
 		$(head).append("<script src=\"https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/mode/simple.min.js\"></script>");
-		$(head).append("<script src=\"{{baseURL}}/assets/js/skriptMode.js\"></script>")
+		$(head).append("<script src=\"{{baseURL}}/assets/js/skriptMode.js\"></script>");
 	} else if(CodeMirror.toUse !== "text") {
-		$(head).append("<script src=\"https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/{{lang}}/{{lang}}.min.js\"></script>")
+		$(head).append("<script src=\"https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/{{lang}}/{{lang}}.min.js\"></script>");
 	}
 </script>
 
