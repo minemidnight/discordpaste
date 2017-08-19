@@ -12,12 +12,13 @@ router.post("/", async (req, res) => {
 	} else if(content.length >= 100000) {
 		res.status(400).json({ message: "Content over 100,000 characters" }).end();
 	} else {
+		let id = shortid.generate();
+
 		let lang = req.headers.pastelanguage;
 		if(lang && validLang(lang)) lang = validLang(lang);
 		else lang = classify(content);
 
 		let insertion = { id, content, possibleLanguage: lang };
-		let id = shortid.generate();
 		await r.table("documents").insert(insertion).run();
 		res.status(201).json(insertion).end();
 	}
