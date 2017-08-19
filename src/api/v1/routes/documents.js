@@ -9,12 +9,12 @@ router.post("/", async (req, res) => {
 
 	if(!content) {
 		res.status(400).json({ message: "No content" }).end();
-	} else if(content.length >= 100000) {
+	} else if(content.length >= 150000) {
 		res.status(400).json({ message: "Content over 100,000 characters" }).end();
 	} else {
 		let id = shortid.generate();
 
-		let lang = req.headers.pastelanguage;
+		let lang = req.body.language;
 		if(lang && validLang(lang)) lang = validLang(lang).extension;
 		else lang = classify(content);
 

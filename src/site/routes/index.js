@@ -3,7 +3,7 @@ const superagent = require("superagent");
 const validLang = require(`${__dirname}/../../classify/validLang.js`);
 
 router.get("/", async (req, res) => {
-	res.status(200).send(await app.page(req, "index", { post: true, content: "" })).end();
+	res.status(200).send(await app.page(req, "index", { post: true, content: "", lang: "text" })).end();
 });
 
 router.get("/:id", async (req, res) => {
