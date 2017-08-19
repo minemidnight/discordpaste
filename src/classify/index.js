@@ -11,7 +11,7 @@ async function init() {
 init();
 
 function getWords(code) {
-	return code.split(/[^a-z]/i).filter(word => word);
+	return code.split(/[^a-zA-Z]/).filter(word => word);
 }
 
 function train(lang, code) {
