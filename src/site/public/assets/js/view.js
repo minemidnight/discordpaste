@@ -8,7 +8,7 @@ $(window).on("load", () => {
 		theme: "pastel-on-dark",
 		scrollbarStyle: "overlay",
 		readOnly: true,
-		mode: CodeMirrorMode.toUse // eslint-disable-line no-undef
+		mode: CodeMirror.toUse // eslint-disable-line no-undef
 	});
 
 	$("#new").on("click", () => {

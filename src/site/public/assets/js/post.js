@@ -10,7 +10,7 @@ $(window).on("load", () => {
 		autofocus: true,
 		theme: "pastel-on-dark",
 		scrollbarStyle: "overlay",
-		mode: CodeMirrorMode.toUse // eslint-disable-line no-undef
+		mode: CodeMirror.toUse // eslint-disable-line no-undef
 	});
 
 	$("#save").on("click", async () => {
