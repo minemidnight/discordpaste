@@ -3,9 +3,9 @@ const fs = Promise.promisifyAll(require("fs"));
 
 async function init() {
 	let files = await fs.readdirAsync(`${__dirname}/files`);
-	for(let fileName of files) {
-		let content = await fs.readFileAsync(`${__dirname}/files/${fileName}`);
-		train(fileName, content);
+	for(let file of files) {
+		let content = await fs.readFileAsync(`${__dirname}/files/${file}`, "utf8");
+		train(file, content);
 	}
 }
 init();
