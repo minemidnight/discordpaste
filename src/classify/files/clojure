@@ -1,0 +1,1835 @@
+(defproject clj-stacktrace "0.2.8"
+  :description "More readable stacktraces in Clojure programs."
+  :url "https://github.com/mmcgrana/clj-stacktrace"
+  :license {:name "MIT" :url "http://opensource.org/licenses/MIT"}
+  :dependencies [[org.clojure/clojure "1.4.0"]])
+
+(ns clj-stacktrace.core
+  (:require [clojure.string :as string]))
+
+(defn- clojure-code?
+  "Returns true if the filename is non-null and indicates a clj source file."
+  [class-name file]
+  (or (re-find #"^user" class-name)
+      (= file "NO_SOURCE_FILE")
+      (and file (re-find #"\.clj$" file))))
+
+(defn- clojure-ns
+  "Returns the clojure namespace name implied by the bytecode class name."
+  [class-name]
+  (string/replace (or (get (re-find #"([^$]+)\$" class-name) 1)
+                      (get (re-find #"(.+)\.[^.]+$" class-name) 1))
+                  #"_" "-"))
+
+;; drop everything before and including the first $
+;; drop everything after and including and the second $
+;; drop any __xyz suffixes
+;; sub _PLACEHOLDER_ for the corresponding char
+(def clojure-fn-subs
+  [[#"^[^$]*\$" ""]
+   [#"\$.*"    ""]
+   [#"__\d+.*"  ""]
+   [#"_QMARK_"  "?"]
+   [#"_BANG_"   "!"]
+   [#"_PLUS_"   "+"]
+   [#"_GT_"     ">"]
+   [#"_LT_"     "<"]
+   [#"_EQ_"     "="]
+   [#"_STAR_"   "*"]
+   [#"_SLASH_"  "/"]
+   [#"_"        "-"]])
+
+(defn- clojure-fn
+  "Returns the clojure function name implied by the bytecode class name."
+  [class-name]
+  (reduce
+   (fn [base-name [pattern sub]] (string/replace base-name pattern sub))
+   class-name
+   clojure-fn-subs))
+
+(defn- clojure-anon-fn?
+  "Returns true if the bytecode class name implies an anonymous inner fn."
+  [class-name]
+  (boolean (re-find #"\$.*\$" class-name)))
+
+(defn parse-trace-elem
+  "Returns a map of information about the java trace element.
+  All returned maps have the keys:
+  :file      String of source file name.
+  :line      Number of source line number of the enclosing form.
+  Additionally for elements from Java code:
+  :java      true, to indicate a Java elem.
+  :class     String of the name of the class to which the method belongs.
+  Additionally for elements from Clojure code:
+  :clojure   true, to inidcate a Clojure elem.
+  :ns        String representing the namespace of the function.
+  :fn        String representing the name of the enclosing var for the function.
+  :anon-fn   true iff the function is an anonymous inner fn."
+  [^StackTraceElement elem]
+  (let [class-name (.getClassName elem)
+        file       (.getFileName  elem)
+        line       (let [l (.getLineNumber elem)] (if (pos? l) l))
+        parsed     {:file file :line line}]
+    (if (clojure-code? class-name file)
+      (assoc parsed
+        :clojure true
+        :ns      (clojure-ns class-name)
+        :fn      (clojure-fn class-name)
+        :anon-fn (clojure-anon-fn? class-name))
+      (assoc parsed
+        :java true
+        :class class-name
+        :method (.getMethodName elem)))))
+
+(defn parse-trace-elems
+  "Returns a seq of maps providing usefull information about the java stack
+  trace elements. See parse-trace-elem."
+  [elems]
+  (map parse-trace-elem elems))
+
+(defn- trim-redundant
+  "Returns the portion of the tail of causer-elems that is not duplicated in
+  the tail of caused-elems. This corresponds to the \"...26 more\" that you
+  see at the bottom of regular trace dumps."
+  [causer-parsed-elems caused-parsed-elems]
+  (loop [rcauser-parsed-elems (reverse causer-parsed-elems)
+         rcaused-parsed-elems (reverse caused-parsed-elems)]
+    (if-let [rcauser-bottom (first rcauser-parsed-elems)]
+      (if (= rcauser-bottom (first rcaused-parsed-elems))
+        (recur (next rcauser-parsed-elems) (next rcaused-parsed-elems))
+        (reverse rcauser-parsed-elems)))))
+
+(defn- parse-cause-exception
+  "Like parse-exception, but for causing exceptions. The returned map has all
+  of the same keys as the map returned by parse-exception, and one added one:
+  :trimmed-elems  A subset of :trace-elems representing the portion of the
+                  top of the stacktrace not shared with that of the caused
+                  exception."
+  [^Throwable causer-e caused-parsed-elems]
+  (let [parsed-elems (parse-trace-elems (.getStackTrace causer-e))
+        base {:class         (class causer-e)
+              :message       (.getMessage causer-e)
+              :trace-elems   parsed-elems
+              :trimmed-elems (trim-redundant parsed-elems caused-parsed-elems)}]
+    (if-let [cause (.getCause causer-e)]
+      (assoc base :cause (parse-cause-exception cause parsed-elems))
+      base)))
+
+(defn parse-exception
+  "Returns a Clojure map providing usefull informaiton about the exception.
+  The map has keys
+  :class        Class of the exception.
+  :message      Regular exception message string.
+  :trace-elems  Parsed stack trace elems, see parse-trace-elem.
+  :cause        See parse-cause-exception."
+  [^Throwable e]
+  (let [parsed-elems (parse-trace-elems (.getStackTrace e))
+        base {:class       (class e)
+              :message     (.getMessage e)
+              :trace-elems parsed-elems}]
+    (if-let [cause (.getCause e)]
+      (assoc base :cause (parse-cause-exception cause parsed-elems))
+      base)))
+
+(ns clj-stacktrace.repl
+  (:use clj-stacktrace.core)
+  (:require [clj-stacktrace.utils :as utils]))
+
+(def color-codes
+  {:red     "\033[31m"
+   :green   "\033[32m"
+   :yellow  "\033[33m"
+   :blue    "\033[34m"
+   :magenta "\033[35m"
+   :cyan    "\033[36m"
+   :default "\033[39m"})
+
+(defn- colored
+  [color? color text]
+  (if color?
+    (str (color-codes color) text (color-codes :default))
+    text))
+
+(defn elem-color
+  "Returns a symbol identifying the color appropriate for the given trace elem.
+  :green   All Java elems
+  :yellow  Any fn in the user or repl* namespaces (i.e. entered at REPL)
+  :blue    Any fn in clojure.* (e.g. clojure.core, clojure.contrib.*)
+  :magenta Anything else - i.e. Clojure libraries and app code."
+  [elem]
+  (if (:java elem)
+    (if (re-find #"^clojure\." (:class elem))
+      :cyan
+      :blue)
+    (cond (nil? (:ns elem)) :yellow
+          (re-find #"^(user|repl)" (:ns elem)) :yellow
+          (re-find #"^clojure\." (:ns elem)) :magenta
+          :user-code :green)))
+
+(defn- guarded-fence [coll]
+  (case (count coll)
+    0 0
+    1 (first coll)
+    2 (quot (+ (first  coll)
+               (second coll)) 2)
+    (utils/fence coll)))
+
+(defn source-str [parsed]
+  (if (and (:file parsed) (:line parsed))
+    (str (:file parsed) ":" (:line parsed))
+    "(Unknown Source)"))
+
+(defn clojure-method-str [parsed]
+  (str (:ns parsed) "/" (:fn parsed) (if (:anon-fn parsed) "[fn]")))
+
+(defn java-method-str [parsed]
+  (str (:class parsed) "." (:method parsed)))
+
+(defn method-str [parsed]
+  (if (:java parsed) (java-method-str parsed) (clojure-method-str parsed)))
+
+(defn pst-class-on [^java.io.Writer on color? ^Class class]
+  (.append on ^String (colored color? :red (str (.getName class) ": ")))
+  (.flush on))
+
+(defn pst-message-on [^java.io.Writer on color? message]
+  (.append on ^String (colored color? :red message))
+  (.append on "\n")
+  (.flush on))
+
+(defn pst-elem-str
+  [color? parsed-elem print-width]
+  (colored color? (elem-color parsed-elem)
+           (str (utils/rjust print-width (source-str parsed-elem))
+                " " (method-str parsed-elem))))
+
+(defn pst-elems-on
+  [^java.io.Writer on color? parsed-elems & [source-width]]
+  (let [print-width (+ 6 (or source-width
+                             (guarded-fence
+                              (sort
+                               (map #(.length ^String %)
+                                    (map source-str parsed-elems))))))]
+    (doseq [parsed-elem parsed-elems]
+      (.append on ^String (pst-elem-str color? parsed-elem print-width))
+      (.append on "\n")
+      (.flush on))))
+
+(defn pst-caused-by-on
+  [^java.io.Writer on color?]
+  (.append on ^String (colored color? :red "Caused by: "))
+  (.flush on))
+
+(defn- pst-cause-on
+  [^java.io.Writer on color? exec source-width]
+  (pst-caused-by-on on color?)
+  (pst-class-on on color? (:class exec))
+  (pst-message-on on color? (:message exec))
+  (pst-elems-on on color? (:trimmed-elems exec) source-width)
+  (if-let [cause (:cause exec)]
+    (pst-cause-on on color? cause source-width)))
+
+(defn find-source-width
+  "Returns the width of the longest source-string among all trace elems of the
+  excp and its causes."
+  [excp]
+  (let [this-source-width (->> (:trace-elems excp)
+                               (map (comp count source-str))
+                               (sort)
+                               (guarded-fence))]
+    (if (not-empty (-> excp :cause :trace-elems))
+      (max this-source-width (find-source-width (:cause excp)))
+      this-source-width)))
+
+(defn pst-on [on color? e]
+  "Prints to the given Writer on a pretty stack trace for e which can be an exception
+  or already parsed exception (clj-stacktrace.core/parse-exception).
+  ANSI colored if color? is true."
+  (let [exec (if (instance? Throwable e)
+               (parse-exception e)
+               e)
+        source-width (find-source-width exec)]
+    (pst-class-on on color? (:class exec))
+    (pst-message-on on color? (:message exec))
+    (pst-elems-on on color? (:trace-elems exec) source-width)
+    (if-let [cause (:cause exec)]
+      (pst-cause-on on color? cause source-width))))
+
+(defn pst
+  "Print to *out* a pretty stack trace for a (parsed) exception, by default *e."
+  [& [e]]
+  (pst-on *out* false (or e *e)))
+
+(defn pst-str
+  "Like pst, but returns a string instead of printing that string to *out*"
+  [& [e]]
+  (let [sw (java.io.StringWriter.)]
+    (pst-on sw false (or e *e))
+    (str sw)))
+
+(defn pst+
+  "Like pst, but with ANSI terminal color coding."
+  [& [e]]
+  (pst-on *out* true (or e *e)))
+
+(ns clj-stacktrace.utils)
+
+(defn rjust
+  "If width is greater than the length of s, returns a new string
+  of length width with s right justified within it, otherwise returns s."
+  [width s]
+  (format (str "%" width "s") s))
+
+(defn quartile1
+  "Compute the first quartile for the given collection according to
+  Tukey (Hoaglin et al. 1983). coll must be sorted."
+  ;; Hoaglin, D.; Mosteller, F.; and Tukey, J. (Ed.).
+  ;; Understanding Robust and Exploratory Data Analysis.
+  ;; New York: Wiley, pp. 39, 54, 62, 223, 1983.
+  [coll]
+  (let [c (count coll)]
+    (nth coll (if (even? c)
+                (/ (+ c 2) 4)
+                (/ (+ c 3) 4)))))
+
+(defn quartile3
+  "Compute the third quartile for the given collection according to
+  Tukey (Hoaglin et al. 1983). coll must be sorted."
+  ;; Hoaglin, D.; Mosteller, F.; and Tukey, J. (Ed.).
+  ;; Understanding Robust and Exploratory Data Analysis.
+  ;; New York: Wiley, pp. 39, 54, 62, 223, 1983.
+  [coll]
+  (let [c (count coll)]
+    (nth coll (if (even? c)
+                (/ (+ (* 3 c) 2) 4)
+                (/ (inc (* 3 c)) 4)))))
+
+(defn fence
+  "Compute the upper outer fence for the given coll. coll must be sorted."
+  [coll]
+  (let [q1  (quartile1 coll)
+        q3  (quartile3 coll)
+        iqr (- q3 q1)]
+    (int (+ q3 (/ (* 3 iqr) 2)))))
+
+(ns leiningen.hooks.clj-stacktrace-test
+  (:use [leiningen.compile :only [eval-in-project]]
+        [robert.hooke :only [add-hook]]))
+
+(defn- hook-form [form project]
+  (let [pst (if (:test-color (:clj-stacktrace project))
+              'clj-stacktrace.repl/pst+
+              'clj-stacktrace.repl/pst)]
+    `(do (alter-var-root (resolve '~'clojure.stacktrace/print-cause-trace)
+                         (constantly @(resolve '~pst)))
+         ~form)))
+
+(defn- add-stacktrace-hook [eval-in-project project form & [h s init]]
+  (eval-in-project project (hook-form form project)
+                   h s `(do (try (require '~'clj-stacktrace.repl)
+                                 (require '~'clojure.stacktrace)
+                                 (catch Exception _#))
+                            ~init)))
+
+(add-hook #'eval-in-project add-stacktrace-hook)
+
+(ns babbage.core
+  (:require [babbage.monoid :as m]
+            [babbage.util :as util]
+            [clojure.string :as str])
+  (:use [clojure.algo.generic.functor :only [fmap]]
+        [trammel.core :only [defconstrainedfn]])
+  (:refer-clojure :exclude [complement]))
+
+(defn stats
+  "Create a function for calculating groups of statistics.
+   Arguments are an extractor function and at least one statistical
+   function.
+   The return value is a function of one argument. The result of
+   calling the extractor function on this argument is then passed to
+   the statistical functions.
+   For instance, (stats :x sum count max) will return a function that
+   expects a map with an :x key and tallies the sum, count, and max
+   the :x values:
+   > (m/value ((stats :x sum count max) {:x 1}))
+   {:sum 1 :count 1 :max 1}
+   It is not in general necessary to call the return value of this function directly."
+  [extractor stat-func1 & stats-funcs]
+  (let [m (reduce (fn [acc f] (f acc)) {} (cons stat-func1 stats-funcs))
+        m (util/prepare-map m)]
+    (fn [ent]
+      (let [v (extractor ent)]
+        (fmap (fn [f]
+                (if (-> f meta :whole-record)
+                  (f ent v)
+                  (f v))) m)))))
+
+(defmacro statfn
+  "Create a function for computing statistics suitable for passing as
+  an argument to stats. \"monoidfn\" should be the underlying function
+  that combines values. The computed value will be inserted in the
+  result map with the same name as fn-name or, if it is provided, the
+  value of the :name optional argument. The :requires optional
+  argument should contain the names of the functions that monoidfn
+  expects already to have run.
+  If the function being defined is not parameterized, use defstatfn.
+  This macro is only necessary for creating functions on the fly: see
+  ratio and histogram in babbage.provided.core for examples.
+  Functions that are more than just simple wrappers will probably not
+  be able to use this macro (or defstatfn): see e.g.
+  map-{with-key,with-value,of}."
+  [fn-name monoidfn & {:keys [requires name]}]
+  (let [requires (cond (nil? requires) []
+                       (vector? requires) requires
+                       :else [requires])
+        threading-safe (map clojure.core/list requires)
+        kwname (or name (keyword fn-name))]
+    `(fn ~fn-name [m#] (-> m# ~@threading-safe (assoc ~kwname ~monoidfn)))))
+
+(defmacro defstatfn
+  "Define a function for computing statistics suitable for passing as
+   an argument to stats. Same as statfn, except that def is used to
+   create a top-level var holding the function, and there is an
+   additional :doc optional argument for supplying a docstring."
+   [fn-name monoidfn & {:keys [requires name doc]}]
+  `(def ~fn-name (with-meta (statfn ~fn-name ~monoidfn :requires ~requires :name ~name)
+                   {:doc ~doc})))
+
+(defn by
+   "Allows passing whole records to a stats function within a call to
+   stats. Similar to map-with-key and map-with-value, but without
+   creating a map."
+   [extractor field-name sfunc1 & sfuncs]
+  (let [sfuncs (cons sfunc1 sfuncs)
+        prepared (apply stats identity sfuncs)]
+    (fn [m] (assoc m field-name (with-meta (fn [ent v] (when v (prepared (extractor ent))))
+                                 {:whole-record true})))))
+
+(defn map-with-key
+  "Add a map named field-name to the result map. The keys for the map
+   are computed using key-extractor. The values are drawn from the
+   extractor passed to the enclosing stats call, and the remaining
+   arguments are, as in stats, at least one function for computing
+   statistics.
+   The function for computing the key receives the whole record the
+   statistics are calculated for.
+   Example: If records have the structure
+      {:type [keyword], :balance [number]}
+   Then
+      (stats :balance mean (map-with-key :type :type->balance mean))
+   Computes the mean of all balances, and a map keyed by type whose
+   values contain the means of balances for that type:
+     {:mean 40, :type->balance {:foo {:mean 20}, :bar {:mean 56}}}"
+  [key-extractor field-name value-sfunc1 & value-sfuncs]
+  (let [sfuncs (cons value-sfunc1 value-sfuncs)
+        prepared (apply stats identity sfuncs)]
+    (fn [m] (assoc m field-name (with-meta (fn [ent v]
+                                            (when v
+                                              {(key-extractor ent)
+                                               (prepared v)}))
+                                 {:whole-record true})))))
+
+(defn map-with-value
+  "Add a map named field-name to the result map. The values for the
+   map are computed using value-extractor. The keys are drawn from the
+   extractor passed to the enclosing stats call, and the remaining
+   arguments are, as in stats, at least one function for computing
+   statistics.
+   The function for computing the value receives the whole record the
+   statistics are calculated for.
+   Example: if records have the strucutre
+      {:type [keyword], :balance [number]}
+   Then
+      (stats :type count-binned (map-with-value :balance :type->balance mean))
+   Computes the number of records per type, and the mean of the
+   balances per type:
+     {:count-binned {:foo 20, :bar 13}, :type->balance {:foo {:mean 20}, :bar {:mean 56}}}"
+  [value-extractor field-name value-sfunc1 & value-sfuncs]
+  (let [sfuncs (cons value-sfunc1 value-sfuncs)
+        prepared (apply stats value-extractor sfuncs)]
+    (fn [m] (assoc m field-name (with-meta (fn [ent v]
+                                            (when v
+                                              {v (prepared ent)}))
+                                 {:whole-record true})))))
+
+(defconstrainedfn map-of
+  "Add a map named field-name to the result map. With type :key, as
+   map-with-key; with type :value, as map-with-value."
+  [type extractor field-name sfunc1 & sfuncs]
+  [(#{:key :value} type)]
+  (case type
+    :key (apply map-with-key extractor field-name sfunc1 sfuncs)
+    :value (apply map-with-value extractor field-name sfunc1 sfuncs)))
+
+(defn sets
+  "Describe subsets for which to calculate statistics.
+   The argument, if given, should be a map whose keys are subset names
+   and whose values are predicates members of the subset should
+   satisfy. An additional set, with the key :all and containing
+   everything, will also be calculated.
+   If no argument is given, only the :all set will be calculated."
+  ([] (sets {:all (constantly true)}))
+  ([pred-map]
+      (let [pred-map (if (:all pred-map)
+                       pred-map
+                       (assoc pred-map :all (constantly true)))]
+        (fn [fields]
+          (let [finalizer (if (fn? fields) :_ identity)
+                fields (if (fn? fields) {:_ fields} fields)]
+            (fn [ent]
+              (fmap (fn [pred]
+                      (when (util/safely-run {:where "Set predicate" :what ent} (pred ent))
+                        (finalizer
+                         (fmap #(util/safely-run {:where "Field extractor" :what ent} (% ent))
+                               fields))))
+                    pred-map)))))))
+
+(defmacro ^:private defsetop [name doc destruct [result-name result-body] [res-name res-body]]
+  `(defn ~name ~doc [f# ~@destruct]
+     (let [~result-name ~result-body]
+       (fn [fields#]
+         (let [f# (f# fields#)]
+           (fn [ent#]
+             (let [~res-name (f# ent#)]
+               ~res-body)))))))
+
+(defsetop complement
+  "Add the complement of the subset named by key. If complement-key is
+   provided that will be used as the name of the complement; otherwise
+   \"not-\" will be prefixed to key."
+  [key & [complement-key]]
+  [complement-key (or complement-key (keyword (str "not-" (name key))))]
+  [res (if (key res) res (assoc res complement-key (:all res)))])
+
+(defn make-set-function-name
+  "(make-set-function-name \"and\" [:a :b :c]) -> :Sa-and-b-and-cZ"
+  [logical-operation-name keys]
+  (keyword (str "S" (str/join (str "-" logical-operation-name "-") (map name keys)) "Z")))
+
+(defn intersection-name [& keys]
+  (make-set-function-name "and" keys))
+
+(defn union-name [& keys]
+  (make-set-function-name "or" keys))
+
+(defsetop intersect
+  "Add the intersection of two or more subsets, named by the key
+   arguments, to the set given by the first argument. The resulting
+   intersection will be named :Sx-and-y-and-...-and-zZ, where x, y, ... z
+   are the names of the argument sets."
+  [key1 & keys]
+  [result-name (make-set-function-name "and" (list* key1 keys))]
+  [res (assoc res result-name (when (every? res keys) (get res key1)))])
+
+(defsetop union
+  "Add the union of two or more subsets, named by the key arguments,
+   to the set given by the first argument. The resulting union will be
+   named :Sx-or-y-or-...-or-zZ, where x, y, ... z are the names of the
+   argument sets." 
+  [key1 & keys]
+  [result-name (make-set-function-name "or" (list* key1 keys))]
+  [res (assoc res result-name (some res (list* key1 keys)))])
+
+(defn- nested-set-operations
+  [real-op op-str f & keyseqs]
+  (letfn [(op* [f keyseqs]
+            (condp = (clojure.core/count keyseqs)
+              0 f 1 f
+              2 (reduce (fn [f firsts]
+                          (reduce (fn [f seconds] (apply real-op f (flatten (clojure.core/list seconds firsts))))
+                                  f
+                                  (second keyseqs)))
+                        f
+                        (first keyseqs))
+              (let [generated (for [f (first keyseqs) s (second keyseqs)]
+                                (flatten [s f]))]
+                (recur (op* f [(first keyseqs) (second keyseqs)])
+                       (list* generated (drop 2 keyseqs))))))]
+    (op* f (reverse (map #(if (or (seq? %) (vector? %)) % [%]) keyseqs)))))
+
+(def ^{:arglists '([s & keyseqs])
+       :doc "Created nested intersections of the set, using the
+  cross-products of pairs of the provided keys, starting with the
+  innermost:
+  (intersections s :foo [:bar :baz] [[:quux :frob] :spam])
+  creates the following subsets, in this order:
+  Sbar-and-quux-and-frobZ
+  Sbar-and-spamZ
+  Sbaz-and-quux-and-frobZ
+  Sbaz-and-spamZ
+  Sfoo-and-bar-and-quux-and-frobZ
+  Sfoo-and-bar-and-spamZ
+  Sfoo-and-baz-and-quux-and-frobZ
+  Sfoo-and-baz-and-spamZ"}
+  intersections (partial nested-set-operations intersect "and"))
+
+(def ^{:arglists '([s & keyseqs])
+       :doc "Created nested unions of the set, using the
+  cross-products of pairs of the provided keys, starting with the
+  innermost:
+  (unions s :foo [:bar :baz] [[:quux :frob] :spam])
+  creates the following subsets, in this order:
+  Sbar-or-quux-or-frobZ
+  Sbar-or-spamZ
+  Sbaz-or-quux-or-frobZ
+  Sbaz-or-spamZ
+  Sfoo-or-bar-or-quux-or-frobZ
+  Sfoo-or-bar-or-spamZ
+  Sfoo-or-baz-or-quux-or-frobZ
+  Sfoo-or-baz-or-spamZ"}
+  unions (partial nested-set-operations union "or"))
+
+;; mapping can be parallelized
+;; reduction can be parallelized (ops are associative)
+(defn calculate
+  ([fields input]
+     (calculate (sets) fields input))
+  ([sets-fn fields input]
+     (let [leaf-fn (sets-fn fields)]
+       (when (seq input)
+         (m/value (reduce m/<> (pmap leaf-fn input)))))))
+
+(defn xget
+  "Enables fetching of a value across multiple sets."
+  [data sets & ks]
+  (map #(get-in data (cons % ks)) sets))
+
+(ns babbage.graph
+  (:require [babbage.util :as u]
+            [clojure.set :as set]
+            [babbage.derefmap :as derefmap]
+            [macroparser.bindings :as b]
+            [macroparser.functions :as f]
+            [macroparser.parsers :as p]
+            [the.parsatron :as parsatron]))
+
+(defn- parse-defgraphfn []
+  (p/parseq->map
+   (p/named :name (p/symbol))
+   (p/named :provides (p/maybe (p/keyword)))
+   (p/named :docstring (p/maybe (p/string)))
+   (p/named :attr-map (p/maybe (p/map)))
+   (f/arities)))
+
+(defn- ok-destructuring?
+  [b]
+  (or (symbol? b)
+      (symbol? (:as b))))
+
+(defn- get-requires [bindings]
+  (mapv (comp keyword (fn [b] (if (symbol? b) b (:as b)))) bindings))
+
+(defmacro defgraphfn
+  "Define a function that documents its required input and produced
+   output. Functions defined with defproducer will have a metadata map
+   on the *function* (*not* the var!) containing a :producer key
+   corresponding to the function name, and a :requires key
+   corresponding to the names of its arguments.
+
+   The syntax of defgraphfn is almost identical to that of defn. The
+   differences are as follows:
+
+   - an optional keyword can follow the function name. If provided,
+     that keyword will be the key used in the result map for this
+     function, and other graph functions can access this function's
+     output using the name of that keyword. This allows multiple
+     functions to act as the same node in a graph.
+
+   - multiple arities are not allowed, though both
+       (defgraphfn foo [args] body)
+     and
+       (defgraphfn foo ([args] body))
+     are allowed.
+
+   - in the argument vector, destructuring of the top-level arguments
+     is only allowed with :as parameters. This is allowed:
+       (defgraphfn foo [[a {f :g} :as c] {:keys [x y] :as z}] body)
+     because each of the two arguments to foo can be identified with a
+     single name (c and z respectively), and those names can be
+     considered its dependencies. (The second element of c can be
+     destructured without an :as because it is not a direct dependency
+     of foo.) This is not allowed:
+       (defgraphfn bar [[a {f :g}] {:keys [x y]}] body)
+     because there is no way to tell what the dependencies of bar are."
+  {:arglists '(name provides? docstring? attr-map? params & body)}
+  [& args]
+  (let [parsed (parsatron/run (parse-defgraphfn) args)
+        arities (:arities parsed)
+        name (:name parsed)]
+    (assert (== 1 (count arities))
+            (str "Multiple arities not supported for graph functions: " (:name parsed)))
+    (assert (nil? (:rest (:params (first arities))))
+            (str "Rest params not allowed in top-level bindings in graph fn:" (:name parsed)))
+    (assert (and (every? ok-destructuring? (:bindings (:params (first arities)))))
+            (str "Destructuring top-level arguments in graph fn " (:name parsed) " requires :as"))
+    (let [provides (or (:provides parsed) (keyword name))
+          requires (get-requires (:bindings (:params (first arities))))
+          attr-map (merge (:attr-map parsed)
+                          {:arglists (list 'quote (list (b/unparse-bindings (:params (first arities)))))})
+          fn-attr-map (merge attr-map {:provides provides :requires requires})]
+      `(def ~(with-meta name attr-map)
+         (with-meta ~(f/unparse-function (assoc parsed :type 'fn)) ~fn-attr-map)))))
+
+(def defaults {:leaf-strat apply
+               :layer-strat pmap
+               :lazy? false})
+
+(defn- mapentry->node [[k v]]
+  {:requires nil :provides (keyword (name k)) :value (constantly v)})
+
+(defn- mapentry->nodem [[k v :as entry]]
+  (assoc (mapentry->node entry) :value `(constantly ~v)))
+
+(defmacro wrap-when [test wrap-with expr]
+  (let [wrap-with (if (seq? wrap-with) wrap-with (list wrap-with))]
+    (cond
+     (= true test) `(~@wrap-with ~expr)
+     (or (nil? test) (= false test)) expr
+     :else `(if ~test (~@wrap-with ~expr) ~expr))))
+
+(defn- run-layer-elt [result leaf-strat lazy? elt]
+  [(:provides elt)
+   (wrap-when lazy? delay
+              (leaf-strat (:value elt) (map (wrap-when lazy? (comp deref) result)
+                                            (:requires elt))))])
+
+(defn- run-layer [layer-strat leaf-strat lazy? result layer]
+  (merge result
+         (->> layer
+              (layer-strat (partial run-layer-elt result leaf-strat lazy?))
+              (into {}))))
+
+(defn- run-layers [layer-strat leaf-strat lazy? layers]
+  (reduce (partial run-layer layer-strat leaf-strat lazy?) {} layers))
+
+(defn node-meta [node]
+  (let [{:keys [provides requires] :as m} (meta node)]
+    (when (not (keyword? provides))
+      (throw (Exception. (str "Node lacks provides metadata: " node (meta node)))))
+    (when (not (every? keyword? requires))
+      (throw (Exception. (str "Node has invalid requires metadata: " node (meta node)))))
+    m))
+
+(defn run-graph-strategy
+  "Run the graph fns in \"nodes\", supplying them with initial values
+   in \"initial-values\", a map, using options supplied in a map.
+
+   The options currently accepted are :layer-strat, :leaf-strat,
+   and :lazy?.
+
+   leaf-strat is called to evaluate individual graph fns; its first
+   argument is the function itself and the second is a seq of
+   arguments to the function, or nil if it is a nullary function. It
+   defaults to apply.
+
+   layer-strat is called on groups of graph-fns all of which depend on
+   values in previously computed groups and none of which depend on
+   values any other member of the group provides. (They are the
+   breadths produced by a breadth-first search of the dependency
+   graph.) Its first argument is a function that takes a single graph
+   fn and its second is a seq of graph fns. It defaults to pmap.
+
+   if lazy? is true, result values will be lazily computed: fetching a
+   value from the map will cause it, and its (recursive) dependencies,
+   to be computed and cached."
+  [options initial-values & nodes]
+  (let [options (merge defaults options)
+        initial-value-nodes (map mapentry->node initial-values)
+        provider-nodes (map (fn [provider] (merge (node-meta provider) {:value provider}))
+                            (remove nil? nodes))
+        {:keys [lazy? layer-strat leaf-strat]} options
+        r (run-layers layer-strat leaf-strat lazy?
+                      (u/layers (concat initial-value-nodes provider-nodes)))]
+    (if lazy? (derefmap/->DerefMap r) r)))
+
+(defn- key->sym [k] (symbol (name k)))
+
+(defn- layer-elt-let-expr [elt]
+  [(:value elt) (if (not-empty (:requires elt)) (mapv key->sym (:requires elt)) '())])
+
+(defn- layer->let-row [layer-strat leaf-strat lazy? layer]
+  (let [bounds (mapv (comp key->sym :provides) layer)
+        bindings (mapv layer-elt-let-expr layer)]
+    [bounds `(~layer-strat (fn [f# args#]
+                             (wrap-when ~lazy? delay
+                                        (~leaf-strat f# (wrap-when ~lazy? (map deref) args#))))
+                           ~(mapv first bindings)
+                           ~(mapv second bindings))]))
+
+(defn run-inline [initial-values options nodes]
+  (let [{:keys [lazy? layer-strat leaf-strat]} options
+        initial-value-nodes (map mapentry->nodem initial-values)
+        provider-nodes (map (fn [node] (merge (meta (deref (resolve node))) {:value node})) nodes)
+        nodes (concat initial-value-nodes provider-nodes)
+        layers (u/layers nodes)]
+    `(let ~(vec (mapcat (partial layer->let-row layer-strat leaf-strat lazy?)
+                        layers))
+       (wrap-when ~lazy? derefmap/->DerefMap
+                  (hash-map ~@(interleave (map :provides nodes)
+                                          (map (comp key->sym :provides) nodes)))))))
+
+(defn good-map? [m]
+  (or (and (map? m) (every? keyword? (keys m)))
+      (and (symbol? m) (good-map? (deref (resolve m))))))
+
+(defn resolve-safe [o]
+  (if (symbol? o)
+    (deref (resolve o))
+    o))
+
+(defmacro run-graph-strategy*
+  "Accepts the same arguments as run-graph-strategy, but attempts to
+   do the dependency analysis at compile time: if initial-values and
+   options are maps (or symbols resolving to a map) whose keys are all
+   keywords, and every node is a symbol, expands into a let statement.
+   Otherwise, falls back to run-graph-strategy.
+
+   Warning: resolve's semantics means that this does not do what you'd expect:
+
+   (def i-values {...}) ;; \"outer\"
+   (let [i-values (assoc i-values :key value)] ;; \"inner\"
+       (run-graph-strategy* i-values :default :default ...))
+
+   run-graph-strategy* in this case will pick up the *outer* value of i-values."
+  [options initial-values & nodes]
+  (if (and (good-map? initial-values)
+           (good-map? options)
+           (every? symbol? nodes))
+    (let [initial-values (resolve-safe initial-values)
+          options (merge defaults (resolve-safe options))]
+      (run-inline initial-values options nodes))
+    `(run-graph-strategy ~initial-values ~options ~@nodes)))
+
+(defn run-graph
+  "Run the graph fns in \"nodes\", supplying them with initial values
+   in \"initial-values\", a map. Uses default option values."
+  [initial-values & nodes]
+  (apply run-graph-strategy defaults initial-values nodes))
+
+(defmacro run-graph*
+  "Like run-graph-strategy* but uses default values as in run-graph."
+  [initial-values & nodes]
+  `(run-graph-strategy* defaults ~initial-values ~@nodes))
+
+(defn compile-graph-strategy
+  "Create a function from the graph functions in nodes. The resulting
+   function accepts as its first argument map that must contain keys
+   corresponding to all the parameters necessary to run the graph to
+   completion; its second argument is an option map as in run-graph-strategy."
+  [& nodes]
+  (let [[layers still-required] (u/layers-and-required (map (fn [n] (merge (meta n) {:value n}))
+                                                            nodes))]
+    (fn [options initial-values]
+      (assert (set/subset? still-required (set (keys initial-values))))
+      (let [initial-value-nodes (map mapentry->node initial-values)
+            options (merge defaults options)
+            {:keys [layer-strat leaf-strat lazy?]} options]
+        (run-layers layer-strat leaf-strat lazy? (concat [initial-value-nodes] layers))))))
+
+(defn compile-graph
+  "Like compile-graph-strategy, except the returned function does not accept an options map."
+  [& nodes]
+  (let [f (apply compile-graph-strategy nodes)]
+    (fn [initial-values]
+      (f defaults initial-values))))
+
+	  (ns formative.core
+  (:require [formative.render :as r]
+            formative.render.table
+            formative.render.div
+            formative.render.bootstrap
+            formative.render.bootstrap3
+            formative.render.inline
+            [formative.util :as fu]
+            [clojure.walk :refer [stringify-keys]]
+            [clojure.string :as string]
+            #?(:clj [ring.middleware.anti-forgery :refer [*anti-forgery-token*]])))
+
+(def ^:dynamic *renderer* :bootstrap-horizontal)
+
+(defn- normalize-name [fname]
+  (if (keyword? fname)
+    (let [fname (name fname)
+          parts (string/split fname #"\.")]
+      (if (next parts)
+        (apply str (first parts) (map #(str "[" % "]") (rest parts)))
+        fname))
+    fname))
+
+(defn normalize-field
+  "Ensures :name and :type keys are in the right format"
+  [field]
+  {:pre [(:name field)]}
+  (assoc field
+         :name (normalize-name (:name field))
+         :type (if (:type field)
+                 (keyword (name (:type field)))
+                 :text)))
+
+(defmulti prep-field
+  "Prepares a field for rendering, dispatching on :type. The default
+  preparation is to populate the :value key and add a label if not present.
+  Each type may have its own particular preparation steps. For example, the
+  :checkbox type adds a :checked key."
+  (fn [field values & [form]]
+    (:type field)))
+
+(defn- begins-with [s sub]
+  (when (< (count sub) (count s)) ;must be longer in this case
+    (= sub (subs s 0 (count sub)))))
+
+(defn- get-value [values field]
+  (or (get-in values (fu/expand-name (:name field)))
+      (get values (:name field))
+      (when (:flatten field)
+        (let [name-prefix (str (:name field) "-")]
+          (reduce-kv
+           (fn [val k v]
+             (if (begins-with k name-prefix)
+               (assoc val (subs k (count name-prefix)) v)
+               val))
+           nil values)))))
+
+(defn- prep-field-default [field values & [form]]
+  (cond-> (assoc field
+                 :value (get-value values field)
+                 :label (r/get-field-label field))
+    (:blank-nil form) (assoc :blank-nil true)))
+
+(defmethod prep-field :default [field values & [form]]
+  (prep-field-default field values form))
+
+(defmethod prep-field :datetime-select [field values & [form]]
+  (let [field* (prep-field-default field values form)]
+    (if-let [timezone (:timezone field (:timezone form))]
+      (assoc field* :timezone timezone)
+      field*)))
+
+(defmethod prep-field :checkbox [field values & [form]]
+  (let [field (if (and (not (contains? field :value))
+                       (not (contains? field :unchecked-value)))
+                (assoc field :value "true" :unchecked-value "false"
+                       :datatype :boolean)
+                field)
+        val (get-value values field)]
+    (assoc field
+           :value (:value field "true")
+           :checked (= (str val) (str (:value field "true")))
+           :label (r/get-field-label field))))
+
+(defmethod prep-field :submit [field values & [form]]
+  (assoc field
+         :value (:value field "")))
+
+(defmethod prep-field :html [field values & [form]]
+  field)
+
+(defmethod prep-field :labeled-html [field values & [form]]
+  (assoc field :label (r/get-field-label field)))
+
+(defn prep-fields
+  "Normalizes field specifications and populates them with values"
+  [fields values & [form]]
+  (for [field fields]
+    (-> field
+        (normalize-field)
+        (prep-field values form))))
+
+(defmethod prep-field :compound [field values & [form]]
+  (let [field (prep-field-default field values form)]
+    (update-in field [:fields] prep-fields (:value field) form)))
+
+(defn merge-fields
+  "Combines two sequences of field specifications into a single sequence,
+  using the following rules for each fields2 spec:
+
+  - If the :name key matches an existing field, the spec is merged.
+  - If an :after key is set, the spec will be inserted after the field whose
+    :name matches :after.
+  - If a :before key is set, the spec will be inserted before the field whose
+    :name matches :before.
+  - Otherwise, the spec will be appended.
+
+  If a form is given, its fields will be used and the updated form will be
+  returned.
+
+  This function is mainly useful for making runtime tweaks to form fields."
+  [form-or-fields1 fields2]
+  (let [[form fields1] (if (map? form-or-fields1)
+                         [form-or-fields1 (:fields form-or-fields1)]
+                         [nil form-or-fields1])
+        fields2-map (if (map? fields2)
+                      fields2
+                      (into {} (map (juxt :name identity)
+                                    fields2)))
+        after-fields (reduce
+                      (fn [m spec]
+                        (update-in m [(:after spec)]
+                                   (fnil conj []) (dissoc spec :after)))
+                      {}
+                      (filter :after fields2))
+        before-fields (reduce
+                       (fn [m spec]
+                         (update-in m [(:before spec)]
+                                    (fnil conj []) (dissoc spec :before)))
+                       {}
+                       (filter :before fields2))
+        [ret leftovers] (reduce
+                         (fn [[ret f2m] spec]
+                           (let [fname (:name spec)
+                                 [spec* f2m*]
+                                 (if (contains? f2m fname)
+                                   [(merge spec (get f2m fname))
+                                    (dissoc f2m fname)]
+                                   [spec f2m])
+                                 ret* (if-let [bspecs (get before-fields fname)]
+                                        (into ret bspecs)
+                                        ret)
+                                 ret* (conj ret* spec*)
+                                 ret* (if-let [aspecs (get after-fields fname)]
+                                        (into ret* aspecs)
+                                        ret*)]
+                             [ret* f2m*]))
+                         [[] fields2-map]
+                         fields1)
+        new-fields (concat ret (remove (some-fn :before :after)
+                                       (filter (comp leftovers :name) fields2)))]
+    (if form
+      (assoc form :fields new-fields)
+      new-fields)))
+
+(defn remove-fields
+  "Removes fields from form-or-fields according to their name"
+  [form-or-fields names]
+  (let [[form fields] (if (map? form-or-fields)
+                        [form-or-fields (:fields form-or-fields)]
+                        [nil form-or-fields])
+        names-set (if (set? names) names (into #{} names))
+        new-fields (remove (comp names-set :name)
+                           fields)]
+    (if form
+      (assoc form :fields new-fields)
+      new-fields)))
+
+(defn- prep-problems [problems]
+  (set
+   (if (map? (first problems))
+     (map name
+          (mapcat (fn [p]
+                    (or (:keys p)
+                        (when (:field-name p)
+                          [(:field-name p)])))
+                  problems))
+     (map name problems))))
+
+(defn prep-form
+  "Prepares a form for rendering by normalizing and populating fields, adding
+  a submit button field, etc. See render-form for a description of the form
+  specification."
+  [spec]
+  (let [;; HTML attrs
+        form-attrs (select-keys
+                    spec [:action :method :enctype :accept :name :id :class
+                          :onsubmit :onreset :accept-charset :autofill
+                          :novalidate :autocomplete])
+        method (string/upper-case
+                (name (or (:method spec) :post)))
+        form-attrs (assoc form-attrs
+                          :method (if (= "GET" method) method "POST")
+                          :renderer (:renderer spec *renderer*))
+        ;; Field values
+        values (stringify-keys
+                (if (string? (:values spec))
+                  (fu/decode-form-data (:values spec))
+                  (:values spec)))
+        fields (:fields spec)
+        ;; Emulate HTTP methods
+        [fields values] (if-not (#{"PUT" "DELETE" "PATCH"} method)
+                          [fields values]
+                          [(cons {:type :hidden :name "_method"} fields)
+                           (assoc values "_method" method)])
+        ;; CSRF protection
+        #?(:clj [fields values]) #?(:clj (if (and (not= "GET" method) (bound? #'*anti-forgery-token*)
+                                                  *anti-forgery-token*)
+                                           [(cons {:type :hidden :name "__anti-forgery-token"} fields)
+                                            (assoc values "__anti-forgery-token" *anti-forgery-token*)]
+                                           [fields values]))
+        fields (prep-fields fields values spec)
+        ;; Attach :cancel-href to submit button
+        fields (if (or (:cancel-label spec) (:cancel-href spec))
+                 (for [field fields]
+                   (if (= :submit (:type field))
+                     (merge field (select-keys spec [:cancel-label :cancel-href]))
+                     field))
+                 fields)
+        ;; Add submit if not already present
+        fields (if (or (some #(= :submit (:type %)) fields)
+                       (nil? (:submit-label spec ::absent)))
+                 fields
+                 (concat fields
+                         [{:type :submit
+                           :name "submit"
+                           :cancel-label (:cancel-label spec "Cancel")
+                           :cancel-href (:cancel-href spec)
+                           :value (:submit-label spec "Submit")}]))
+        ;; Problems
+        problems (prep-problems (:problems spec))
+        fields (for [field fields]
+                 (if (problems (:name field))
+                   (assoc field :problem true)
+                   field))]
+    [form-attrs fields spec]))
+
+(defn render-form
+  "Given a form specification, returns a rendering of the form - e.g., Hiccup
+  data, an HTML string, etc.
+
+  Valid keys for spec include the following HTML form attributes:
+
+      :action :method :enctype :accept :name :id :class
+      :onsubmit :onreset :accept-charset :autofill :novalidate
+      :autocomplete
+
+  Unlike an HTML form, :method defaults to :post. If method is something other
+  than :get or :post, a hidden field with name \"_method\" will be added, and
+  the form method set to :post. If you are using Compojure for routing, it will
+  recognize the \"_method\" field.
+
+  The following special keys are also supported:
+
+      :renderer     - Determines renderer to use. Built-in options:
+                        :bootstrap-horizontal (the default)
+                        :bootstrap-stacked
+                        :bootstrap3-stacked
+                        :table
+                        :inline
+                      Custom renderers can be created by implementing the
+                      formative.render/render-form multimethod.
+      :fields       - Sequence of form field specifications. See below.
+      :values       - Map of values used to populate the form fields, or a
+                      form-data-encoded string
+      :submit-label - Label to use on the submit button. Defaults to \"Submit\"
+      :cancel-label - Label to use on the cancel button. Defaults to \"Cancel\"
+      :cancel-href  - When provided, shows a \"Cancel\" hyperlink next to the
+                      submit button
+      :validations  - A sequence of validation specifications
+      :validator    - A function to call to validate parsed values for this
+                      form. The function should take a map of values and return
+                      a sequence of problem maps for each field that failed to
+                      validate. The problem map should contain the keys :keys
+                      and :msg.
+      :validate-types - Whether to validate datatypes; true by default.
+      :blank-nil    - When values are parsed, replace blank strings with nil
+      :problems     - Sequence of field names or problem maps. Form
+                      renderers typically add a class and style to highlight
+                      problem fields and, if problem maps are provided,
+                      show descriptive messages.
+      :timezone     - String of timezone with which to localize the display of
+                      :datetime-select fields. The default is UTC. JVM only.
+
+  A field specification is a map with the following keys:
+
+      :name         - Required name of the field, a keyword or string. Use
+                      dotted keywords like :foo.bar to represent fields that
+                      will parse as nested map values.
+      :label        - Optional display name. Auto-generated from :name if not
+                      provided
+      :type         - Type of the field. Defaults to :text. See below for
+                      built-in types. If an unrecognized type is provided,
+                      an <input> element with that type will be assumed.
+                      Certain types imply particular parsing or validation
+                      rules - e.g., an :email field must be a valid email.
+      :datatype     - Optional. Datatype of the field used for parsing. Can be
+                      one of:
+
+                      :str, :int, :long, :boolean, :float, :double, :decimal,
+                      :bigint, :date, :time, :instant, :file.
+
+                      Defaults to :str.
+
+                      All types can be appended with an \"s\" when a sequence
+                      is expected - e.g., :ints for a sequence of integers. This
+                      is useful for fields that have composite values, such as
+                      :checkboxes.
+
+                      :date field values are expected to be in yyyy-MM-dd
+                      format by default. Set :date-format to change that. :time
+                      fields may be in H:m or H:m:s format. :instant fields
+                      are in EDN instant (RFC-3339) format.
+
+                      All date/time fields are parsed into java.util.Date
+                      or java.sql.Time (or Date for ClojureScript) objects
+                      created using the UTC timezone.
+      :datatype-error - Optional custom error message to use if datatype
+                      validation fails.
+      :blank-nil    - When the value is parsed, replace a blank string with nil
+      :flatten      - If a value parses to a map (e.g. for :compound fields),
+                      adds each key of the map to the top level values map,
+                      prefixed with the field name and a dash.
+      :note         - A bit of explanatory content to accompany the field
+      :prefix       - Content to insert before a field
+      :suffix       - Content to insert after a field
+
+  Built-in field types:
+
+      :text         - Single-line text input
+      :textarea     - Multi-line text input
+      :select       - Dropdown. Special keys:
+                        :options - options to display; see below for format
+                        :placeholder - text for a first, disabled option
+                        :first-option - option to prepend to the other options
+    :checkbox     - Defaults to true/false when no :value is given. Special
+                    keys:
+                      :value - value of a checked input (default true)
+                      :unchecked-value - value of an unchecked input (default
+                        false)
+    :checkboxes   - Multiple checkboxes that parse to a collection of values.
+                    Special keys:
+                      :options - options to display; see below for format
+                      :cols - number of columns to group checkboxes into
+    :radios       - Multiple radio inputs that parse to a single value.
+                    Special keys:
+                      :options - options to display; see below for format
+    :email        - Email text input
+    :us-state     - United States state dropdown. Accepts :select special
+                    keys.
+    :us-zip       - United States ZIP code
+    :ca-state     - Canadian province
+    :country      - Country dropdown. Accepts :select special keys.
+    :date-select  - Date dropdown. Renders as multiple :select fields, parses
+                    as a UTC java.util.Date (or Date for ClojureScript).
+                    Accepts Joda dates as values.
+                    Special keys:
+                      :year-start
+                      :year-end
+    :year-select  - Year dropdown, parses to integer. Accepts :select special
+                    keys plus:
+                      :start
+                      :end
+    :month-select - Month dropdown, parses to integer (1-12). Accepts :select
+                    special keys plus:
+                      :numbers - when true, shows numbers instead of month
+                                 names
+    :time-select  - Time dropdown. Renders as multiple :select fields, parses
+                    as a UTC java.sql.Time (or Date for ClojureScript).
+                    Accepts Joda times as values.
+                    Special keys:
+                      :compact - true to use a single dropdown (default false)
+                      :ampm - true to use am/pm (the default); false to use
+                              24-hour format
+                      :step - step between minutes/seconds; default 5
+                      :seconds - whether to include a seconds field
+                      :start - when :compact is true, start time
+                      :end - when :compact is true, end time (inclusive)
+    :datetime-select - Combined date/time dropdown. Parses as a UTC
+                    java.util.Date (or Date for ClojureScript). Accepts Joda
+                    date values. See :date-select and :time-select for special
+                    keys, plus:
+                      :timezone - String of timezone with which to localize the
+                                  display. The default is UTC. JVM only.
+    :currency     - Text input for money. Parses as a :decimal datatype
+    :file         - File upload input. Special keys:
+                      :upload-handler - optional handler called when a file is
+                        uploaded. The field's specification and Ring param
+                        value are passed as arguments to the handler. The
+                        handler can return whatever value is appropriate
+                        (e.g., a String or a File).
+    :compound     - Multiple fields displayed and parsed as one field. Special
+                    keys:
+                      :separator - string or Hiccup data; defaults to a space
+                      :combiner - a function which takes a collection of the
+                                  rendered fields and returns Hiccup data
+                                  that represents the combined field; by
+                                  default, fields are combined by interposing
+                                  the separator
+    :submit       - Submit button. Included by default, but can be added
+                    explicitly if you prefer. Unlike with a default submit
+                    button, its value will be parsed.
+
+  The :options key for :select and other types accepts a collection of any
+  of the following formats:
+
+    [\"value\" \"label\" sub-options]
+    {:value \"value\" :label \"label\" :options sub-options}
+    \"value and label\"
+
+  If sub-options are provided, the element is rendered as a group (e.g.,
+  optgroup for :select fields).
+
+  The :options value can also be a function of no arguments or a Delay object --
+  either of which must yield a collection in one of the above formats.
+
+  The following presentational types are also available. They are excluded from
+  parsing.
+
+    :heading      - Section heading. In the default renderer, acts as a fieldset
+                    separator. Special keys:
+                      :text - heading text
+    :html         - Custom, unlabeled HTML. Special keys:
+                      :html - HTML string or Hiccup data
+    :labeled-html - Custom, labeled HTML. Special keys:
+                      :html - HTML string or Hiccup data
+
+  Field types are extensible with the `formative.render/render-field` and
+  `formative.parse/parse-input` multimethods."
+  [spec]
+  (apply r/render-form (prep-form spec)))
+
+(defn render-field
+  "Render an individual form field element as Hiccup data. See render-form
+  for field specification format."
+  ([field]
+   (r/render-field
+    (prep-field (normalize-field field) {})))
+  ([field value]
+   (let [norm-field (normalize-field field)]
+     (r/render-field
+      (prep-field norm-field {(:name norm-field) value})))))
+
+#?(:clj
+   (defmacro with-renderer [renderer & body]
+     `(binding [*renderer* ~renderer]
+        (do ~@body))))
+
+(ns formative.util
+  (:require [clojure.string :as string]
+            #?@(:clj [[clj-time.core :as ct]
+                      [clj-time.coerce :as cc]
+                      [clj-time.format :as cf]]))
+  (:import #?@(:clj [org.joda.time.DateTime
+                     org.joda.time.LocalDate
+                     org.joda.time.LocalTime])))
+
+(defn normalize-options [opts]
+  (let [opts (cond
+               (fn? opts) (opts)
+               (delay? opts) @opts
+               :else opts)]
+    (if (coll? (first opts))
+      (if (map? (first opts))
+        (map (juxt :value :label :options) opts)
+        opts)
+      (map #(vector % %) opts))))
+
+(defn seqify-value [s & [split-re]]
+  (cond
+    (or (sequential? s) (nil? s)) s
+    (string? s) (if (string/blank? s)
+                  []
+                  (string/split s (or split-re #"\s*,\s*")))
+    (nil? s) s
+    :else [s]))
+
+(def default-date-format "yyyy-MM-dd")
+
+#?(:clj
+   (defn parse-date [s & [format]]
+     (cf/parse (cf/formatter (or format default-date-format))
+               s)))
+
+(defn parse-int [x]
+  #?(:clj (Long/valueOf x))
+  #?(:cljs (let [x (js/parseInt x 10)]
+             (when-not (integer? x)
+               (throw (ex-info "Bad integer value" {:value x})))
+             x)))
+
+(defn utc-date [& [y m d h mm s]]
+  #?(:clj (ct/date-time y m d (or h 0) (or mm 0) (or s 0)))
+  #?(:cljs (js/Date. (.UTC js/Date y (dec m) d (or h 0) (or mm 0) (or s 0)))))
+
+#?(:cljs
+   (defn parse-date [s & [format]]
+     (let [format (or format default-date-format)]
+       (if (not= default-date-format format)
+         (throw (ex-info (str "Only " default-date-format " format supported")
+                         {:format format}))
+         (let [[y m d] (map parse-int (string/split s #"-"))]
+           (utc-date y m d))))))
+
+(defn to-timezone [d timezone]
+  #?(:clj (if timezone
+            (let [timezone (if (string? timezone)
+                             (ct/time-zone-for-id timezone)
+                             timezone)]
+              (ct/to-time-zone d timezone))
+            d)
+     :cljs d))
+
+(defn from-timezone [d timezone]
+  #?(:clj (if timezone
+            (let [timezone (if (string? timezone)
+                             (ct/time-zone-for-id timezone)
+                             timezone)]
+              (ct/from-time-zone d timezone))
+            d)
+     :cljs d))
+
+#?(:clj
+   (defn normalize-date [d & [format timezone]]
+     (when d
+       (let [d (cond
+                 (instance? LocalDate d) (cc/to-date-time d)
+                 (instance? DateTime d) d
+                 (instance? java.util.Date d) (cc/from-date d)
+                 (integer? d) (cc/from-long d)
+                 (string? d) (try
+                               (parse-date d format)
+                               (catch Exception _))
+                 (map? d) (try
+                            (let [year (parse-int (:year d (get d "year")))
+                                  month (parse-int (:month d (get d "month")))
+                                  day (parse-int (:day d (get d "day")))]
+                              (utc-date year month day))
+                            (catch Exception _))
+                 :else (throw (ex-info "Unrecognized date format" {:date d})))]
+         (to-timezone d timezone))))
+
+   :cljs
+   (defn normalize-date [d & [format timezone]]
+     (when d
+       (cond
+         (instance? js/Date d) d
+         (integer? d) (js/Date. d)
+         (string? d) (try
+                       (parse-date d format)
+                       (catch js/Error _))
+         (map? d) (try
+                    (let [year (parse-int (:year d (get d "year")))
+                          month (parse-int (:month d (get d "month")))
+                          day (parse-int (:day d (get d "day")))]
+                      (utc-date year month day))
+                    (catch js/Error _))
+         :else (throw (ex-info "Unrecognized date format" {:date d}))))))
+
+(defn to-date [d]
+  #?(:clj (cc/to-date d))
+  #?(:cljs d))
+
+(defn get-year-month-day [date]
+  #?(:clj [(ct/year date)
+           (ct/month date)
+           (ct/day date)])
+  #?(:cljs [(.getUTCFullYear date)
+            (inc (.getUTCMonth date))
+            (.getUTCDate date)]))
+
+(defn- format-iso-8601-date [y m d]
+  (str y "-"
+       (if (< m 10) (str "0" m) m) "-"
+       (if (< d 10) (str "0" d) d)))
+
+(defn format-date [dt & [format]]
+  (let [format (or format default-date-format)]
+    #?(:clj (cf/unparse (cf/with-zone (cf/formatter format) (.getZone ^DateTime dt))
+                        dt)
+       :cljs (if (not= format default-date-format)
+               (throw (ex-info (str "Only " default-date-format " format supported")
+                               {:format format}))
+               (let [[y m d] (get-year-month-day dt)]
+                 (format-iso-8601-date y m d))))))
+
+(defn epoch []
+  #?(:clj (ct/epoch)
+     :cljs (js/Date. 0)))
+
+#?(:clj
+   (defn parse-time [s]
+     (try
+       (cf/parse (cf/formatter "H:m") s)
+       (catch Exception _
+         (cf/parse (cf/formatter "H:m:s") s)))))
+
+(defn with-time [datetime h mm s]
+  #?(:clj (.withTime ^DateTime datetime h mm s 0)
+     :cljs (let [[y m d] (get-year-month-day datetime)]
+             (utc-date y m d h mm s))))
+
+#?(:cljs
+   (defn parse-time [s]
+     (when-not (string/blank? s)
+       (let [[h mm s] (map parse-int (string/split s #":"))]
+         (when (integer? h)
+           (with-time (epoch) h mm s))))))
+
+(defn mktime [h m s]
+  (with-time (epoch) h m s))
+
+#?(:clj
+   (defn normalize-time [t]
+     (when t
+       (cond
+         (instance? LocalTime t) (.toDateTime ^LocalTime t (epoch))
+         (instance? DateTime t) t
+         (instance? java.util.Date t) (cc/from-date t)
+         (string? t) (try
+                       (parse-time t)
+                       (catch Exception _))
+         (map? t) (try
+                    (let [h (parse-int (:h t (get t "h")))
+                          ampm (:ampm t (get t "ampm"))
+                          h (if ampm
+                              (cond
+                                (= 12 h) (if (= "am" ampm) 0 12)
+                                (= "pm" ampm) (+ h 12)
+                                :else h)
+                              h)
+                          m (parse-int (:m t (get t "m" 0)))
+                          s (parse-int (:s t (get t "s" 0)))]
+                      (mktime h m s))
+                    (catch Exception _))
+         (number? t) (mktime t 0 0)
+         :else (throw (ex-info "Unrecognized time format" {:time t}))))))
+
+#?(:cljs
+   (defn normalize-time [t]
+     (when t
+       (cond
+         (instance? js/Date t) t
+         (integer? t) (js/Date. t)
+         (string? t) (try
+                       (parse-time t)
+                       (catch js/Error _))
+         (map? t) (try
+                    (let [h (parse-int (:h t (get t "h")))
+                          ampm (:ampm t (get t "ampm"))
+                          h (if ampm
+                              (cond
+                                (= 12 h) (if (= "am" ampm) 0 12)
+                                (= "pm" ampm) (+ h 12)
+                                :else h)
+                              h)
+                          m (parse-int (:m t (get t "m" 0)))
+                          s (parse-int (:s t (get t "s" 0)))]
+                      (mktime h m s))
+                    (catch js/Error _))
+         (number? t) (mktime t 0 0)
+         :else (throw (ex-info "Unrecognized time format" {:time t}))))))
+
+(defn hour [date]
+  #?(:clj (ct/hour date)
+     :cljs (.getUTCHours date)))
+
+(defn minute [date]
+  #?(:clj (ct/minute date)
+     :cljs (.getUTCMinutes date)))
+
+(defn sec [date]
+  #?(:clj (ct/sec date))
+  #?(:cljs (.getUTCSeconds date)))
+
+(defn get-hours-minutes-seconds [date]
+  [(hour date)
+   (minute date)
+   (sec date)])
+
+(defn- format-hours-minutes
+  "Dirty work around the breakage introduced by the removal of cljs.core/format fn.
+   If gstring/format did not defy Dead Code Elimination it would do the same as
+   (gstring/format \"%02d:%02d\" h m)"
+  [h m]
+  (str
+   (if (< h 10)
+     (str "0" h)
+     h)
+   ":"
+   (if (< m 10)
+     (str "0" m)
+     m)))
+
+(defn format-time [t]
+  #?(:clj (cf/unparse (cf/with-zone (cf/formatter "H:mm") (.getZone ^DateTime t))
+                      t)
+     :cljs (format-hours-minutes (hour t) (minute t))))
+
+(defn to-time [date]
+  #?(:clj (java.sql.Time. (cc/to-long date))
+     :cljs date))
+
+(defn get-this-year []
+  #?(:clj (ct/year (ct/now))
+     :cljs (.getUTCFullYear (js/Date.))))
+
+(defn expand-name
+  "Expands a name like \"foo[bar][baz]\" into [\"foo\" \"bar\" \"baz\"]"
+  [name]
+  (let [[_ name1 more-names] (re-matches #"^([^\[]+)((?:\[[^\]]+?\])*)$" name)]
+    (if name1
+      (if (seq more-names)
+        (into [name1] (map second (re-seq #"\[([^\]]+)\]" more-names)))
+        [name1])
+      [name])))
+
+(defn normalize-us-tel [v]
+  (when-not (string/blank? v)
+    (-> v
+        (string/replace #"[^0-9x]+" "") ;only digits and "x" for extension
+        (string/replace #"^1" "") ;remove leading 1
+        )))
+
+(defn valid-us-tel? [v]
+  (and v (re-matches #"\d{10}(?:x\d+)?" (normalize-us-tel v))))
+
+(defn format-us-tel [v]
+  (if v
+    (let [v* (normalize-us-tel (str v))]
+      (if (valid-us-tel? v*)
+        (let [[_ area prefix line ext] (re-find #"(\d\d\d)(\d\d\d)(\d\d\d\d)(?:x(\d+))?"
+                                                v*)]
+          (str "(" area ") " prefix "-" line
+               (when ext (str " x" ext))))
+        v))
+    v))
+
+(defn safe-element-id [id]
+  (when id
+    (string/replace id #"[^a-zA-Z0-9\-\_\:\.]" "__")))
+
+(def ^:dynamic *field-prefix* "field-")
+
+(defn get-field-id [field]
+  (safe-element-id
+   (if (:id field)
+     (name (:id field))
+     (str *field-prefix* (:name field)))))
+
+(defn get-field-container-id [field]
+  (str "row-" (:id field)))
+
+(defn escape-html [s]
+  (-> s
+      (string/replace "&"  "&amp;")
+      (string/replace "<"  "&lt;")
+      (string/replace ">"  "&gt;")
+      (string/replace "\"" "&quot;")))
+
+(defn get-month-names []
+  #?(:clj (.getMonths (java.text.DateFormatSymbols.))
+     ;; TODO: i18n??
+     :cljs ["January" "February" "March" "April" "May" "June" "July"
+            "August" "September" "October" "November" "December"]))
+
+(defn encode-uri-component [str]
+  (if str
+    #?(:clj (java.net.URLEncoder/encode ^String str "UTF-8")
+       :cljs (js/encodeURIComponent str))
+    ""))
+
+(defn encode-uri-kv [k v]
+  (str (encode-uri-component k) "=" (encode-uri-component v)))
+
+(defn decode-uri-component [str]
+  (if str
+    #?(:clj (java.net.URLDecoder/decode ^String str "UTF-8")
+       :cljs (js/decodeURIComponent str))
+    ""))
+
+(defn decode-form-data [data]
+  (reduce
+   (fn [m kv]
+     (if-let [[k v] (string/split kv #"=")]
+       (update-in m [(decode-uri-component k)]
+                  (fn [oldv]
+                    (if oldv
+                      (if (vector? oldv)
+                        (conj oldv (decode-uri-component v))
+                        [oldv (decode-uri-component v)])
+                      (decode-uri-component v))))
+       m))
+   {}
+   (string/split data #"&")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Copied wholesale from ring.middleware.nested-params, for the sake of
+;; ClojureScript support
+;;
+
+(defn parse-nested-keys
+  "Parse a parameter name into a list of keys using a 'C'-like index
+  notation. e.g.
+    \"foo[bar][][baz]\"
+    => [\"foo\" \"bar\" \"\" \"baz\"]"
+  [param-name]
+  (let [[_ k ks] (re-matches #"([^\[]*)((?:\[.*?\])*)" (name param-name))
+        keys     (if ks (map second (re-seq #"\[(.*?)\]" ks)))]
+    (cons k keys)))
+
+(defn- assoc-nested
+  "Similar to assoc-in, but treats values of blank keys as elements in a
+  list."
+  [m [k & ks] v]
+  (conj m
+        (if k
+          (if-let [[j & js] ks]
+            (if (= j "")
+              {k (assoc-nested (get m k []) js v)}
+              {k (assoc-nested (get m k {}) ks v)})
+            {k v})
+          v)))
+
+(defn- param-pairs
+  "Return a list of name-value pairs for a parameter map."
+  [params]
+  (mapcat
+   (fn [[name value]]
+     (if (sequential? value)
+       (for [v value] [name v])
+       [[name value]]))
+   params))
+
+(defn- nest-params
+  "Takes a flat map of parameters and turns it into a nested map of
+  parameters, using the function parse to split the parameter names
+  into keys."
+  [params parse]
+  (reduce
+   (fn [m [k v]]
+     (assoc-nested m (parse k) v))
+   {}
+   (param-pairs params)))
+
+(defn nested-params-request
+  "Converts a request with a flat map of parameters to a nested map."
+  [request & [opts]]
+  (let [parse (:key-parser opts parse-nested-keys)]
+    (update-in request [:params] nest-params parse)))
+
+(ns formative.render.div
+  (:require [formative.render :refer [render-form render-field
+                                      render-problems]]
+            [formative.util :as util]))
+
+(defn render-form-row [field]
+  (let [field-id (util/get-field-id field)
+        field (assoc field :id field-id)]
+    [:div {:id (util/get-field-container-id field)
+           :class (str (if (= :submit (:type field))
+                         "submit-group "
+                         "field-group ")
+                       (name (:type field :text)) "-row"
+                       (when (:problem field) " problem"))}
+     (if (= :heading (:type field))
+       [:legend (render-field field)]
+       (list
+         [:div {:class (if (#{:checkbox :submit} (:type field))
+                         "empty-cell"
+                         "label-cell")}
+          (when (and (not (#{:checkbox} (:type field))) (:label field))
+            [:label {:for field-id}
+             (:label field)])]
+         [:div.input-shell
+          (when (:prefix field)
+            [:span.prefix (:prefix field)])
+          (render-field field)
+          (when (= :checkbox (:type field))
+            [:label {:for field-id} " " [:span.cb-label (:label field)]])
+          (when (:suffix field)
+            [:span.suffix (:suffix field)])
+          (when (and (= :submit (:type field)) (:cancel-href field))
+            [:span.cancel-link " " [:a {:href (:cancel-href field)} (:cancel-label field)]])
+          (when (:note field)
+            [:div.note (:note field)])]))]))
+
+(defmethod render-form :div [form-attrs fields opts]
+  (let [[hidden-fields visible-fields] ((juxt filter remove)
+                                        #(= :hidden (:type %)) fields)
+        submit-only? (and (= 1 (count visible-fields))
+                          (= :submit (:type (first visible-fields))))
+        shell-attrs {:class (str "form-shell" (when submit-only? " submit-only"))}
+        shell-attrs (if (:id form-attrs)
+                      (assoc shell-attrs :id (str (name (:id form-attrs))
+                                                  "-shell"))
+                      shell-attrs)]
+    [:div shell-attrs
+     (when-let [problems (:problems opts)]
+       (when (map? (first problems))
+         (render-problems problems fields)))
+     [:form (dissoc form-attrs :renderer)
+      (list
+       (map render-field hidden-fields)
+       [:fieldset
+        (map render-form-row visible-fields)])]]))
+
+(ns formative.render.table
+  (:require [formative.render :refer [render-form render-field
+                                      render-problems]]
+            [formative.util :as util]))
+
+(defn render-form-row [field]
+  (let [field-id (util/get-field-id field)
+        field (assoc field :id field-id)
+        label? (and (not (false? (:label field)))
+                    (not= :html (:type field)))
+        stacked? (= :stacked (:layout field))
+        input-el [:div.input-shell
+                  (when (:prefix field)
+                    [:span.prefix (:prefix field)])
+                  (render-field field)
+                  (when (= :checkbox (:type field))
+                    [:label {:for field-id} " " [:span.cb-label (:label field)]])
+                  (when (:suffix field)
+                    [:span.suffix (:suffix field)])
+                  (when (and (= :submit (:type field)) (:cancel-href field))
+                    [:span.cancel-link " " [:a {:href (:cancel-href field)} (:cancel-label field)]])
+                  (when (:note field)
+                    [:div.note (:note field)])]
+        label-el (when (and (not (#{:checkbox} (:type field))) (:label field))
+                   [:div.label-shell
+                    (:label-prefix field)
+                    [:label {:for field-id} (:label field)]
+                    (:label-suffix field)])]
+    [:tr {:id (util/get-field-container-id field)
+          :class (str (name (:type field :text)) "-row"
+                      (when (:problem field) " problem")
+                      (when stacked? " stacked"))}
+     (if (= :heading (:type field))
+       [:th.heading-cell {:colspan 2} (render-field field)]
+       (list
+        (when (and label? (not stacked?))
+          [:th {:class (if (#{:checkbox :submit} (:type field))
+                         "empty-cell"
+                         "label-cell")}
+           label-el])
+        [:td.input-cell {:colspan (if (and label? (not stacked?)) 1 2)}
+         (when stacked?
+           label-el)
+         input-el]))]))
+
+(defn- group-fieldsets [fields]
+  (loop [ret []
+         group []
+         fields fields]
+    (if (empty? fields)
+      (if (seq group)
+        (conj ret group)
+        ret)
+      (if (#{:heading :submit} (:type (first fields)))
+        (recur (if (seq group) (conj ret group) ret)
+               [(first fields)]
+               (rest fields))
+        (recur ret
+               (conj group (first fields))
+               (rest fields))))))
+
+(defmethod render-form :table [form-attrs fields opts]
+  (let [[hidden-fields visible-fields] ((juxt filter remove)
+                                        #(= :hidden (:type %)) fields)
+        submit-only? (and (= 1 (count visible-fields))
+                          (= :submit (:type (first visible-fields))))
+        shell-attrs {:class (str "form-shell" (when submit-only? " submit-only"))}
+        shell-attrs (if (:id form-attrs)
+                      (assoc shell-attrs :id (str (name (:id form-attrs))
+                                                  "-shell"))
+                      shell-attrs)]
+    [:div shell-attrs
+     (when-let [problems (:problems opts)]
+       (when (map? (first problems))
+         (render-problems problems fields)))
+     [:form (dissoc form-attrs :renderer)
+      (list
+       (map render-field hidden-fields)
+       [:table.form-table
+        (for [fieldset (group-fieldsets visible-fields)]
+          [:tbody {:class (str "fieldset-" (name (:name (first fieldset))))}
+           (map render-form-row fieldset)])])]]))

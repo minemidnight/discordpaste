@@ -1,0 +1,608 @@
+note
+	description: "EPM configuration."
+	author: "Olivier Ligot"
+
+class
+	EPM_CONFIGURATION
+
+create
+	make,
+	make_default
+
+feature {NONE} -- Initialization
+
+	make (a_directory: STRING)
+		do
+			directory := a_directory
+		ensure
+			directory_set: directory = a_directory
+		end
+
+	make_default
+		do
+			directory := Eiffel_library_directory
+		end
+
+feature -- Access
+
+	directory: STRING
+			-- The path in which installed components should be saved
+			-- If not specified this defaults to `Eiffel_library_directory'.
+
+feature -- Constants
+
+	Eiffel_library_directory: STRING = "eiffel_library"
+			-- Eiffel library directory
+
+end
+
+note
+	description: "Read a package from a file."
+	author: "Olivier Ligot"
+
+class
+	EPM_PACKAGE_FILE_READER
+
+inherit
+	KL_SHARED_FILE_SYSTEM
+	SHARED_EJSON
+
+create
+	make,
+	make_with_error_handler
+
+feature {NONE} -- Initialization
+
+	make
+		do
+			create error_handler.make_standard
+			directory := File_system.cwd.as_attached
+		end
+
+	make_with_error_handler (an_error_handler: like error_handler)
+		do
+			make
+			error_handler := an_error_handler
+		ensure
+			error_handler_set: error_handler = an_error_handler
+		end
+
+feature -- Access
+
+	directory: STRING
+			-- Directory
+
+	package: detachable EPM_PACKAGE
+			-- Package
+
+feature -- Element change
+
+	set_directory (a_directory: like directory)
+			-- Set `directory' to `a_directory'.
+		do
+			directory := a_directory
+		ensure
+			directory_set: directory = a_directory
+		end
+
+feature -- Basic operations
+
+	read
+			-- Read the package definition.
+		local
+			l_file: KL_TEXT_INPUT_FILE
+			l_count: INTEGER
+			l_parser: JSON_PARSER
+			l_content: STRING
+		do
+			create l_file.make (File_system.pathname (directory, Package_file_name))
+			l_count := l_file.count
+			l_file.open_read
+			if l_file.is_open_read then
+				l_file.read_string (l_count)
+				l_content := l_file.last_string.as_attached
+				create l_parser.make_parser (l_content)
+				if attached l_parser.parse as jv and l_parser.is_parsed then
+					if attached {EPM_PACKAGE} json.object (jv, "EPM_PACKAGE") as l_package then
+						package := l_package
+					end
+				else
+					error_handler.report_error_message ("Unable to parse " + l_content)
+                end
+			else
+				error_handler.report_error_message ("Unable to open file " + l_file.name.as_attached)
+			end
+		end
+
+feature -- Constants
+
+	Package_file_name: STRING = "system.json"
+			-- Package file name
+
+feature {NONE} -- Implementation
+
+	error_handler: UT_ERROR_HANDLER
+			-- Error handler
+
+end
+
+note
+	description: "A package file."
+	author: "Louis Marchand"
+	date: "april 30, 2013"
+	revision: "1.0.0.0"
+
+class
+	CPF_PACKAGE_FILE
+
+inherit
+	CPF_FILE
+		rename
+			make as make_file,
+			current_offset as current_offset_file,
+			seek_from_begining as seek_from_begining_file,
+			seek_from_current_offset as seek_from_current_offset_file,
+			seek_from_end as seek_from_end_file
+		export
+			{NONE} 	current_offset_file,seek_from_begining_file,
+					seek_from_current_offset_file,seek_from_end_file
+		redefine
+			dispose,
+			read
+		end
+
+create
+	make,
+	make_thread_safe
+
+feature {NONE} -- Initialization
+
+	make(a_filename:STRING)
+			-- Initialization for `Current'.
+		local
+			l_error:INTEGER
+			l_temp_ptr:POINTER
+		do
+			make_file(a_filename)
+			l_error:={CPF_EXTERNAL}.fseek(file_ptr,0,{CPF_EXTERNAL}.SEEK_END)
+			check l_error=0 end
+			length_of_package_file:={CPF_EXTERNAL}.ftell(file_ptr)+1
+			select_sub_file (0)
+			process_cpf_file
+			cpf_infos:=create {ARRAYED_LIST[POINTER]}.make(sub_files_count)
+			from
+				sub_files_infos.start
+			until
+				sub_files_infos.exhausted
+			loop
+				l_temp_ptr:=l_temp_ptr.memory_alloc ({CPF_EXTERNAL}.c_sizeof_custom_package_file_infos)
+				{CPF_EXTERNAL}.set_custom_package_infos_struct_file_ptr(l_temp_ptr,file_ptr)
+				{CPF_EXTERNAL}.set_custom_package_infos_struct_start_offset(l_temp_ptr,sub_files_infos.item.pos)
+				{CPF_EXTERNAL}.set_custom_package_infos_struct_total_size(l_temp_ptr,sub_files_infos.item.length)
+				cpf_infos.extend (l_temp_ptr)
+				sub_files_infos.forth
+			end
+			select_sub_file (0)
+			is_thread_safe:=false
+		end
+
+	make_thread_safe(filename:STRING)
+		do
+			make(filename)
+			is_thread_safe:=true
+			create file_mutex.make
+		ensure
+			Make_Thread_Safe_Mutex_Valid: file_mutex.is_set
+		end
+
+	process_cpf_file
+		local
+			nbr:NATURAL_16
+			pos,length:NATURAL_32
+			i:INTEGER
+		do
+			seek_from_begining (0)
+			read_natural_8
+			check last_natural_8=0x43 end
+			read_natural_8
+			check last_natural_8=0x50 end
+			read_natural_8
+			check last_natural_8=0x46 end
+			read_natural_16_big_endian
+			nbr:=last_natural_16
+			sub_files_infos:= create {ARRAYED_LIST[TUPLE[pos,length:INTEGER_32]]}.make (nbr.to_integer_32)
+			from i:=1
+			until i>nbr
+			loop
+				read_natural_32_big_endian
+				pos:=last_natural_32
+				read_natural_32_big_endian
+				length:=last_natural_32
+				sub_files_infos.extend ([pos.to_integer_32,length.to_integer_32])
+				i:=i+1
+			end
+		end
+
+feature -- Access
+
+	select_sub_file(index:INTEGER)
+		do
+			if index=0 then
+				start_of_selected_file_offset:=0
+				length_of_selected_file:=length_of_package_file
+				seek_from_begining(0)
+			else
+				start_of_selected_file_offset:=sub_files_infos.at (index).pos
+				length_of_selected_file:=sub_files_infos.at (index).length
+				seek_from_begining(0)
+			end
+		end
+
+	current_file_index:INTEGER
+		local
+			offset:INTEGER
+			is_found:BOOLEAN
+		do
+			offset:={CPF_EXTERNAL}.ftell(file_ptr)
+			Result:=0
+			from
+				is_found:=false
+				sub_files_infos.start
+			until
+				is_found or else
+				sub_files_infos.exhausted
+			loop
+				if offset>=sub_files_infos.item.pos and then offset<sub_files_infos.item.pos+sub_files_infos.item.length then
+					Result:=sub_files_infos.index
+					is_found:=true
+				end
+				sub_files_infos.forth
+			end
+		end
+
+	current_offset_is_in_selected_file:BOOLEAN
+		local
+			offset:INTEGER
+		do
+			offset:={CPF_EXTERNAL}.ftell(file_ptr)
+			Result:=offset>=start_of_selected_file_offset and then offset<=end_of_selected_file_offset
+		end
+
+	current_offset:INTEGER
+			-- Return the current stream offset (position) in the file.
+		Require
+			File_Current_Offset_Is_In_File: current_offset_is_in_selected_file
+		do
+			Result:=current_offset_file-start_of_selected_file_offset
+		end
+
+	seek_from_begining(offset:INTEGER)
+			-- Place the stream offset at `offset' position after the begining of the file.
+			-- The `offset' value must be posifive.
+		require
+			File_Seek_From_Begining_Offset_Positive: offset>=0 and then offset<=end_of_selected_file_offset
+		do
+			seek_from_begining_file(offset+start_of_selected_file_offset)
+		ensure
+			current_offset = offset
+		end
+
+	seek_from_current_offset(offset:INTEGER)
+			-- Place the stream offset at `offset' position after (or before if `offset' is negative) the current offset.
+		require
+			File_Seek_From_Current_Offset_Is_In_File: current_offset_is_in_selected_file
+			File_Seek_From_Current_Offset_Offset_is_Valid: (offset>=0 and then offset<=end_of_selected_file_offset-current_offset) or else (offset<0 and then offset.abs<=current_offset)
+		do
+			seek_from_current_offset_file(offset)
+		end
+
+	seek_from_end(offset:INTEGER)
+			-- Place the stream offset at `offset' position before the end of the file.
+			-- The `offset' value must be negative.
+		require
+			Custom_File_Seek_From_End_Offset_Negative: offset<=0
+		do
+
+			seek_from_begining_file(end_of_selected_file_offset+offset)
+		end
+
+	read(buffer:POINTER;byte_per_sample,count:NATURAL_32)
+		local
+			temp_count:NATURAL_32
+		do
+			temp_count:=count
+			if current_offset+(count*byte_per_sample).to_integer_32>length_of_selected_file then
+				temp_count:=(length_of_selected_file-current_offset).to_natural_32//byte_per_sample
+			end
+			precursor(buffer,byte_per_sample,temp_count)
+		end
+
+	start_of_selected_file_offset:INTEGER
+
+	end_of_selected_file_offset:INTEGER
+		do
+			Result:=start_of_selected_file_offset+length_of_selected_file-1
+		end
+
+	length_of_selected_file:INTEGER
+
+	file_index:INTEGER
+
+	is_thread_safe:BOOLEAN
+
+feature -- Reader
+
+
+
+feature -- CPF informations
+
+	sub_files_infos:LIST[TUPLE[pos,length:INTEGER_32]]
+
+	sub_files_count:INTEGER_32
+	do
+		Result:=sub_files_infos.count
+	end
+
+feature {CPF_RESSOURCE} -- The C pointer to the file infos structure
+
+	get_current_cpf_infos_ptr:POINTER
+		require
+			current_file_index/=0
+		do
+			Result:=cpf_infos.at (current_file_index)
+		end
+
+	mutex_lock
+		do
+			if is_thread_safe then
+				file_mutex.lock
+			end
+
+		end
+
+	mutex_unlock
+		do
+			if is_thread_safe then
+				file_mutex.unlock
+			end
+		end
+
+feature {NONE} -- Implementation - Routines
+
+	dispose
+		local
+			error:INTEGER
+		do
+			from
+				cpf_infos.start
+			until
+				cpf_infos.exhausted
+			loop
+				cpf_infos.item.memory_free
+				cpf_infos.forth
+			end
+			Precursor
+		end
+
+feature {NONE} -- Implemetntation - Variables
+
+
+
+	length_of_package_file:INTEGER
+
+	cpf_infos:LIST[POINTER]
+	file_mutex:MUTEX
+
+invariant
+	File_Stream_Ptr_Not_Null: not file_ptr.is_default_pointer
+
+
+
+end
+
+note
+	description: "Controller for the library."
+	author: "Louis Marchand"
+	date: "$Date$"
+	revision: "$Revision$"
+
+class
+	GAME_LIB_CONTROLLER
+
+inherit
+	GAME_SDL_CONTROLLER
+	rename
+		make as make_sdl,
+		make_no_parachute as make_no_parachute_sdl
+	end
+	GAME_RANDOM_CONTROLLER
+		rename
+			make as make_random
+		end
+
+create
+	make,
+	make_no_parachute
+
+feature {NONE} -- Initialization
+
+	make
+			-- Initialization for `Current'.
+			-- No sound enable.
+		do
+			make_sdl
+			make_random
+		end
+
+	make_no_parachute
+			-- Initialization for `Current'.
+			-- Don't clean up library on segfault
+			-- No sound enable.
+		do
+			make_no_parachute_sdl
+			make_random
+		end
+
+end
+
+note
+	description: "Joystick manager. Not tested. It is most probable that it does not work correctly"
+	author: "Louis Marchand"
+	date: "May 24, 2012"
+	revision: "1.0.0.0"
+
+class
+	GAME_JOYSTICK
+
+inherit
+	DISPOSABLE
+
+create {GAME_SDL_CONTROLLER}
+	make
+
+feature {NONE} -- Initialization
+
+	make(a_from_index:INTEGER)
+			-- Initialization for `Current'.
+		do
+			index:=a_from_index
+		end
+
+feature -- Access
+
+	name:STRING
+		-- Return the Joystick Name.
+	local
+		l_text_return:C_STRING
+	do
+		create l_text_return.make_by_pointer ({GAME_SDL_EXTERNAL}.SDL_JoystickName(index))
+		Result:=l_text_return.string
+	end
+
+	open
+		-- Open the joystick.
+	require
+		Open_Joystick_Not_Open:not is_opened
+	do
+		joy_ptr:={GAME_SDL_EXTERNAL}.SDL_JoystickOpen(index)
+	end
+
+	close
+		-- Close the joystick.
+	require
+		Close_Is_Open: is_opened
+	do
+		{GAME_SDL_EXTERNAL}.SDL_JoystickClose(joy_ptr)
+	end
+
+	is_opened:BOOLEAN
+		-- Return true if the joystick is open.
+	do
+		Result:={GAME_SDL_EXTERNAL}.SDL_JoystickOpened(index)=1
+	end
+
+	get_axes_number:INTEGER
+		-- Get the number of axes on the joystick.
+	require
+		Get_Axes_Number_Opened: is_opened
+	do
+		Result:={GAME_SDL_EXTERNAL}.SDL_JoystickNumAxes(joy_ptr)
+	end
+
+	get_balls_number:INTEGER
+		-- Return the number of balls on the joystick.
+	require
+		Get_Balls_Number_Opened: is_opened
+	do
+		Result:={GAME_SDL_EXTERNAL}.SDL_JoystickNumBalls(joy_ptr)
+	end
+
+	get_hats_number:INTEGER
+		-- Return the number of hats on the joystick.
+	require
+		Get_Hats_Number_Opened: is_opened
+	do
+		Result:={GAME_SDL_EXTERNAL}.SDL_JoystickNumHats(joy_ptr)
+	end
+
+	get_buttons_number:INTEGER
+		-- Get the number of buttons on the joystick.
+	require
+		Get_Buttons_Number_Opened: is_opened
+	do
+		Result:={GAME_SDL_EXTERNAL}.SDL_JoystickNumButtons(joy_ptr)
+	end
+
+	get_axis_value(a_axis_id:INTEGER):INTEGER_16
+		-- Get the value of an axis.
+	require
+		Get_Axis_Value_Opened: is_opened
+		Get_Axis_Value_Axis_Id_Valid: a_axis_id<get_axes_number
+	do
+		{GAME_SDL_EXTERNAL}.SDL_JoystickUpdate
+		Result:={GAME_SDL_EXTERNAL}.SDL_JoystickGetAxis(joy_ptr,a_axis_id)
+	end
+
+	get_hat_value(a_hat_id:INTEGER):TUPLE[up,down,right,left:BOOLEAN]
+		-- Get the value of a hat.
+	require
+		Get_Hat_Value_Opened: is_opened
+		Get_Hat_Value_Hat_Id_Valid: a_hat_id<get_hats_number
+	local
+		l_internal_value:NATURAL_8
+	do
+		{GAME_SDL_EXTERNAL}.SDL_JoystickUpdate
+		l_internal_value:={GAME_SDL_EXTERNAL}.SDL_JoystickGetHat(joy_ptr,a_hat_id)
+		Result:=[false,false,false,false]
+		if l_internal_value.bit_and ({GAME_SDL_EXTERNAL}.SDL_HAT_UP)/=0 then
+			Result.up:=true
+		end
+		if l_internal_value.bit_and ({GAME_SDL_EXTERNAL}.SDL_HAT_DOWN)/=0 then
+			Result.down:=true
+		end
+		if l_internal_value.bit_and ({GAME_SDL_EXTERNAL}.SDL_HAT_LEFT)/=0 then
+			Result.left:=true
+		end
+		if l_internal_value.bit_and ({GAME_SDL_EXTERNAL}.SDL_HAT_RIGHT)/=0 then
+			Result.right:=true
+		end
+	end
+
+	is_button_pushed(a_button_id:INTEGER):BOOLEAN
+		-- Return true if the button is pressed.
+	require
+		Get_Button_State_Opened: is_opened
+		GetButton_State_Button_Id_Valid: a_button_id<get_balls_number
+	do
+		{GAME_SDL_EXTERNAL}.SDL_JoystickUpdate
+		Result:={GAME_SDL_EXTERNAL}.SDL_JoystickGetButton(joy_ptr,a_button_id)/=0
+	end
+
+	get_ball_change(a_ball_id:INTEGER):TUPLE[relative_x, relative_y:INTEGER]
+		-- Return the state of the ball (relative to the last read).
+	require
+		Get_Ball_Value_Opened: is_opened
+		Get_Ball_Value_Ball_Id_Valid: a_ball_id<get_axes_number
+	local
+		l_dx,l_dy,l_error:INTEGER
+	do
+		{GAME_SDL_EXTERNAL}.SDL_JoystickUpdate
+		l_error:={GAME_SDL_EXTERNAL}.SDL_JoystickGetBall(joy_ptr,a_ball_id,$l_dx,$l_dy)
+		check l_error=0 end
+		Result:=[l_dx,l_dy]
+	end
+
+feature {NONE} -- Implementation
+
+	joy_ptr:POINTER
+
+	index:INTEGER
+
+	dispose
+	do
+		if is_opened then
+			close
+		end
+	end
+
+end

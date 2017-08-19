@@ -1,0 +1,603 @@
+module fox_m_fsys_string_list
+#ifndef DUMMYLIB
+
+  use fox_m_fsys_array_str, only: str_vs, vs_str_alloc
+  implicit none
+  private
+
+  type string_t
+    character, pointer :: s(:) => null()
+  end type string_t
+
+  type string_list
+    type(string_t), pointer :: list(:) => null()
+  end type string_list
+
+  public :: string_t
+  public :: string_list
+
+  public :: init_string_list
+  public :: destroy_string_list
+  public :: add_string
+  public :: remove_last_string
+  public :: get_last_string
+  public :: tokenize_to_string_list
+  public :: tokenize_and_add_strings
+  public :: registered_string
+
+  interface destroy
+    module procedure destroy_string_list
+  end interface
+
+  public :: destroy
+
+contains
+
+  subroutine init_string_list(s_list)
+    type(string_list), intent(inout) :: s_list
+
+    allocate(s_list%list(0))
+  end subroutine init_string_list
+
+  subroutine destroy_string_list(s_list)
+    type(string_list), intent(inout) :: s_list
+
+    integer :: i
+
+    if (associated(s_list%list)) then
+      do i = 1, ubound(s_list%list, 1)
+        deallocate(s_list%list(i)%s)
+      enddo
+      deallocate(s_list%list)
+    endif
+  end subroutine destroy_string_list
+
+  subroutine add_string(s_list, s)
+    type(string_list), intent(inout) :: s_list
+    character(len=*), intent(in) :: s
+
+    integer :: i
+    type(string_t), pointer :: temp(:)
+
+    temp => s_list%list
+    allocate(s_list%list(size(temp)+1))
+    do i = 1, size(temp)
+      s_list%list(i)%s => temp(i)%s
+    enddo
+    deallocate(temp)
+    s_list%list(i)%s => vs_str_alloc(s)
+  end subroutine add_string
+
+  subroutine remove_last_string(s_list)
+    type(string_list), intent(inout) :: s_list
+
+    integer :: i
+    type(string_t), pointer :: temp(:)
+
+    temp => s_list%list
+    allocate(s_list%list(size(temp)-1))
+    do i = 1, size(temp)-1
+      s_list%list(i)%s => temp(i)%s
+    enddo
+    deallocate(temp)
+
+  end subroutine remove_last_string
+
+  function get_last_string(s_list) result(s)
+    type(string_list), intent(in) :: s_list
+    character(len=size(s_list%list(size(s_list%list))%s)) :: s
+
+    s = str_vs(s_list%list(size(s_list%list))%s)
+  end function get_last_string
+
+  function tokenize_to_string_list(s) result(s_list)
+    character(len=*), intent(in) :: s
+    type(string_list) :: s_list
+
+    ! tokenize a whitespace-separated list of strings
+    ! and place results in a string list
+
+    character(len=*), parameter :: &
+      WHITESPACE = achar(9)//achar(10)//achar(13)//achar(32)
+    integer :: i, j
+
+    call init_string_list(s_list)
+
+    i = verify(s, WHITESPACE)
+    if (i==0) return
+    j = scan(s(i:), WHITESPACE)
+    if (j==0) then
+      j = len(s)
+    else
+      j = i + j - 2
+    endif
+    do
+      call add_string(s_list, s(i:j))
+      i = j + 1
+      j = verify(s(i:), WHITESPACE)
+      if (j==0) exit
+      i = i + j - 1
+      j = scan(s(i:), WHITESPACE)
+      if (j==0) then
+        j = len(s)
+      else
+        j = i + j - 2
+      endif
+    enddo
+
+  end function tokenize_to_string_list
+
+  function registered_string(s_list, s) result(p)
+    type(string_list), intent(in) :: s_list
+    character(len=*), intent(in) :: s
+    logical :: p
+
+    integer :: i
+
+    p = .false.
+    do i = 1, size(s_list%list)
+      if (str_vs(s_list%list(i)%s)//"x"==s//"x") then
+        p = .true.
+        exit
+      endif
+    enddo
+  end function registered_string
+
+  subroutine tokenize_and_add_strings(s_list, s, uniquify)
+    type(string_list), intent(inout) :: s_list
+    character(len=*), intent(in) :: s
+    logical, intent(in), optional :: uniquify
+
+    ! tokenize a whitespace-separated list of strings
+    ! and place results in the given string list
+
+    character(len=*), parameter :: & 
+      WHITESPACE = achar(9)//achar(10)//achar(13)//achar(32)
+    integer :: i, j
+    logical :: uniquify_
+    
+    if (present(uniquify)) then
+      uniquify_ = uniquify
+    else
+      uniquify_ = .false.
+    endif
+
+    i = verify(s, WHITESPACE)
+    if (i==0) return
+    j = scan(s(i:), WHITESPACE)
+    if (j==0) then
+      j = len(s)
+    else
+      j = i + j - 2
+    endif
+    do
+      if (uniquify_.and..not.registered_string(s_list, s(i:j))) &
+        call add_string(s_list, s(i:j))
+      i = j + 1
+      j = verify(s(i:), WHITESPACE)
+      if (j==0) exit
+      i = i + j - 1
+      j = scan(s(i:), WHITESPACE)
+      if (j==0) then
+        j = len(s)
+      else
+        j = i + j - 2
+      endif
+    enddo
+
+  end subroutine tokenize_and_add_strings
+
+#endif
+end module fox_m_fsys_string_list
+
+      subroutine driver( km,jm,im, 
+c In
+     & isw, ilw, p, ps, t, ts, q, o3, cldf, clwp, ciwp, 
+     & co2, n2o, ch4, cfc11, cfc12, cfc22, 
+     & r_liq, r_ice,
+     & aldif, aldir, asdif, asdir, zen, solin, g, Cp, dt,
+c Out
+     & tinc, tdot, srfflx, swhr, lwhr, swflx_out, lwflx_out, sw_cf_toa, 
+     & sw_cf_srf, lw_cf_toa, lw_cf_srf, lwtau,
+     & sw_toa, sw_srf, lw_toa, lw_srf)
+
+c In:
+      integer km,jm,im,isw,ilw
+      real*8 t(km,jm,im)
+      real*8 ts(jm,im)
+      real*8 q(km,jm,im)
+      real*8 p(km,jm,im)
+      real*8 ps(jm,im)
+      real*8 o3(km,jm,im)
+      real*8 co2   
+      real*8 n2o   
+      real*8 ch4   
+      real*8 cfc11 
+      real*8 cfc12 
+      real*8 cfc22 
+      real*8 clwp(km,jm,im) 
+      real*8 ciwp(km,jm,im) 
+      real*8 cldf(km,jm,im)
+      real*8 r_liq(km,jm,im)
+      real*8 r_ice(km,jm,im)
+      real*8 asdir(jm,im)  
+      real*8 asdif(jm,im)  
+      real*8 aldir(jm,im)  
+      real*8 aldif(jm,im)  
+      real*8 zen(jm,im)  
+      real*8 solin(jm,im)  
+      real*8 g    
+      real*8 Cp   
+      real*8 dt
+cf2py intent(in,hide) km,jm,im
+cf2py intent(in) t, q, p, ps, o3, co2, n2o, ch4, cfc11, cfc12, cfc22, clwp, ciwp
+cf2py intent(in) cldf, r_liq, r_ice, aldif, aldir, asdif, asdir, zen, solin, g, Cp, dt
+
+c Out:
+      real*8 tinc(km,jm,im)   
+      real*8 tdot(km,jm,im)   
+      real*8 swhr(km,jm,im)   
+      real*8 lwhr(km,jm,im)   
+      real*8 lwtau(km,jm,im)   
+      real*8 swflx_out(km,jm,im)
+      real*8 lwflx_out(km,jm,im)
+      real*8 sw_toa(jm,im)  
+      real*8 sw_srf(jm,im)  
+      real*8 lw_toa(jm,im)     
+      real*8 lw_srf(jm,im)
+      real*8 sw_cf_toa(jm,im)  
+      real*8 sw_cf_srf(jm,im)  
+      real*8 lw_cf_toa(jm,im)     
+      real*8 lw_cf_srf(jm,im)
+      real*8 srfflx(jm,im)
+cf2py intent(out) tinc, tdot, srfflx, swhr, swflx_out, sw_cf_toa, sw_cf_srf
+cf2py intent(out) lwhr, lwflx_out, lw_cf_toa, lw_cf_srf, lwtau
+cf2py intent(out) sw_toa, sw_srf, lw_toa, lw_srf
+ 
+c Local 
+      real*8 swflx(km+1),lwflx(km+1) 
+      
+      swhr=0.
+      lwhr=0.
+      swflx=0.
+      lwflx=0.
+      srfflx=0.
+
+      do i=1,im
+      do j=1,jm
+      do k=1,km
+      if (q(k,j,i).lt.0.) then
+         print*,'qneg!',i,j,k
+         q(k,j,i)=1.e-9
+      endif
+      enddo
+      enddo
+      enddo
+
+      do i=1,im
+      do j=1,jm
+
+         if (isw .eq. 1) then
+            call chou_sw(
+     &           t(1,j,i), q(1,j,i), 
+     &           p(1,j,i), ps(j,i), o3(1,j,i), co2, 
+     &           clwp(1,j,i),ciwp(1,j,i), cldf(1,j,i), r_liq(1,j,i), r_ice(1,j,i),
+     &           aldif(j,i), aldir(j,i), asdif(j,i), asdir(j,i), zen(j,i), solin(j,i), g, Cp,
+     &           swflx, sw_cf_toa(j,i), sw_cf_srf(j,i), swhr(1,j,i))
+         else
+            swflx          = solin(j,i)*(1.-asdir(j,i))
+            swhr(:,j,i)    = 0.
+            sw_cf_toa(j,i) = 0.
+            sw_cf_srf(j,i) = 0.
+         endif
+
+         if (ilw .eq. 1) then
+            call chou_lw( 
+     &           t(1,j,i), ts(j,i), q(1,j,i), 
+     &           p(1,j,i), ps(j,i), o3, co2, n2o, ch4, cfc11, cfc12, cfc22, 
+     &           clwp(1,j,i), clwp(1,j,i), cldf(1,j,i), r_liq(1,j,i), r_ice(1,j,i), g, Cp,
+     &           lwflx, lw_cf_toa(j,i), lw_cf_srf(j,i), lwhr(1,j,i), lwtau(1,j,i))
+         endif
+
+      sw_toa = swflx(1)
+      sw_srf = swflx(km+1)
+      lw_toa = lwflx(1)
+      lw_srf = lwflx(km+1)
+      swflx_out(:,j,i) = (swflx(1:km)+swflx(2:km+1))/2.
+      lwflx_out(:,j,i) = (lwflx(1:km)+lwflx(2:km+1))/2.
+      srfflx(j,i) = swflx(km+1) + lwflx(km+1)
+
+      enddo
+      enddo
+
+      tdot = swhr+lwhr
+      tinc = 2.*dt*tdot
+      swhr = swhr * 86400.
+      lwhr = lwhr * 86400.
+      tdot = tdot * 86400.
+
+      end
+c-------------------------------------------------------------
+      integer function get_nlev()
+
+      integer get_km
+      external get_km
+
+      get_nlev = get_km()
+
+      end 
+
+	  module PoisFFT_C_binding
+  use iso_c_binding
+  use poisfft
+  
+  implicit none
+  
+#ifdef MPI
+  interface
+    integer function MPI_Comm_c2f(c_handle) bind(C, name="f_MPI_Comm_c2f")
+      use iso_c_binding
+      type(c_ptr), value :: c_handle
+    end function
+  end interface
+#endif
+
+contains
+
+#define rp c_double
+  subroutine poisfft_solver1d_new(D, nxyz, Lxyz, BCs, approximation, &
+                                  gnxyz, offs, comm_ptr, nthreads) &
+    bind(C, name="poisfft_solver1d_new")
+#define dims 1
+#define solver PoisFFT_Solver1D_DP
+#include "c_new-inc.f90"
+#undef solver
+#undef dims
+  end subroutine
+  
+  subroutine poisfft_solver2d_new(D, nxyz, Lxyz, BCs, approximation, &
+                                  gnxyz, offs, comm_ptr, nthreads) &
+    bind(C, name="poisfft_solver2d_new")
+#define dims 2
+#define solver PoisFFT_Solver2D_DP
+#include "c_new-inc.f90"
+#undef solver
+#undef dims
+  end subroutine
+  
+  subroutine poisfft_solver3d_new(D, nxyz, Lxyz, BCs, approximation, &
+                                  gnxyz, offs, comm_ptr, nthreads) &
+    bind(C, name="poisfft_solver3d_new")
+#define dims 3
+#define solver PoisFFT_Solver3D_DP
+#include "c_new-inc.f90"
+#undef solver
+#undef dims
+  end subroutine
+#undef rp
+  
+#define rp c_float
+  subroutine poisfft_solver1d_f_new(D, nxyz, Lxyz, BCs, approximation, &
+                                    gnxyz, offs, comm_ptr, nthreads) &
+    bind(C, name="poisfft_solver1d_f_new")
+#define dims 1
+#define solver PoisFFT_Solver1D_SP
+#include "c_new-inc.f90"
+#undef solver
+#undef dims
+  end subroutine
+  
+  subroutine poisfft_solver2d_f_new(D, nxyz, Lxyz, BCs, approximation, &
+                                    gnxyz, offs, comm_ptr, nthreads) &
+    bind(C, name="poisfft_solver2d_f_new")
+#define dims 2
+#define solver PoisFFT_Solver2D_SP
+#include "c_new-inc.f90"
+#undef solver
+#undef dims
+  end subroutine
+  
+  subroutine poisfft_solver3d_f_new(D, nxyz, Lxyz, BCs, approximation, &
+                                    gnxyz, offs, comm_ptr, nthreads) &
+    bind(C, name="poisfft_solver3d_f_new")
+#define dims 3
+#define solver PoisFFT_Solver3D_SP
+#include "c_new-inc.f90"
+#undef solver
+#undef dims
+  end subroutine
+#undef rp
+
+
+
+#define rp c_double    
+  subroutine poisfft_solver1d_execute(D, Phi, RHS, ngPhi, ngRHS) &
+    bind(C, name="poisfft_solver1d_execute")
+    type(PoisFFT_Solver1D_DP), pointer :: f_D
+#define dims 1
+#include "c_execute-inc.f90"
+#undef dims
+  end subroutine
+
+  subroutine poisfft_solver2d_execute(D, Phi, RHS, ngPhi, ngRHS) &
+    bind(C, name="poisfft_solver2d_execute")
+    type(PoisFFT_Solver2D_DP), pointer :: f_D
+#define dims 2
+#include "c_execute-inc.f90"
+#undef dims
+  end subroutine
+
+  subroutine poisfft_solver3d_execute(D, Phi, RHS, ngPhi, ngRHS) &
+    bind(C, name="poisfft_solver3d_execute")
+    type(PoisFFT_Solver3D_DP), pointer :: f_D
+#define dims 3
+#include "c_execute-inc.f90"
+#undef dims
+  end subroutine
+#undef dims
+#undef rp
+
+#define rp c_float    
+  subroutine poisfft_solver1d_f_execute(D, Phi, RHS, ngPhi, ngRHS) &
+    bind(C, name="poisfft_solver1d_f_execute")
+    type(PoisFFT_Solver1D_SP), pointer :: f_D
+#define dims 1
+#include "c_execute-inc.f90"
+#undef dims
+  end subroutine
+
+  subroutine poisfft_solver2d_f_execute(D, Phi, RHS, ngPhi, ngRHS) &
+    bind(C, name="poisfft_solver2d_f_execute")
+    type(PoisFFT_Solver2D_SP), pointer :: f_D
+#define dims 2
+#include "c_execute-inc.f90"
+#undef dims
+  end subroutine
+
+  subroutine poisfft_solver3d_f_execute(D, Phi, RHS, ngPhi, ngRHS) &
+    bind(C, name="poisfft_solver3d_f_execute")
+    type(PoisFFT_Solver3D_SP), pointer :: f_D
+#define dims 3
+#include "c_execute-inc.f90"
+#undef dims
+  end subroutine
+#undef dims
+#undef rp
+
+
+  subroutine poisfft_solver1d_finalize(D) &
+    bind(C, name="poisfft_solver1d_finalize")
+    type(PoisFFT_Solver1D_DP), pointer :: f_D
+#include "c_finalize-inc.f90"
+  end subroutine
+
+  subroutine poisfft_solver2d_finalize(D) &
+    bind(C, name="poisfft_solver2d_finalize")
+    type(PoisFFT_Solver2D_DP), pointer :: f_D
+#include "c_finalize-inc.f90"
+  end subroutine
+
+  subroutine poisfft_solver3d_finalize(D) &
+    bind(C, name="poisfft_solver3d_finalize")
+    type(PoisFFT_Solver3D_DP), pointer :: f_D
+#include "c_finalize-inc.f90"
+  end subroutine
+
+  subroutine poisfft_solver1d_f_finalize(D) &
+    bind(C, name="poisfft_solver1d_f_finalize")
+    type(PoisFFT_Solver1D_SP), pointer :: f_D
+#include "c_finalize-inc.f90"
+  end subroutine
+
+  subroutine poisfft_solver2d_f_finalize(D) &
+    bind(C, name="poisfft_solver2d_f_finalize")
+    type(PoisFFT_Solver2D_SP), pointer :: f_D
+#include "c_finalize-inc.f90"
+  end subroutine
+
+  subroutine poisfft_solver3d_f_finalize(D) &
+    bind(C, name="poisfft_solver3d_f_finalize")
+    type(PoisFFT_Solver3D_SP), pointer :: f_D
+#include "c_finalize-inc.f90"
+  end subroutine
+
+end module PoisFFT_C_binding
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+const int POISFFT_PERIODIC = 0;
+const int POISFFT_DIRICHLET = 1;
+const int POISFFT_NEUMANN = 2;
+const int POISFFT_DIRICHLET_STAG = 3;
+const int POISFFT_NEUMANN_STAG = 4;
+const int POISFFT_SPECTRAL = 0;
+const int POISFFT_FINITE_DIFFERENCE_2 = 2;
+ 
+typedef struct{int dims; void *D;} poisfft_solver;
+
+typedef struct{int dims; void *D;} poisfft_solver_f;
+
+poisfft_solver poisfft_solver_new(const int dims,
+                         const int *nxyz, const double *Lxyz,
+                         const int *BCs, const int approximation, 
+                         const int *gnxyz, const int *offs,
+                         const void *mpi_comm, int nthreads);
+void poisfft_solver_execute( poisfft_solver S, double *Phi, const double *RHS,
+                             const int *ngPhi, const int *ngRHS);
+void poisfft_solver_finalize( poisfft_solver *S);
+
+poisfft_solver_f poisfft_solver_f_new(const int dims,
+                         const int *nxyz, const float *Lxyz,
+                         const int *BCs, const int approximation,
+                         const int *gnxyz, const int *offs,
+                         const void *mpi_comm, int nthreads);
+void poisfft_solver_f_execute( poisfft_solver_f S, float *Phi, const float *RHS,
+                             const int *ngPhi, const int *ngRHS);
+void poisfft_solver_f_finalize( poisfft_solver_f *S);
+
+#ifdef __cplusplus
+}
+
+namespace PoisFFT{
+  const int PERIODIC = POISFFT_PERIODIC;
+  const int DIRICHLET = POISFFT_DIRICHLET;
+  const int NEUMANN = POISFFT_NEUMANN;
+  const int DIRICHLET_STAG = POISFFT_DIRICHLET_STAG;
+  const int NEUMANN_STAG = POISFFT_NEUMANN_STAG;
+  const int SPECTRAL = POISFFT_SPECTRAL;
+  const int FINITE_DIFFERENCE_2 = POISFFT_FINITE_DIFFERENCE_2;
+
+  template <unsigned int dims, typename real>  class Solver{
+    private:
+    public:
+      Solver(const int *nxyz, const real *Lxyz,
+                     const int *BCs, const int *gnxyz=0, const int *offs=0,
+                     const void *mpi_comm=0, int nthreads=1);
+      ~Solver();
+      void execute(real *Phi, const real *RHS,
+                   const int *ngPhi=0, const int *ngRHS=0);
+  };
+  
+  template <unsigned int dims>  class Solver<dims, double>{
+    private:
+      poisfft_solver c_solver;
+    public:
+      Solver(const int *nxyz, const double *Lxyz,
+                     const int *BCs, const int approximation=0,
+                     const int *gnxyz=0, const int *offs=0,
+                     const void *mpi_comm=0, int nthreads=1){
+        c_solver = poisfft_solver_new(dims, nxyz, Lxyz, BCs, approximation, 
+                                      gnxyz, offs, mpi_comm, nthreads);
+      };
+      ~Solver(){
+        poisfft_solver_finalize(&c_solver);
+      };
+      void execute(double *Phi, const double *RHS,
+                   const int *ngPhi=0, const int *ngRHS=0){
+        poisfft_solver_execute(c_solver, Phi, RHS, ngPhi, ngRHS);
+      };
+  };
+  
+  template <unsigned int dims>  class Solver<dims, float>{
+    private:
+      poisfft_solver_f c_solver;
+    public:
+      Solver(const int *nxyz, const float *Lxyz,
+                     const int *BCs, const int approximation=0,
+                     const int *gnxyz=0, const int *offs=0,
+                     const void *mpi_comm=0, int nthreads=1){
+        c_solver = poisfft_solver_f_new(dims, nxyz, Lxyz, BCs, approximation,
+                                        gnxyz, offs, mpi_comm, nthreads);
+      };
+      ~Solver(){
+        poisfft_solver_f_finalize(&c_solver);
+      };
+      void execute(float *Phi, const float *RHS,
+                   const int *ngPhi=0, const int *ngRHS=0){
+        poisfft_solver_f_execute(c_solver, Phi, RHS, ngPhi, ngRHS);
+      };
+  };
+
+}
+#endif

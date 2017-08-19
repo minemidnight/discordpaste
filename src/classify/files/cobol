@@ -1,0 +1,4646 @@
+123456*8901234567890123456789012345678901234567890
+       IDENTIFICATION    DIVISION.
+       PROGRAM-ID.       CONBOLER.
+       DATA              DIVISION.
+       WORKING-STORAGE   SECTION.
+      *INIT
+       77 LV    PIC X(1).
+       01 MAP-CONF.
+           03 ISSET    PIC X(1).
+           03 WIDTH    PIC 9(2).
+           03 HEIGHT   PIC 9(2).
+           03 N-MINE     PIC 9(2).
+       01 CONF-B PIC X(7) VALUE "Y090910".
+       01 CONF-I PIC X(7) VALUE "Y161640".
+       01 CONF-V PIC X(7) VALUE "Y261699".
+      *SCREEN
+       01 POS-INDEX-LIST VALUE "abcdefghijklmnopqrstuvwxyz".
+           03 POS-INDEX PIC X OCCURS 26.
+       01 CMN-IDX-DISP.
+           03 CMN-IDX-DISP-SP PIC X.
+           03 CMN-IDX-DISP-BODY PIC X OCCURS 26.
+       01 ROW-DISP.
+           03 ROW-IDX PIC X.
+           03 ROW-BODY PIC X(26).
+       01 DISP-MARK.
+           03 UNKNOWN PIC X VALUE "O".
+           03 MINE PIC X VALUE "F".
+           03 NEAR-MINES VALUE "12345678.".
+               05 NEAR-MINE PIC X OCCURS 9.
+           03 EX-MINE PIC X VALUE "B".
+           03 SUSPECT PIC X VALUE "?".
+       01 MINE-MARK.
+           03 ISSAFE PIC 9 VALUE 0.
+           03 ISMINE PIC 9 VALUE 1.
+      *MAP
+       01 GAME-MAP.
+           03 CLMN OCCURS 16.
+             05 ROW VALUE ALL " ".
+               07 CELL PIC X OCCURS 26.
+             05 MINE-ROW.
+               07 MINE-CELL PIC 9 OCCURS 26.
+           03 N-OPEN PIC 9(3).
+       77 FIXED-POS PIC 9(3).
+      *CONTROLL
+       77 ON-GAME PIC X.
+       01 EDGE.
+           03 UP-EDGE PIC X.
+           03 DOWN-EDGE PIC X.
+           03 LEFT-EDGE PIC X.
+           03 RIGHT-EDGE PIC X.
+       01 CHK-STACK.
+           03 CHK-STACK-XY OCCURS 200.
+               05 CHK-STACK-X PIC 9(2).
+               05 CHK-STACK-Y PIC 9(2).
+           03 CHK-STACK-C PIC 9(3) VALUE 0.
+       77 CHK-STACK-C-PREV PIC 9(3) VALUE 0.
+       01 CMD-STR.
+          03 X-STR PIC X.
+          03 Y-STR PIC X.
+          03 C-STR PIC X.
+       01 CMD.
+          03 X PIC 9(2).
+          03 Y PIC 9(2).
+          03 C PIC X.
+        01 CURRENT-TIME.
+            05 FILLER PIC 9(4).
+            05 CT-SECONDS PIC 9(2).
+            05 CT-HUNDREDTHS-OF-SECS PIC 9(2).
+        77 SEED PIC 9(4).
+      *JUST WORK
+       01 PXY.
+           03 PX PIC 9(2).
+           03 PY PIC 9(2).
+       77 FG-A PIC X.
+       77 N-NEAR-MINE PIC 9.
+       01 CHK-XY.
+           03 CHK-X PIC 9(2).
+           03 CHK-Y PIC 9(2).
+       77 DUMMY PIC X.
+       77 DUMMY-N PIC 9(1)V9(5).
+      *COUNTER
+       77 CNTI PIC 9(3).
+       77 CNTJ PIC 9(3).
+
+       PROCEDURE        DIVISION.
+       MAIN SECTION.
+           PERFORM INIT-START THRU EXIT-INIT.
+      *    DISPLAY "N-OPEN" N-OPEN.
+           PERFORM DISP THRU EXIT-PLAY UNTIL ON-GAME NOT = " ".
+           EVALUATE ON-GAME
+               WHEN 'E'
+                   DISPLAY 'YOU LOSE'
+               WHEN 'W'
+                   DISPLAY 'YOU WIN'
+               WHEN OTHER
+                   CONTINUE
+           END-EVALUATE.
+       STOP RUN.
+
+       INIT SECTION.
+       INIT-START.
+       ACCEPT CURRENT-TIME FROM TIME.
+       COMPUTE SEED = CT-SECONDS * 60 + CT-HUNDREDTHS-OF-SECS.
+       COMPUTE DUMMY-N = FUNCTION RANDOM(SEED).
+       SEL-LEVEL.
+           DISPLAY "WELCOME TO COINBOLLER!".
+           PERFORM UNTIL ISSET = "Y"
+               DISPLAY "SELECT b)EGGINER/ i)NTERMERDIATE/ v)ETERAN"
+               ACCEPT LV
+               EVALUATE LV
+                   WHEN "b"
+                       MOVE CONF-B TO MAP-CONF
+                   WHEN "i"
+                       MOVE CONF-I TO MAP-CONF
+                   WHEN "v"
+                       MOVE CONF-V TO MAP-CONF
+                   WHEN OTHER
+                       DISPLAY "WRONG INPUT"
+                       CONTINUE
+               END-EVALUATE
+           END-PERFORM.
+           COMPUTE N-OPEN = (WIDTH * HEIGHT) - N-MINE.
+           DISPLAY 'YOU SELECT LV-' LV ' ' N-OPEN.
+       SET-MINE.
+           PERFORM VARYING CNTI FROM 1 BY 1 UNTIL CNTI > N-MINE
+               MOVE "A" TO FG-A
+               PERFORM UNTIL FG-A = " "
+                   COMPUTE PX = FUNCTION RANDOM * (WIDTH + 1)
+                   COMPUTE PY = FUNCTION RANDOM * (HEIGHT + 1)
+                   MOVE " " TO FG-A
+                   IF MINE-CELL(PY, PX) = ISMINE
+                       THEN
+                           MOVE "A" TO FG-A
+                   END-IF
+               END-PERFORM
+      *        DISPLAY "MINE " PXY
+               MOVE ISMINE TO MINE-CELL(PY, PX)
+           END-PERFORM.
+       INIT-SCREEN.
+           PERFORM VARYING CNTI FROM 1 BY 1 UNTIL CNTI > WIDTH
+               MOVE POS-INDEX(CNTI) TO CMN-IDX-DISP-BODY(CNTI)
+           END-PERFORM.
+       INIT-MAP.
+           PERFORM VARYING CNTI FROM 1 BY 1 UNTIL CNTI > HEIGHT
+               PERFORM VARYING CNTJ FROM 1 BY 1 UNTIL CNTJ > WIDTH
+                   MOVE UNKNOWN TO CELL(CNTI, CNTJ)
+               END-PERFORM
+           END-PERFORM.
+       EXIT-INIT.
+           EXIT.
+
+       PLAY SECTION.
+       DISP.
+           PERFORM SCREEN-OUT THRU EXIT-SCREEN-OUT.
+      *    PERFORM MINE-SCREEN-OUT THRU EXIT-MINE-SCREEN-OUT.
+      *    DISPLAY "N-OPEN= " N-OPEN.
+       GET-INPUT.
+           PERFORM WITH TEST AFTER UNTIL C NOT = " "
+               DISPLAY "GUESS XYC m)INE/o)K/s)USPECT/u)NKNOWN : "
+               ACCEPT CMD-STR
+               PERFORM PARSE-CMD THRU EXIT-PARSE-CMD
+               IF CELL(Y, X) NOT = "O" AND NOT = "?" AND NOT = "F"
+                   THEN
+                       DISPLAY "NOT EFFECTIVE COMMAND"
+                       MOVE " " TO C
+           END-PERFORM.
+      *    DISPLAY CMD.
+       EXECUTE-CMD.
+           EVALUATE C
+               WHEN "m"
+                   MOVE MINE TO CELL(Y, X)
+               WHEN "s"
+                   MOVE SUSPECT TO CELL(Y, X)
+               WHEN "u"
+                   MOVE UNKNOWN TO CELL(Y, X)
+               WHEN "o"
+                   IF MINE-CELL(Y,X) = ISMINE
+                       THEN
+                           MOVE "E" TO ON-GAME
+                       ELSE
+                           PERFORM CHK-START THRU EXIT-CHK-START
+                   END-IF
+               WHEN OTHER
+                   CONTINUE
+           END-EVALUATE.
+       CHK-WIN.
+           IF N-OPEN = 0
+               THEN
+                   MOVE "W" TO ON-GAME
+           END-IF.
+       EXIT-PLAY.
+           EXIT.
+
+       CHK-START.
+           ADD 1 TO CHK-STACK-C.
+           MOVE X TO CHK-STACK-X(CHK-STACK-C).
+           MOVE Y TO CHK-STACK-Y(CHK-STACK-C).
+           PERFORM CHK-MINE THRU EXIT-CHK-MINE UNTIL CHK-STACK-C < 1.
+       EXIT-CHK-START.
+           EXIT.
+
+       CHK-MINE.
+      *    PERFORM DISP-CHK-STACK THRU EXIT-DISP-CHK-STACK.
+           MOVE CHK-STACK-XY(CHK-STACK-C) TO CHK-XY.
+           SUBTRACT 1 FROM CHK-STACK-C.
+           MOVE CHK-STACK-C TO CHK-STACK-C-PREV.
+           PERFORM CHK-NEAR THRU EXIT-CHK-NEAR
+      *    DISPLAY "CHK " CHK-XY.
+      *    DISPLAY "NEAR-MINE= " N-NEAR-MINE.
+           IF N-NEAR-MINE = 0
+               THEN
+                   MOVE NEAR-MINE(9) TO CELL(CHK-Y,CHK-X)
+                   SUBTRACT 1 FROM N-OPEN
+                   MOVE CHK-STACK-C-PREV TO CNTI
+                   PERFORM VARYING CNTI
+                       FROM 1 BY 1 UNTIL CNTI > CHK-STACK-C
+                       MOVE NEAR-MINE(9)
+                           TO CELL(CHK-STACK-Y(CNTI), CHK-STACK-X(CNTI))
+                   END-PERFORM
+                   PERFORM CHK-MINE THRU EXIT-CHK-MINE
+                       UNTIL CHK-STACK-C < 1
+               ELSE
+                   MOVE NEAR-MINE(N-NEAR-MINE) TO CELL(CHK-Y,CHK-X)
+                   SUBTRACT 1 FROM N-OPEN
+                   MOVE CHK-STACK-C-PREV TO CHK-STACK-C
+           END-IF.
+       EXIT-CHK-MINE.
+           EXIT.
+
+       CMN SECTION.
+       SCREEN-OUT.
+           DISPLAY CMN-IDX-DISP.
+           PERFORM VARYING CNTI FROM 1 BY 1 UNTIL CNTI > HEIGHT
+               MOVE POS-INDEX(CNTI) TO ROW-IDX
+               MOVE ROW(CNTI) TO ROW-BODY
+               DISPLAY ROW-DISP
+           END-PERFORM.
+       EXIT-SCREEN-OUT.
+           EXIT.
+       PARSE-CMD.
+           INITIALIZE CMD.
+           PERFORM VARYING CNTI FROM 1 BY 1 UNTIL CNTI > WIDTH
+               IF X-STR = POS-INDEX(CNTI)
+                   THEN
+                       MOVE CNTI TO X
+               END-IF
+           END-PERFORM.
+           PERFORM VARYING CNTI FROM 1 BY 1 UNTIL CNTI > HEIGHT
+               IF Y-STR = POS-INDEX(CNTI)
+                   THEN
+                       MOVE CNTI TO Y
+               END-IF
+           END-PERFORM.
+           IF X NOT = 0  AND Y NOT = 0
+               THEN
+                   IF C-STR = "m" OR "o" OR "s" OR "u"
+                       THEN
+                           MOVE C-STR TO C
+                   END-IF
+           END-IF.
+       EXIT-PARSE-CMD.
+
+       CHK-NEAR.
+           PERFORM CHK-EDGE THRU EXIT-CHK-EDGE.
+           INITIALIZE N-NEAR-MINE.
+      *    DISPLAY EDGE.
+           IF UP-EDGE = " "
+               THEN
+                   ADD MINE-CELL(CHK-Y - 1,CHK-X) TO N-NEAR-MINE
+                   IF CELL(CHK-Y - 1,CHK-X) = UNKNOWN OR SUSPECT
+                       THEN
+                           ADD 1 TO CHK-STACK-C
+                           COMPUTE CHK-STACK-X(CHK-STACK-C) = CHK-X
+                           COMPUTE CHK-STACK-Y(CHK-STACK-C) = CHK-Y - 1
+                   END-IF
+           END-IF.
+           IF UP-EDGE = " " AND LEFT-EDGE = " "
+               THEN
+                   ADD MINE-CELL(CHK-Y - 1,CHK-X - 1) TO N-NEAR-MINE
+                   IF CELL(CHK-Y - 1,CHK-X - 1) = UNKNOWN OR SUSPECT
+                       THEN
+                           ADD 1 TO CHK-STACK-C
+                           COMPUTE CHK-STACK-X(CHK-STACK-C) = CHK-X - 1
+                           COMPUTE CHK-STACK-Y(CHK-STACK-C) = CHK-Y - 1
+                   END-IF
+           END-IF.
+           IF LEFT-EDGE = " "
+               THEN
+                   ADD MINE-CELL(CHK-Y,CHK-X - 1) TO N-NEAR-MINE
+                   IF CELL(CHK-Y,CHK-X - 1) = UNKNOWN OR SUSPECT
+                       THEN
+                           ADD 1 TO CHK-STACK-C
+                           COMPUTE CHK-STACK-X(CHK-STACK-C) = CHK-X - 1
+                           COMPUTE CHK-STACK-Y(CHK-STACK-C)  = CHK-Y
+                   END-IF
+           END-IF.
+           IF DOWN-EDGE = " " AND LEFT-EDGE = " "
+               THEN
+                   ADD MINE-CELL(CHK-Y + 1,CHK-X - 1) TO N-NEAR-MINE
+                   IF CELL(CHK-Y + 1,CHK-X - 1) = UNKNOWN OR SUSPECT
+                       THEN
+                           ADD 1 TO CHK-STACK-C
+                           COMPUTE CHK-STACK-X(CHK-STACK-C) = CHK-X - 1
+                           COMPUTE CHK-STACK-Y(CHK-STACK-C)  = CHK-Y + 1
+                   END-IF
+           END-IF.
+           IF DOWN-EDGE = " "
+               THEN
+                   ADD MINE-CELL(CHK-Y + 1,CHK-X) TO N-NEAR-MINE
+                   IF CELL(CHK-Y + 1,CHK-X) = UNKNOWN OR SUSPECT
+                       THEN
+                           ADD 1 TO CHK-STACK-C
+                           COMPUTE CHK-STACK-X(CHK-STACK-C) = CHK-X
+                           COMPUTE CHK-STACK-Y(CHK-STACK-C)  = CHK-Y + 1
+                   END-IF
+           END-IF.
+           IF DOWN-EDGE = " " AND RIGHT-EDGE = " "
+               THEN
+                   ADD MINE-CELL(CHK-Y + 1,CHK-X + 1) TO N-NEAR-MINE
+                   IF CELL(CHK-Y + 1,CHK-X + 1) = UNKNOWN OR SUSPECT
+                       THEN
+                           ADD 1 TO CHK-STACK-C
+                           COMPUTE CHK-STACK-X(CHK-STACK-C) = CHK-X + 1
+                           COMPUTE CHK-STACK-Y(CHK-STACK-C)  = CHK-Y + 1
+                   END-IF
+           END-IF.
+           IF RIGHT-EDGE = " "
+               THEN
+                   ADD MINE-CELL(CHK-Y ,CHK-X + 1) TO N-NEAR-MINE
+                   IF CELL(CHK-Y ,CHK-X + 1) = UNKNOWN OR SUSPECT
+                       THEN
+                           ADD 1 TO CHK-STACK-C
+                           COMPUTE CHK-STACK-X(CHK-STACK-C) = CHK-X + 1
+                           COMPUTE CHK-STACK-Y(CHK-STACK-C)  = CHK-Y
+                   END-IF
+           END-IF.
+           IF UP-EDGE = " " AND RIGHT-EDGE = " "
+               THEN
+                   ADD MINE-CELL(CHK-Y - 1  ,CHK-X + 1) TO N-NEAR-MINE
+                   IF CELL(CHK-Y - 1  ,CHK-X + 1) = UNKNOWN OR SUSPECT
+                       THEN
+                           ADD 1 TO CHK-STACK-C
+                           COMPUTE CHK-STACK-X(CHK-STACK-C) = CHK-X + 1
+                           COMPUTE CHK-STACK-Y(CHK-STACK-C) = CHK-Y - 1
+                   END-IF
+           END-IF.
+       EXIT-CHK-NEAR.
+           EXIT.
+
+       CHK-EDGE.
+           INITIALIZE EDGE.
+           IF CHK-X = 1
+               THEN
+                   MOVE "E" TO LEFT-EDGE
+               ELSE
+                   IF CHK-X = WIDTH
+                       THEN
+                           MOVE "E" TO RIGHT-EDGE
+                   END-IF
+           END-IF.
+           IF CHK-Y = 1
+               THEN
+                   MOVE "E" TO UP-EDGE
+               ELSE
+                   IF CHK-Y = HEIGHT
+                       THEN
+                           MOVE "E" TO DOWN-EDGE
+                   END-IF
+           END-IF.
+       EXIT-CHK-EDGE.
+           EXIT.
+
+       DEBUG SECTION.
+       MINE-SCREEN-OUT.
+           DISPLAY CMN-IDX-DISP.
+           PERFORM VARYING CNTI FROM 1 BY 1 UNTIL CNTI > HEIGHT
+               MOVE POS-INDEX(CNTI) TO ROW-IDX
+               MOVE MINE-ROW(CNTI) TO ROW-BODY
+               DISPLAY ROW-DISP
+           END-PERFORM.
+       EXIT-MINE-SCREEN-OUT.
+           EXIT.
+       DISP-CHK-STACK.
+           PERFORM VARYING CNTI FROM 1 BY 1 UNTIL CNTI > CHK-STACK-C
+               DISPLAY "- " CNTI " " CHK-STACK-X(CNTI) " "
+       CHK-STACK-Y(CNTI) " " CELL(CHK-STACK-Y(CNTI), CHK-STACK-X(CNTI))
+           END-PERFORM.
+       EXIT-DISP-CHK-STACK.
+           EXIT.
+
+working-storage section. *> section of code that holds class scope variables
+           01 ws-lastInput decimal value is 0.
+           01 ws-operator string value is "none".
+           01 ws-decimalFlag condition-value value is false.
+           01 ws-firstDigitFlag condition-value value is true. *>condition-values are essentially booleans
+           
+       method-id NEW.
+       procedure division.
+           invoke self::InitializeComponent()
+           goback.
+       end method.
+       method-id btnOne_Click. *>Click event raised from UI
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs. *> procedure division contains parameters and method logic
+           invoke numberPrint("1") *>calls another method
+       end method.
+       method-id btnTwo_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke numberPrint("2")
+       end method.
+       method-id btnThree_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke numberPrint("3")
+       end method.
+       method-id btnFour_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke numberPrint("4")
+       end method.
+       method-id btnFive_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke numberPrint("5")
+       end method.
+       method-id btnSix_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke numberPrint("6")
+       end method.
+       method-id btnSeven_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke numberPrint("7")
+       end method.
+       method-id btnEight_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke numberPrint("8")
+       end method.
+       method-id btnNine_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke numberPrint("9")
+       end method.
+       method-id btnZero_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke numberPrint("0")
+       end method.
+       method-id btnDecimal_Click.
+       local-storage section. *>local method variables must be declared in local-storage section, which always comes before procedure
+           01 ls-post string.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+	       if ws-decimalFlag equals false then
+		       set ws-decimalFlag to true
+               if OutputBox::Text equals "0" or ws-firstDigitFlag equals true then
+			       set OutputBox::Text to "0."
+		       else 
+			       string OutputBox::Text delimited by size *>string verb allows us to concatenate strings
+				       "." delimited by size
+				       into ls-post
+			       end-string
+			       set OutputBox::Text to ls-post
+		       end-if
+               set ws-firstDigitFlag to false
+	       end-if.
+       end method.
+       method-id btnC_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           set ws-lastInput to 0.
+           set ws-operator to "none".
+           set ws-decimalFlag to false.
+           set ws-firstDigitFlag to true.
+           set OutputBox::Text to "0"
+       end method.
+       method-id btnPlus_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke operatorAlt("plus")
+       end method.
+       method-id btnMinus_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke operatorAlt("minus")
+       end method.
+       method-id btnMultiply_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke operatorAlt("multiply")
+       end method.
+       method-id btnDivide_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke operatorAlt("divide")
+       end method.
+       
+       method-id operatorAlt.
+       local-storage section.
+           01 ls-temp pic x(25) value is OutputBox::Text. *>pic aka picture clause allows us to set size in bytes and content type. x refers to alphanumeric
+       procedure division using paramB as string.
+           set ws-decimalFlag to false
+           set ws-firstDigitFlag to true
+           set ws-lastInput = function numval(ls-temp) *>numval is an intristic function that allows us to cast a string into a number
+           set ws-operator to paramB
+       end method.
+       
+       method-id numberPrint.
+       local-storage section.
+           01 ls-post string.
+       procedure division using paramA as string.
+           if ws-firstDigitFlag equals true or OutputBox::Text equals "0" then
+                set OutputBox::Text to paramA
+                set ws-firstDigitFlag to false
+            else
+                string OutputBox::Text delimited by size
+                    paramA delimited by size
+                    into ls-post
+                end-string
+                set OutputBox::Text to ls-post
+            end-if.
+       end method.
+       
+       method-id calculate. 
+       procedure division using paramA as decimal.
+           if ws-operator equals "plus" then
+               set ws-lastInput to ws-lastInput + paramA
+           else if ws-operator equals "minus" then
+               set ws-lastInput to ws-lastInput - paramA
+           else if ws-operator equals "multiply" then
+               set ws-lastInput to ws-lastInput * paramA
+           else if ws-operator equals "divide" and paramA not equals 0 then
+               set ws-lastInput to ws-lastInput / paramA
+           else if ws-operator equals "none" then
+               set ws-lastInput to paramA
+           end-if.
+           set ws-operator to "none"
+       end method.
+       
+       method-id btnPlusMinus_Click.
+       local-storage section.
+           01 ls-temp pic x(25) value is OutputBox::Text.
+           01 ls-number decimal value is 0.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           set ls-number = function numval(ls-temp)
+           set ls-number to ls-number * -1
+           set OutputBox::Text to ls-number
+       end method.
+       method-id btnEqual_Click.
+       procedure division using by value sender as object e as type System.Windows.RoutedEventArgs.
+           invoke Equate
+       end method.
+       
+       method-id Equate.
+       local-storage section.
+           01 ls-temp pic x(25) value is OutputBox::Text.
+           01 ls-number decimal value is 0.
+       procedure division.
+           set ls-number = function numval(ls-temp)
+           invoke calculate(ls-number)
+           set OutputBox::Text to ws-lastInput
+           set ws-firstDigitFlag to true
+       end method.
+       end class.
+
+data division.
+       file section.
+       fd input-file.
+       01  employee-rec.
+           05  salesperson-no                 pic 9(2).
+           05  salesperson-name               pic x(20).
+           05  amt-of-sales                   pic 9(3)v99.
+       fd terminal-out.
+       01  big-line                           pic x(80).
+       01  out-line.
+           05  filler                         pic x(6).
+           05  salesman-no-out                pic x(2).
+           05  filler                         pic x(15).
+           05  salesman-name-out              pic x(20).
+           05  total-sales-out                pic $zzzz.99.
+       working-storage section.
+       01  eof                                 pic 9(1)     value zero.
+       01  counter                             pic 9(2)     value zero.
+       01  sub                                 pic 9(2)     value zero.
+       01  total-company-sales                 pic 9(6)v99  value zero.
+       01  sales-totals.
+           05  total-sales   occurs 20 times   pic 9(4)v99  value zero.
+           05  salesman-name occurs 20 times   pic x(20)    value space.
+       01  hdr-main                            pic x(60)    value space.
+       01  hdr-1.
+           05  sls-no                          pic x(16)    value space.
+           05  filler                          pic x(4)     value space.
+           05  sls-name                        pic x(16)    value space.
+           05  filler                          pic x(6)     value space.
+           05  sls-total                       pic x(16)    value space.
+       01  end-line.
+           05  filler                          pic x(30)    value space.
+           05  end-line-string                 pic x(20)    value space.
+           05  end-line-total-co-sales         pic $zzz,zzz.99.
+          
+      ******************************************************************
+      ******************************************************************
+       procedure division.
+       100-main.
+         perform 111-init
+         perform 150-read-file
+         perform 999-close
+         stop run.
+       150-read-file.
+         perform until eof = 1
+           read input-file
+             at end
+               move 1 to eof
+             not at end
+               perform 250-parse-rec
+           end-read
+         end-perform
+         perform 300-print-report.
+       111-init.
+         open input input-file
+         open output terminal-out
+         move zeros to sales-totals
+         move "           TOTAL SALES FOR EACH SALESPERSON" to big-line
+         move "SALESPERSON NO." to sls-no
+         move "SALESPERSON NAME" to sls-name
+         move "TOTAL SALES" to sls-total
+         move "TOTAL COMPANY SALES" to end-line-string.
+       250-parse-rec.
+         move salesperson-name to salesman-name (salesperson-no)
+         add amt-of-sales to total-sales (salesperson-no)
+         add amt-of-sales to total-company-sales.
+       
+       300-print-report.
+         write big-line
+         move spaces to big-line
+         write big-line
+         write big-line from hdr-1
+         move spaces to big-line
+         write big-line
+         perform varying sub from 1 by 1 until sub > 20
+           if salesman-name (sub) not zeros
+             move sub to salesman-no-out
+             move salesman-name (sub) to salesman-name-out
+             move total-sales (sub) to total-sales-out
+             write out-line
+           end-if
+         end-perform
+         move spaces to big-line
+         write big-line
+         move total-company-sales to end-line-total-co-sales
+         write big-line from end-line.
+       999-close.
+         close input-file
+         close terminal-out.
+
+01 rec. 
+        02 n1 PIC 9(3).
+        02 n2 PIC 9(3).
+        02 result PIC 9(3) value 0.
+        02  aux1   PIC 9(9).
+        02  aux2   PIC 9(9).
+       77 nex PIC X VALUE 'Y'.
+       77 nex2 PIC X .
+       PROCEDURE DIVISION.
+       PERFORM UNTIL nex = 'N' OR 'n'
+           MOVE 0 TO nex2
+           DISPLAY "N1 ->" WITH NO ADVANCING
+           ACCEPT n1
+           DISPLAY "N2 ->" WITH NO ADVANCING
+           ACCEPT n2 
+            
+           PERFORM UNTIL nex2 = 1
+               IF n2 = 0 THEN
+                    MOVE n1 TO result
+                    MOVE 1 TO nex2
+               ELSE
+                    DIVIDE n1 BY n2 GIVING aux2 REMAINDER aux1
+                    MOVE n2 TO n1
+                    MOVE aux1 TO n2
+               END-IF
+           END-PERFORM
+           DISPLAY "Your result is: " WITH NO ADVANCING
+           DISPLAY result
+           DISPLAY "Would you like to continue this shit???(Y/N):-> "
+           ACCEPT nex
+       END-PERFORM.
+       END PROGRAM main-mdc.
+
+    IDENTIFICATION DIVISION.
+       program-id. cgi-add-betyg.
+       *>**************************************************
+       DATA DIVISION.
+       working-storage section.
+       01   switches-add.
+            03  is-db-connected-switch              PIC X   VALUE 'N'.
+                88  is-db-connected                         VALUE 'Y'.
+            03  is-valid-init-switch                PIC X   VALUE 'N'.
+                88  is-valid-init                           VALUE 'Y'.
+            03  grade-is-in-table-switch            PIC X   VALUE 'N'.
+                88  grade-is-in-table                       VALUE 'Y'.
+            03  is-valid-table-position-switch      PIC X   VALUE 'N'.
+                88  is-valid-table-position                 VALUE 'Y'.
+                            
+       *> used in calls to dynamic libraries
+       01  wn-rtn-code             PIC  S99   VALUE ZERO.
+       01  wc-post-name            PIC X(40)  VALUE SPACE.
+       01  wc-post-value           PIC X(40)  VALUE SPACE.
+       
+       *> always - used in error routine
+       01  wc-printscr-string      PIC X(40)  VALUE SPACE. 
+       
+       01  wc-pagetitle            PIC X(20) VALUE 'Addera lokal'.
+       
+       EXEC SQL BEGIN DECLARE SECTION END-EXEC.
+       01  wc-database              PIC  X(30).
+       01  wc-passwd                PIC  X(10).       
+       01  wc-username              PIC  X(30).
+       EXEC SQL END DECLARE SECTION END-EXEC.             
+       
+       *>#######################################################
+       EXEC SQL BEGIN DECLARE SECTION END-EXEC.
+       *>
+       01  tbl-grade-rec-vars.       
+           05  tbl-grade-grade-id        PIC  9(4).
+           05  tbl-grade-grade-grade     PIC  X(40).
+           05  tbl-grade-grade-comment   PIC  X(40).
+           05  tbl-grade-user-id         PIC  9(4).
+           05  tbl-grade-course-id       PIC  9(4).           
+       *>    
+       EXEC SQL END DECLARE SECTION END-EXEC.
+       *> table data
+       01  wr-rec-vars.
+           05  wn-grade-grade-id         PIC  9(4) VALUE ZERO.
+           05  wc-grade-grade-grade      PIC  X(40) VALUE SPACE.
+           05  wc-grade-grade-comment    PIC  X(40) VALUE SPACE.
+           05  wn-grade-user-id          PIC  9(4) VALUE ZERO.
+           05  wn-grade-course-id        PIC  9(4) VALUE ZERO.
+           
+       *>#######################################################
+       EXEC SQL INCLUDE SQLCA END-EXEC.
+       
+       *>**************************************************
+       PROCEDURE DIVISION.
+       *>**************************************************       
+       0000-main.
+       
+           *> contains development environment settings for test
+           COPY setupenv_openjensen. 
+           
+           PERFORM A0100-init
+           
+           IF is-valid-init
+           
+                PERFORM B0100-connect
+                IF is-db-connected
+                
+                    PERFORM B0200-add-grade
+                    PERFORM Z0200-disconnect
+                
+                END-IF
+                
+           END-IF
+                   
+           PERFORM C0100-closedown
+           
+           GOBACK
+           .
+           
+       *>**************************************************          
+       A0100-init.       
+           
+           *> always send out the Content-Type before any other I/O
+           CALL 'wui-print-header' USING wn-rtn-code  
+           *>  start html doc
+           CALL 'wui-start-html' USING wc-pagetitle
+           
+           *> decompose and save current post string
+           CALL 'write-post-string' USING wn-rtn-code
+           
+           IF wn-rtn-code = ZERO
+               PERFORM A0110-init-add-action
+           END-IF
+           
+           . 
+       *>**************************************************         
+       A0110-init-add-action.
+       
+           SET is-valid-init TO TRUE
+           
+           *>  read grade_grade (required)        
+           MOVE ZERO TO wn-rtn-code
+           MOVE SPACE TO wc-post-value
+           MOVE 'grade_grade' TO wc-post-name
+           CALL 'get-post-value' USING wn-rtn-code
+                                       wc-post-name wc-post-value                           
+           MOVE wc-post-value TO wc-grade-grade-grade
+           IF wc-grade-grade-grade = SPACE
+               MOVE 'Saknar betyget för student' TO wc-printscr-string
+               CALL 'stop-printscr' USING wc-printscr-string
+               MOVE 'N' TO is-valid-init-switch
+           END-IF           
+           
+           *>  read grade_comment (required)    
+           MOVE ZERO TO wn-rtn-code
+           MOVE SPACE TO wc-post-value
+           MOVE 'grade_comment' TO wc-post-name
+           CALL 'get-post-value' USING wn-rtn-code
+                                wc-post-name wc-post-value
+              
+           MOVE wc-post-value TO wc-grade-grade-comment
+           IF wc-grade-grade-comment = SPACE
+               MOVE 'Saknar kommentar på betyget' TO wc-printscr-string
+               CALL 'stop-printscr' USING wc-printscr-string
+               MOVE 'N' TO is-valid-init-switch
+           END-IF                   
+           *>  read user_id (required) 
+           MOVE ZERO TO wn-rtn-code
+           MOVE SPACE TO wc-post-value
+           MOVE 'user_id' TO wc-post-name
+            
+           CALL 'get-post-value' USING wn-rtn-code wc-post-name
+                                       wc-post-value
+           
+           IF wc-post-value = SPACE
+               MOVE 'Saknar student id (user_id)' TO wc-printscr-string
+               CALL 'stop-printscr' USING wc-printscr-string
+               MOVE 'N' TO is-valid-init-switch
+           ELSE
+               MOVE FUNCTION NUMVAL(wc-post-value) TO wn-grade-user-id           
+           END-IF                                
+                                       
+            
+           *>  read course_id (required) 
+           MOVE ZERO TO wn-rtn-code
+           MOVE SPACE TO wc-post-value
+           MOVE 'course_id' TO wc-post-name
+            
+           CALL 'get-post-value' USING wn-rtn-code wc-post-name
+                                       wc-post-value
+           
+           IF wc-post-value = SPACE
+              MOVE 'Saknar kurs id' TO wc-printscr-string
+              CALL 'stop-printscr' USING wc-printscr-string
+              MOVE 'N' TO is-valid-init-switch
+           ELSE
+              MOVE FUNCTION NUMVAL(wc-post-value) TO wn-grade-course-id           
+           END-IF  
+           
+           . 
+       
+       *>**************************************************
+       B0100-connect.
+        
+           *>  connect
+           MOVE  "openjensen"    TO   wc-database
+           MOVE  "jensen"        TO   wc-username
+           MOVE  SPACE           TO   wc-passwd
+                
+           EXEC SQL
+               CONNECT :wc-username IDENTIFIED BY :wc-passwd
+                                                 USING :wc-database 
+           END-EXEC
+                
+           IF  SQLSTATE NOT = ZERO
+                PERFORM Z0100-error-routine
+           ELSE
+                SET is-db-connected TO TRUE
+           END-IF  
+           .       
+       
+       *>**************************************************          
+       B0200-add-grade.
+           
+           
+           PERFORM B0210-does-user-course-exist
+               
+           IF NOT grade-is-in-table
+               PERFORM B0220-get-new-row-number
+               
+               IF is-valid-table-position
+                   PERFORM B0230-add-new-grade-to-table
+               END-IF
+           ELSE
+               MOVE 'Denna student har redan ett kursbetyg.'
+                    TO wc-printscr-string
+               CALL 'stop-printscr' USING wc-printscr-string
+           END-IF
+           
+           .
+           
+       *>**************************************************          
+       B0210-does-user-course-exist.
+           
+           *> Cursor for tbl_grade
+                     
+           EXEC SQL
+              DECLARE ADDCHK CURSOR FOR
+                 SELECT user_id, course_id
+                 FROM tbl_grade
+           END-EXEC      
+           *> Open the cursor
+           EXEC SQL
+                OPEN ADDCHK
+           END-EXEC
+                      
+           *> fetch first row
+           EXEC SQL
+               FETCH ADDCHK
+                   INTO :tbl-grade-user-id, :tbl-grade-course-id
+           END-EXEC
+           
+           
+           PERFORM UNTIL SQLCODE NOT = ZERO
+           
+               *> set flag if already in the table
+               IF ( tbl-grade-user-id = wn-grade-user-id
+                    AND tbl-grade-course-id = wn-grade-course-id )
+                  
+                    SET grade-is-in-table TO TRUE
+                        
+               END-IF
+           
+              *> fetch next row  
+              EXEC SQL
+                  FETCH ADDCHK
+                      INTO :tbl-grade-user-id, :tbl-grade-course-id
+              END-EXEC
+              
+           END-PERFORM           
+           
+                      
+           *> check for errors if query returned no rows
+           IF  SQLSTATE NOT = '02000'
+               PERFORM Z0100-error-routine
+           END-IF
+                 
+             
+           *> close cursor
+           EXEC SQL 
+               CLOSE ADDCHK 
+           END-EXEC 
+           
+           .       
+       
+       *>**************************************************          
+       B0220-get-new-row-number.
+       
+           *> Cursor for tbl_grade
+           EXEC SQL
+             DECLARE NEWROW CURSOR FOR
+                 SELECT grade_id
+                 FROM tbl_grade
+                 ORDER BY grade_id DESC
+           END-EXEC   
+       
+           *> Open the cursor
+           EXEC SQL
+                OPEN NEWROW
+           END-EXEC
+       
+           *> fetch first row (which now have the highest id)
+           EXEC SQL
+               FETCH NEWROW
+                   INTO :tbl-grade-grade-id
+           END-EXEC       
+        
+           IF  SQLCODE NOT = ZERO
+                PERFORM Z0100-error-routine
+           ELSE
+               SET is-valid-table-position TO TRUE
+               
+               *> next number for new row in table
+               COMPUTE tbl-grade-grade-id = tbl-grade-grade-id + 1
+               
+           END-IF
+           *> close cursor
+           EXEC SQL 
+               CLOSE NEWROW 
+           END-EXEC            
+           
+           .
+           
+       *>**************************************************          
+       B0230-add-new-grade-to-table.
+                  
+           MOVE wc-grade-grade-grade TO tbl-grade-grade-grade
+           MOVE wc-grade-grade-comment TO tbl-grade-grade-comment
+           MOVE wn-grade-user-id TO tbl-grade-user-id
+           MOVE wn-grade-course-id TO tbl-grade-course-id
+                     
+           EXEC SQL
+               INSERT INTO tbl_grade
+               VALUES ( :tbl-grade-grade-id,
+                        :tbl-grade-grade-grade,
+                        :tbl-grade-grade-comment,
+                        :tbl-grade-user-id,
+                        :tbl-grade-course-id )
+           END-EXEC 
+            
+           IF  SQLCODE NOT = ZERO
+                PERFORM Z0100-error-routine
+           ELSE
+                PERFORM B0240-commit-work
+                MOVE 'Nytt betyg adderat' TO wc-printscr-string
+                CALL 'ok-printscr' USING wc-printscr-string
+           END-IF     
+           .
+       *>**************************************************       
+       B0240-commit-work.
+           *>  commit work permanently
+           EXEC SQL 
+               COMMIT WORK
+           END-EXEC
+           .           
+         
+       *>**************************************************
+       C0100-closedown.
+           CALL 'wui-end-html' USING wn-rtn-code 
+           
+           .
+       *>**************************************************
+       Z0100-error-routine.
+                  
+           *> requires the ending dot (and no extension)!
+           COPY z0100-error-routine.
+           
+           .
+           
+       *>**************************************************
+       Z0200-disconnect. 
+                                 
+       *>  disconnect
+           EXEC SQL
+               DISCONNECT ALL
+           END-EXEC
+           
+           .
+       *>**************************************************    
+       *> END PROGRAM  
+
+IDENTIFICATION DIVISION.
+       program-id. cgi-remove-local.
+       *>**************************************************
+       DATA DIVISION.
+       working-storage section.
+       *> switches
+       01   switches.
+            03  is-valid-post-switch        PIC X   VALUE 'N'.
+                88  is-valid-post                   VALUE 'Y'.
+            03  is-valid-transaction-switch PIC X   VALUE 'N'.
+                88  is-valid-transaction            VALUE 'Y'.
+            03  is-db-connected-switch      PIC X   VALUE 'N'.
+                88  is-db-connected                 VALUE 'Y'.
+            03  is-valid-init-switch        PIC X   VALUE 'N'.
+                88  is-valid-init                   VALUE 'Y'.
+            03  is-lokal-id-found-switch    PIC X   VALUE 'N'.
+                88  is-lokal-id-found               VALUE 'Y'.                              
+       
+       *> used in calls to dynamic libraries
+       01  wn-rtn-code             PIC  S99   VALUE ZERO.
+       01  wc-post-name            PIC X(40)  VALUE SPACE.
+       01  wc-post-value           PIC X(40)  VALUE SPACE.
+       
+       *> always - used in error routine
+       01  wc-printscr-string      PIC X(40)  VALUE SPACE.          
+       
+       01  wc-pagetitle            PIC X(20)  VALUE 'Tag bort lokal'.
+       
+       EXEC SQL BEGIN DECLARE SECTION END-EXEC.
+       01  wc-database              PIC  X(30).
+       01  wc-passwd                PIC  X(10).       
+       01  wc-username              PIC  X(30).
+       EXEC SQL END DECLARE SECTION END-EXEC.           
+       
+       *>#######################################################
+       EXEC SQL BEGIN DECLARE SECTION END-EXEC.
+       *>
+       01  jlocal-rec-vars.       
+           05  jlokal-lokal-id      PIC  9(4).
+           05  jlokal-lokalnamn     PIC  X(40).
+           05  jlokal-vaningsplan   PIC  X(40).
+           05  jlokal-maxdeltagare  PIC  X(40).
+       *>    
+       EXEC SQL END DECLARE SECTION END-EXEC.
+       *> table data
+       01  wr-rec-vars.
+           05  wn-lokal-id         PIC  9(4) VALUE ZERO.
+           05  wc-lokalnamn        PIC  X(40) VALUE SPACE.
+           05  wc-vaningsplan      PIC  X(40) VALUE SPACE.
+           05  wc-maxdeltagare     PIC  X(40) VALUE SPACE.     
+       *>#######################################################
+       EXEC SQL INCLUDE SQLCA END-EXEC.
+       
+       *>**************************************************
+       PROCEDURE DIVISION.
+       *>**************************************************       
+       0000-main.
+       
+           *> contains development environment settings for test
+           COPY setupenv_openjensen. 
+           
+           PERFORM A0100-init
+           
+           IF is-valid-post AND is-valid-init
+           
+                PERFORM B0100-connect
+                IF is-db-connected
+                    PERFORM B0200-cgi-delete-row
+                END-IF
+                
+           END-IF
+           
+           PERFORM C0100-closedown
+           
+           GOBACK
+           .
+           
+       *>**************************************************          
+       A0100-init.       
+           
+           *> always send out the Content-Type before any other I/O
+           CALL 'wui-print-header' USING wn-rtn-code  
+           *>  start html doc
+           CALL 'wui-start-html' USING wc-pagetitle
+           
+           *> decompose and save current post string
+           CALL 'write-post-string' USING wn-rtn-code
+           
+           IF wn-rtn-code = ZERO
+           
+               SET is-valid-init TO TRUE
+               
+               *> CGI post: remove row by local-id
+               MOVE ZERO TO wn-rtn-code
+               MOVE SPACE TO wc-post-value
+               MOVE 'local-id' TO wc-post-name               
+               CALL 'get-post-value' USING wn-rtn-code
+                                           wc-post-name wc-post-value
+               *> convert to number (SPACE --> 0)
+               MOVE FUNCTION NUMVAL(wc-post-value) TO wn-lokal-id                                                               
+               
+           END-IF                                            
+      
+           IF wn-lokal-id = 0
+                MOVE 'Saknar lokalens identifikation'
+                    TO wc-printscr-string
+                CALL 'stop-printscr' USING wc-printscr-string
+           ELSE
+                SET is-valid-post TO TRUE
+           END-IF           
+                                     
+           .
+           
+       *>**************************************************
+       B0100-connect.
+        
+           *>  connect
+           MOVE  "openjensen"    TO   wc-database.
+           MOVE  "jensen"        TO   wc-username.
+           MOVE  SPACE           TO   wc-passwd.
+                
+           EXEC SQL
+               CONNECT :wc-username IDENTIFIED BY :wc-passwd
+                                                 USING :wc-database 
+           END-EXEC
+                
+           IF  SQLCODE NOT = ZERO
+                PERFORM Z0100-error-routine
+           ELSE
+                SET is-db-connected TO TRUE
+           END-IF  
+           .
+                               
+       *>**************************************************          
+       B0200-cgi-delete-row.      
+           
+           *> delete based on Lokal_id
+           IF wn-lokal-id NOT = 0  
+           
+                *> the selected row to be removed
+                MOVE wn-lokal-id TO jlokal-lokal-id
+                
+                PERFORM B0210-is-lokal-id-data-found
+                
+                *> delete row from table
+                IF is-lokal-id-found
+                     EXEC SQL 
+                         DELETE FROM T_JLOKAL
+                                  WHERE Lokal_id = :jlokal-lokal-id
+                     END-EXEC
+                END-IF
+                
+                IF  SQLCODE = ZERO
+                    MOVE 'Lokal bortagen'
+                    TO wc-printscr-string
+                    CALL 'ok-printscr' USING wc-printscr-string        
+                ELSE
+                    PERFORM Z0100-error-routine
+                END-IF
+                
+           END-IF
+           
+           PERFORM B0300-commit-work
+           
+           PERFORM B0310-disconnect
+           
+           .
+           
+       *>**************************************************
+       B0210-is-lokal-id-data-found.
+           *> Cursor for T_JLOKAL
+           EXEC SQL
+             DECLARE curs1 CURSOR FOR
+                 SELECT Lokal_id
+                 FROM T_JLOKAL
+                     WHERE Lokal_id = :jlokal-lokal-id
+           END-EXEC.      
+           *> Open the cursor
+           EXEC SQL
+                OPEN curs1
+           END-EXEC
+                      
+           *> try a fetch
+           EXEC SQL
+               FETCH curs1
+                   INTO :wn-lokal-id
+           END-EXEC
+           
+           IF SQLCODE = ZERO
+               SET is-lokal-id-found TO TRUE
+           END-IF
+              
+           . 
+       
+       *>**************************************************       
+       B0300-commit-work.
+           *>  commit work permanently
+           EXEC SQL 
+               COMMIT WORK
+           END-EXEC
+           .           
+           
+       *>**************************************************
+       B0310-disconnect.
+           *>  disconnect
+           EXEC SQL
+               DISCONNECT ALL
+           END-EXEC
+           .
+       *>**************************************************
+       C0100-closedown.
+           CALL 'wui-end-html' USING wn-rtn-code
+           
+           .
+       *>**************************************************
+       Z0100-error-routine.
+           
+           *> requires the ending dot (and no extension)!
+           COPY z0100-error-routine.
+       
+           .
+                  
+       *>**************************************************    
+       *> END PROGRAM  
+
+	          identification division.
+       program-id. geekcode.
+      ******************************************************************
+      *                                                                *
+      *Author. Randy LeJeune.                                          *
+      *Date-written.  29  Sep 2010. (v. 0.1)                           *
+      *Edited:		  22 April 2013   - Minor Typos fixed.             *
+      *                               - Code converted to lowercase    *
+      *                                 (v. 0.2)                       *
+      *               18 October 2013 - Spelling Errors & Typos        *
+      *                                 corrected. (v. 0.3)            *
+      *                                                                *
+      ******************************************************************
+      ******************************************************************
+      *   This program is free software; you can redistribute it       *
+      *   and/or modify it under the terms of the GNU General Public   *
+      *   License as published by the Free Software Foundation; either *
+      *   version 2 of the License, or at your option) any later       *
+      *   version.                                                     *
+      *                                                                *
+      *   This program is distributed in the hope that it will be      *
+      *   useful, but WITHOUT ANY WARRANTY; without even the implied   *
+      *   warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR      *
+      *   PURPOSE.  See the GNU General Public License for more        *
+      *   details.                                                     *
+      *                                                                *
+      *   You should have received a copy of the GNU General Public    *
+      *   License along with this program; if not, write to the Free   *
+      *   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139,*
+      *                                                                *
+      *   Interface Design taken from Chris Gushue's geekcode generator*
+      *                                                                *
+      ******************************************************************
+      ******************************************************************
+
+       environment division.
+
+       configuration section.
+
+           source-computer. ibm-686.
+           object-computer. ibm-686.
+
+       input-output section.
+
+       file-control.
+           select geek-sig             assign to "geekcode.sig"
+                                       organization is line sequential.
+       data division.
+
+       file section.
+
+       fd  geek-sig. 
+       01  geek-output-rec             pic x(80).
+
+       working-storage section.
+
+       copy "geekcode.cpy".
+
+       77  ws-print-line1              pic x(80)     value spaces.
+       77  ws-print-line2              pic x(80)     value spaces.
+       77  ws-print-line3              pic x(80)     value spaces.
+       77  ws-print-line4              pic x(80)     value spaces.
+
+       77  ws-command                  pic a(20)     value spaces.
+       77  ws-cl-args                  pic x(10)     value spaces.
+       77  ws-page-cnt                 pic 99        value zeroes.
+       77  ws-cnt                      pic xx        value spaces.
+       77  ws-tot-page                 pic 99        value 45.
+       77  ws-rec-cnt                  pic 9         value zeroes.
+       77  ws-return-sys-code          pic 9(8) comp value zeroes.
+       77  ws-entry                    pic xx        value zeroes.
+
+       01 ws-valid-flag                pic x         value "n".
+          88  ws-valid-data                          value "y".
+          88  ws-invalid-data                        value "n".
+
+       01 ws-valid-pens                pic x         value "n".
+          88  ws-how-many                            value "y".
+
+       procedure division.
+
+       00000-control.
+           perform 10000-setup
+           perform 20000-process
+           perform 30000-cleanup.
+
+       10000-setup.
+           accept ws-cl-args from command-line end-accept
+           perform 93000-parse-cmdln
+           open output geek-sig
+           initialize  geek-output-rec.
+
+       20000-process.
+           perform 90000-clear-screen
+           perform 91000-print-heading
+           perform 21000-create.
+
+       21000-create.
+           perform 22100-type      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22200-dress     until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22300-hair      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22400-height    until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22450-weight    until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22500-glasses   until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22600-pens      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22670-slides    until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22700-auto      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22800-age       until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 22900-weird     until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23000-verbage   until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23100-comp      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23200-flavor    until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23250-unix      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23300-perl      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23400-linux     until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23500-386bsd    until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23600-news      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23700-web       until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23800-emacs     until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 23900-kibo      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 24000-ms        until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 24100-mac       until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 24200-vms       until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 24400-pol       until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 24500-cp        until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 24700-trek      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 24800-bab       until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25000-jeop      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25100-role      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25200-magic     until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25300-tv        until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25400-books     until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25500-doom      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25600-barney    until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25700-educ      until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25800-music     until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 25900-house     until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 26000-friends   until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 26100-rel       until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 26200-nut       until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 26300-gender    until ws-valid-data
+           set ws-valid-flag to "n"
+           perform 26350-sex       until ws-valid-data
+           perform 26500-print.
+
+       22100-type.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Geek Type
+      -       "             Page: " ws-cnt " of " ws-tot-page
+                  end-display
+           display "====================================================
+      -"==========================="
+               end-display
+           display " 1 GB  - Geek of Business                15 GL  -
+      -"Geek of Literature"
+               end-display
+           display " 2 GC  - Geek of Classics                16 GMC -
+      -"Geek of Mass Communications"
+               end-display
+           display " 3 GCA - Geek of Commercial Arts         17 GM  -
+      -"Geek of Math"
+               end-display
+           display " 4 GCM - Geek of Computer Management     18 GMD -
+      -"Geek of Medicine"
+               end-display
+           display " 5 GCS - Geek of Computer Science        19 GMU -
+      -"Geek of Music"
+               end-display
+           display " 6 GCC - Geek of Communications          20 GPA -
+      -"Geek of Performing Arts"
+               end-display
+           display " 7 GE  - Geek of Engineering             21 GP  -
+      -"Geek of Philosophy"
+               end-display
+           display " 8 GED - Geek of Education               22 GS  -
+      -"Geek of Science"
+               end-display
+           display " 9 GFA - Geek of Fine Arts               23 GSS -
+      -"Geek of Social Science"
+               end-display
+           display "10 GG  - Geek of Government              24 GTW -
+      -"Geek of Technicial Writing"
+               end-display
+           display "11 GH  - Geek of Humanities              25 GO  -
+      -"Geek of Other"
+               end-display
+           display "12 GIT - Geek of Information Technology  26 GU  -
+      -"Geek of Undecided"
+               end-display
+           display "13 GJ  - Geek of Jurisprudence (Law)     27 G!  -
+      -"Geek of No Qualifications"
+               end-display
+           display "14 GLS - Geek of Library Science         28 GAT -
+      -"Geek of All Trades"
+               end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Geek Type code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 28
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "GL" to ws-type
+                   else if ws-entry = 02 then
+                       move "GC" to ws-type
+                   else if ws-entry = 03 then
+                       move "GCA" to ws-type
+                   else if ws-entry = 04 then
+                       move "GCM" to ws-type
+                   else if ws-entry = 05 then
+                       move "GCS" to ws-type
+                   else if ws-entry = 06 then
+                       move "GCC" to ws-type
+                   else if ws-entry = 07 then
+                       move "GE" to ws-type
+                   else if ws-entry = 08 then
+                       move "GED" to ws-type
+                   else if ws-entry = 09 then
+                       move "GFA" to ws-type
+                   else if ws-entry = 10 then
+                       move "GG" to ws-type
+                   else if ws-entry = 11 then
+                       move "GH" to ws-type
+                   else if ws-entry = 12 then
+                       move "GIT" to ws-type
+                   else if ws-entry = 13 then
+                       move "GJ" to ws-type
+                   else if ws-entry = 14 then
+                       move "GLS" to ws-type
+                   else if ws-entry = 15 then
+                       move "GL" to ws-type
+                   else if ws-entry = 16 then
+                       move "GMC" to ws-type
+                   else if ws-entry = 17 then
+                       move "GM" to ws-type
+                   else if ws-entry = 18 then
+                       move "GMD" to ws-type
+                   else if ws-entry = 19 then
+                       move "GMU" to ws-type
+                   else if ws-entry = 20 then
+                       move "GPA" to ws-type
+                   else if ws-entry = 21 then
+                       move "GP" to ws-type
+                   else if ws-entry = 22 then
+                       move "GS" to ws-type
+                   else if ws-entry = 23 then
+                       move "GSS" to ws-type
+                   else if ws-entry = 24 then
+                       move "GTW" to ws-type
+                   else if ws-entry = 25 then
+                       move "GO" to ws-type
+                   else if ws-entry = 26 then
+                       move "GU" to ws-type
+                   else if ws-entry = 27 then
+                       move "G!" to ws-type
+                   else if ws-entry = 28 then
+                       move "GAT" to ws-type
+                   end-if 
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22200-dress.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Dress                                               
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1  d++  I tend to wear conservative dress such as "
+              "a business suit or "
+           end-display
+           display "         worse, a tie." end-display
+           display " 2  d+   Good leisure-wear. Slacks, button-shirt, "
+               "etc. No jeans, tennis "
+           end-display
+           display "         shoes, or t-shirts." end-display
+           display " 3  d    I dress a lot like those found in catalog "
+               "ads. Bland, boring, "
+           end-display
+           display "         without life or meaning." end-display
+           display " 4  d-   I'm usually in jeans and a t-shirt."
+           end-display
+           display " 5  d--  My t-shirts go a step further and have a "
+               "trendy political "
+           end-display
+           display "         message on them." end-display
+           display " 6  d--- Punk dresser, including, but not limited "
+               "to, torn jeans and "
+           end-display
+           display "         shirts, body piercings, and prominent "
+               "tattoos."
+           end-display
+           display " 7  dx   Cross dresser." end-display
+           display " 8  d?   I have no idea what I am wearing now, "
+               "let alone what I wore yesterday."
+           end-display
+           display " 9  !d   No clothing. Quite a fashion statement, "
+               "don't you think?"
+           end-display
+           display "10  dpu  I wear the same clothes all the time, no "
+               "matter the occasion, "
+           end-display
+           display "         forgetting to do laundry between wearings."
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Dress code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 10
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "d++" to ws-dress
+                   else if ws-entry = 02 then
+                       move "d+" to ws-dress
+                   else if ws-entry = 03 then
+                       move "d" to ws-dress
+                   else if ws-entry = 04 then
+                       move "d-" to ws-dress
+                   else if ws-entry = 05 then
+                       move "d--" to ws-dress
+                   else if ws-entry = 06 then
+                       move "d---" to ws-dress
+                   else if ws-entry = 07 then
+                       move "dx" to ws-dress
+                   else if ws-entry = 08 then
+                       move "d?" to ws-dress
+                   else if ws-entry = 09 then
+                       move "!d" to ws-dress
+                   else if ws-entry = 10 then
+                       move "dpu" to ws-dress
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22300-hair.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Hair                                                
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 H+++   My hair goes down past my waist."
+           end-display
+           display " 2 H++    My hair dangles to my mid-back."
+           end-display
+           display " 3 H+     It's down to about my shoulders."
+           end-display
+           display " 4 H      It's just pretty normal hair."
+           end-display
+           display " 5 H-     It's cut above the neck."
+           end-display
+           display " 6 H--    Above the neck AND ear (flattop)."
+           end-display
+           display " 7 H---   It's about 1/8 inch long."
+           end-display
+           display " 8 H----  I shave my head daily, otherwise it gets "
+               "too long."
+           end-display
+           display " 9 !H     I'm bald."
+           end-display
+           display "10 H?     I have wigs that allow me to vary my "
+               "hair."
+           end-display
+           display "11 H*     My hair is dyed funky flavors."
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Hair code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 11
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "H+++" to ws-hair
+                   else if ws-entry = 02 then
+                       move "H++" to ws-hair
+                   else if ws-entry = 03 then
+                       move "H+" to ws-hair
+                   else if ws-entry = 04 then
+                       move "H" to ws-hair
+                   else if ws-entry = 05 then
+                       move "H-" to ws-hair
+                   else if ws-entry = 06 then
+                       move "H--" to ws-hair
+                   else if ws-entry = 07 then
+                       move "H---" to ws-hair
+                   else if ws-entry = 08 then
+                       move "H----" to ws-hair
+                   else if ws-entry = 09 then
+                       move "!H" to ws-hair
+                   else if ws-entry = 10 then
+                       move "H?" to ws-hair
+                   else if ws-entry = 11 then
+                       move "H*" to ws-hair
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22400-height.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Height                                              
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 s+++   I usually have to duck through doors. "
+           end-display
+           display " 2 s++    I'm a basketball candidate. "
+           end-display
+           display " 3 s+     I'm a little taller than most. "
+           end-display
+           display " 4 s      I'm an average geek. "
+           end-display
+           display " 5 s-     I look up to most people. "
+           end-display
+           display " 6 s--    I look up to damn near everybody. "
+           end-display
+           display " 7 s---   I take a phone book with me when I go "
+           end-display
+           display "          out so I can eat dinner. "
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Height code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 07
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "s+++" to ws-height
+                   else if ws-entry = 02 then
+                       move "s++" to ws-height
+                   else if ws-entry = 03 then
+                       move "s+" to ws-height
+                   else if ws-entry = 04 then
+                       move "s" to ws-height
+                   else if ws-entry = 05 then
+                       move "s-" to ws-height
+                   else if ws-entry = 06 then
+                       move "s--" to ws-height
+                   else if ws-entry = 07 then
+                       move "s---" to ws-height
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22450-weight.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Weight                                              
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 s+++   I take up three movie seats. "
+           end-display
+           display " 2 s++    I'm a linebacker candidate. "
+           end-display
+           display " 3 s+     I'm a little rounder than most."
+           end-display
+           display " 4 s      I'm an average geek."
+           end-display
+           display " 5 s-     Everybody tells me to gain a few pounds."
+           end-display
+           display " 6 s--    I tend to have to fight against a strong "
+               "breeze."
+           end-display
+           display " 7 s---   My bones are poking through my skin. "
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Weight code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 07
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "+++" to ws-weight
+                   else if ws-entry = 02 then
+                       move "++" to ws-weight
+                   else if ws-entry = 03 then
+                       move "+" to ws-weight
+                   else if ws-entry = 04 then
+                       move " " to ws-weight
+                   else if ws-entry = 05 then
+                       move "-" to ws-weight
+                   else if ws-entry = 06 then
+                       move "--" to ws-weight
+                   else if ws-entry = 07 then
+                       move "---" to ws-weight
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22500-glasses.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Glasses                                             
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 g+++   I have coke-bottle glasses that I can "
+               "use to start leaves on "
+           end-display
+           display "          fire in the hot sun."
+           end-display
+           display " 2 g++    I've got four eyes and tape in the "
+               "middle.  "
+           end-display
+           display " 3 g+     I've got four eyes, what's your point?"
+           end-display
+           display " 4 g-     I have contacts."
+           end-display
+           display " 5 g--    I have colored contacts I have contacts."
+           end-display
+           display " 6 g---   I have those funky contact that have "
+              "interesting designs on"
+           end-display
+           display "          then such as happy faces or some such. "
+           end-display
+           display " 7 !g     I have no glasses."
+           end-display
+           display " 8 g?     I can't find my glasses."
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Glasses code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 08
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "g+++" to ws-glasses
+                   else if ws-entry = 02 then
+                       move "g++" to ws-glasses
+                   else if ws-entry = 03 then
+                       move "g+" to ws-glasses
+                   else if ws-entry = 04 then
+                       move "g-" to ws-glasses
+                   else if ws-entry = 05 then
+                       move "g--" to ws-glasses
+                   else if ws-entry = 06 then
+                       move "g---" to ws-glasses
+                   else if ws-entry = 07 then
+                       move "!g" to ws-glasses
+                   else if ws-entry = 08 then
+                       move "g?" to ws-glasses
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22600-pens.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Pens                                          
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display "Do you have any pens in your pockets? "
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display " 1 Yes." end-display
+           display " 2 No." end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Pens code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 02
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "p" to ws-pens (1:1)
+                       perform 90000-clear-screen
+                       perform 22650-how-many until ws-how-many
+                   else if ws-entry = 02 then
+                       perform 90000-clear-screen
+                       perform 22660-nopens
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22650-how-many.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Pens                                          
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display "How many pens do you have in your pockets? "
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display " 1 One." end-display
+           display " 2 Two." end-display
+           display " 3 Three." end-display
+           display " 4 Four." end-display
+           display " 5 Five." end-display
+           display " 6 Six." end-display
+           display " 7 Seven." end-display
+           display " 8 Eight." end-display
+           display " 9 Nine." end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Pens Number code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 09
+                   set ws-valid-pens to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move 1 to ws-pens (2:1)
+                   else if ws-entry = 02 then
+                       move 2 to ws-pens (2:1)
+                   else if ws-entry = 03 then
+                       move 3 to ws-pens (2:1)
+                   else if ws-entry = 04 then
+                       move 4 to ws-pens (2:1)
+                   else if ws-entry = 05 then
+                       move 5 to ws-pens (2:1)
+                   else if ws-entry = 06 then
+                       move 6 to ws-pens (2:1)
+                   else if ws-entry = 07 then
+                       move 7 to ws-pens (2:1)
+                   else if ws-entry = 08 then
+                       move 8 to ws-pens (2:1)
+                   else if ws-entry = 09 then
+                       move 9 to ws-pens (2:1)
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22660-nopens.
+           exit.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Pens                                          
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 p?     I can't find a writing instrument."
+           end-display
+           display " 2 !p     Pens are obsolete. I have a Newton."
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your No Pens code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 02
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "?" to ws-pens (2:1)
+                   else if ws-entry = 02 then
+                       move "!p" to ws-pens
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22670-slides.
+           add 1 to ws-page-cnt
+           move ws-page-cnt (2:1) to ws-cnt
+
+           display "Slide Rules, Etc.                                   
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display "Do you carry a slide rule, calculator or portable co
+      -        "mputer along with you?"
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display " 1 Yes." end-display
+           display " 2 No." end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Extra Stuff code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 02
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "+" to ws-pens (3:1)
+                   else if ws-entry = 02 then
+                       continue
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22700-auto.
+           add 1 to ws-page-cnt
+           move ws-page-cnt to ws-cnt
+
+           display "Automobile                                          
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 au++++ I have my chauffeured limo take me "
+               "everywhere."
+           end-display
+           display " 2 au+++  I own four different colored Mercedes."
+           end-display
+           display " 3 au++   I drive a brand new car that cost more "
+               "than most houses"
+           end-display
+           display " 4 au+    I have a sporty-looking car which would "
+               "be a babe-mobile if"
+           end-display
+           display "          I wasn't such a geek."
+           end-display
+           display " 5 au     I drive a car which I bought from my "
+               " parents. It has four doors even "
+           end-display
+           display "          though I'm the only one who ever rides in 
+      -        "it. "
+           end-display
+           display " 6 au-    I drive my parents' car. Hey, if I could "
+               "afford my own I wouldn't "
+           end-display
+           display "          be living at home with them. "
+           end-display
+           display " 7 au--   My car has rust everywhere and the "
+              "muffler drags along the ground.  "
+           end-display
+           display " 8 au---  I drive a '77 Pinto which went over "
+               "100,000 miles two years ago.  "
+           end-display
+           display " 9 au---- I have a Yugo."
+           end-display
+           display "10 !au    I don't have a car."
+           end-display
+           display "11 au*    I have a motorcycle."
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Automobile code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 11
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "au++++" to ws-auto
+                   else if ws-entry = 02 then
+                       move "au+++" to ws-auto
+                   else if ws-entry = 03 then
+                       move "au++" to ws-auto
+                   else if ws-entry = 04 then
+                       move "au+" to ws-auto
+                   else if ws-entry = 05 then
+                       move "au" to ws-auto
+                   else if ws-entry = 06 then
+                       move "au-" to ws-auto
+                   else if ws-entry = 07 then
+                       move "au--" to ws-auto
+                   else if ws-entry = 08 then
+                       move "au---" to ws-auto
+                   else if ws-entry = 09 then
+                       move "au----" to ws-auto
+                   else if ws-entry = 10 then
+                       move "!au" to ws-auto
+                   else if ws-entry = 11 then
+                       move "au*" to ws-auto
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22800-age.
+           add 1 to ws-page-cnt
+           move ws-page-cnt to ws-cnt
+
+           display "Age                                                 
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 a+++   60 and up." end-display
+           display " 2 a++    50-59." end-display
+           display " 3 a+     40-49." end-display
+           display " 4 a      30-39." end-display
+           display " 5 a-     20-29." end-display
+           display " 6 a--    10-19." end-display
+           display " 7 a---   9 and under." end-display
+           display " 8 a?     Ageless." end-display
+           display " 9 !a     It's none of your business how old I am."
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Age code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 09
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                               move "a+++" to ws-age
+                   else if ws-entry = 02 then
+                       move "a++" to ws-age
+                   else if ws-entry = 03 then
+                       move "a+" to ws-age
+                   else if ws-entry = 04 then
+                       move "a" to ws-age
+                   else if ws-entry = 05 then
+                       move "a-" to ws-age
+                   else if ws-entry = 06 then
+                       move "a--" to ws-age
+                   else if ws-entry = 07 then
+                       move "a---" to ws-age
+                   else if ws-entry = 08 then
+                       move "a?" to ws-age
+                   else if ws-entry = 09 then
+                       move "!a" to ws-age
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       22900-weird.
+           add 1 to ws-page-cnt
+           move ws-page-cnt to ws-cnt
+
+           display "Weirdness                                           
+      -       "             Page: " ws-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 w+++  Mainstream? I heard of that once, I think."
+           end-display
+           display " 2 w++   I am so weird, I make Al Yankovic look sane
+      -        ".  "
+           end-display
+           display " 3 w+    So? What's your problem with weird."
+           end-display
+           display " 4 w     I am not weird. I'm perfectly normal."
+           end-display
+           display " 5 w-    I'm more normal that most people normally a
+      -        "re."
+           end-display
+           display " 6 w--   I am so incredibly boring . . .  "
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Weirdness code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 06
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "w+++" to ws-weird
+                   else if ws-entry = 02 then
+                       move "w++" to ws-weird
+                   else if ws-entry = 03 then
+                       move "w+" to ws-weird
+                   else if ws-entry = 04 then
+                       move "w" to ws-weird
+                   else if ws-entry = 05 then
+                       move "w-" to ws-weird
+                   else if ws-entry = 06 then
+                       move "w--" to ws-weird
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23000-verbage.
+           add 1 to ws-page-cnt
+
+           display "Verbage                                             
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 v---   I don't talk. I just type. "
+           end-display
+           display " 2 v--    When I talk, people usually look mildly em
+      -        "barrassed. "
+           end-display
+           display " 3 v-     I use words like 'grok' in everyday conver
+      -        "sation."
+           end-display
+           display " 4 v      At least I speak in complete sentences. Us
+      -        "ually. "
+           end-display
+           display " 5 v+     People compliment me on my vocabulary. "
+           end-display
+           display " 6 v++    People compliment me on my eloquence. "
+           end-display
+           display " 7 v+++   I was the regional forensics champ. "
+           end-display
+           display " 8 !v     Speech is irrelevant, I use telepathy. "
+           end-display
+           display " 9 v?     I mumble.  " end-display
+           display "10 v*     I babble.  " end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Verbage code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 10
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "v---" to ws-verbage
+                   else if ws-entry = 02 then
+                       move "v--" to ws-verbage
+                   else if ws-entry = 03 then
+                       move "v-" to ws-verbage
+                   else if ws-entry = 04 then
+                       move "v" to ws-verbage
+                   else if ws-entry = 05 then
+                       move "v+" to ws-verbage
+                   else if ws-entry = 06 then
+                       move "v++" to ws-verbage
+                   else if ws-entry = 07 then
+                       move "v+++" to ws-verbage
+                   else if ws-entry = 08 then
+                       move "!v" to ws-verbage
+                   else if ws-entry = 09 then
+                       move "v?" to ws-verbage
+                   else if ws-entry = 10 then
+                       move "v*" to ws-verbage
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23100-comp.
+           add 1 to ws-page-cnt
+
+           display "Computers                                           
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 C++++  I'll be first in line to get the new cyber
+      -       "netic interface installed "
+           end-display
+           display "          into my skull. " end-display
+           display " 2 C+++   You mean there is life outside of Internet
+      -        "? You're shittin' me! I "
+           end-display
+           display "          live for muds. I haven't dragged myself to
+      -        " class in weeks. "
+           end-display
+           display " 3 C++    Computers are a large part of my existenc
+      -        "ence. When I get up in the "
+           end-display
+           display "          morning, the first thing I do is log myse
+      -        "lf in. I mud on weekends, "
+           end-display
+           display "          but still manage to stay off of academic p
+      -        "robation."
+           end-display
+           display " 4 C+     Computers are fun and I enjoy using them.
+      -        "I play a mean game of DOOM! "
+           end-display
+           display "          and can use a word processor without resor
+      -        "ting to the manual too. "
+           end-display
+           display "          often. I know that a 3.5 inch disk is not
+      -        " a hard disk. I also "
+           end-display
+           display "          know that when it says 'press any key' to 
+      -        "continue, I don't have to "
+           end-display
+           display "          look for a key labeled 'ANY'.  "
+           end-display
+           display " 5 C      Computers are a tool, nothing more. I use 
+      -        "it when it serves my "
+           end-display
+           display "          purpose." end-display
+           display " 6 C-     Anything more complicated than my calculat
+      -        "or and I'm screwed. "
+           end-display
+           display " 7 C--    Where's the on switch? " end-display
+           display " 8 C---   If you even mention computers, I will rip
+      -         "your head off!  "
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Computer code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 08
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "C++++" to ws-comp
+                   else if ws-entry = 02 then
+                       move "C+++" to ws-comp
+                   else if ws-entry = 03 then
+                       move "C++" to ws-comp
+                   else if ws-entry = 04 then
+                       move "C+" to ws-comp
+                   else if ws-entry = 05 then
+                       move "C" to ws-comp
+                   else if ws-entry = 06 then
+                       move "C-" to ws-comp
+                   else if ws-entry = 07 then
+                       move "C--" to ws-comp
+                   else if ws-entry = 08 then
+                       move "C---" to ws-comp
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23200-flavor.
+           add 1 to ws-page-cnt
+
+           display "UNIX Flavor                                         
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 B  BSD (use this unless your BSDish system is men
+      -        "tioned below)." end-display
+           display " 2 L  Linux" end-display
+           display " 3 U  Ultrix" end-display
+           display " 4 A  AIX" end-display
+           display " 5 V  SysV" end-display
+           display " 6 H  HP-UX" end-display
+           display " 7 I  IRIX" end-display
+           display " 8 O  OSF/1" end-display
+           display " 9 S  SunOS / Solaris" end-display
+           display "10 C  SCO UNIX" end-display
+           display "11 N  NeXT" end-display
+           display "12 ?  Some other one not listed." end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your UNIX Flavor code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 12
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "UB" to ws-unix-flavor
+                   else if ws-entry = 02 then
+                       move "UL" to ws-unix-flavor
+                   else if ws-entry = 03 then
+                       move "UU" to ws-unix-flavor
+                   else if ws-entry = 04 then
+                       move "UA" to ws-unix-flavor
+                   else if ws-entry = 05 then
+                       move "UV" to ws-unix-flavor
+                   else if ws-entry = 06 then
+                       move "UH" to ws-unix-flavor
+                   else if ws-entry = 07 then
+                       move "UI" to ws-unix-flavor
+                   else if ws-entry = 08 then
+                       move "UO" to ws-unix-flavor
+                   else if ws-entry = 09 then
+                       move "US" to ws-unix-flavor
+                   else if ws-entry = 10 then
+                       move "UC" to ws-unix-flavor
+                   else if ws-entry = 11 then
+                       move "UN" to ws-unix-flavor
+                   else if ws-entry = 12 then
+                       move "U?" to ws-unix-flavor
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23250-unix.
+           add 1 to ws-page-cnt
+
+           display "UNIX Skill                                          
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 " ws-unix-flavor "++++ I am the sysadmin. If you 
+      -        "try and crack my machine don't be"
+           end-display
+           display "	      surprised if the municipal works department g
+      -        "ets an 'accidental'"
+           end-display
+           display "          computer-generated order to start a new la
+      -        "ndfill put on your front"
+           end-display
+           display "          lawn."
+           end-display
+           display " 2 " ws-unix-flavor "+++  I don't need to crack /etc
+      -        "/passwd because I just modified su"
+           end-display
+           display "	      so that it doesn't prompt me.  The admin staf
+      -        "f doesn't even know"
+           end-display
+           display "          I'm here. If you don't understand what I j
+      -        "ust said, this category"
+           end-display
+           display "          does NOT apply to you!" end-display
+           display " 3 " ws-unix-flavor "++   I've get the entire admin 
+      -        "ticked off at me because I am always"
+           end-display
+           display "	      using all of the CPU time and trying to run p
+      -        "rograms that I don't have"
+           end-display
+           display "          access to. I'm going to try cracking /etc/
+      -        "passwd next week, just "
+           end-display
+           display "          don't tell anyone." end-display
+           display " 4 " ws-unix-flavor "+    I not only have a unix acc
+      -        "ount, but I slam VMS any chance I get."
+           end-display
+           display " 5 " ws-unix-flavor "     I have a unix account to d
+      -        "o my stuff in."
+           end-display
+           display " 6 " ws-unix-flavor "-    I have a VMS account."
+           end-display
+           display " 7 " ws-unix-flavor "--   I've seen unix and didn't 
+      -        "like it.  DEC rules!"
+           end-display
+           display " 8 " ws-unix-flavor "---  Unix geeks are actually ne
+      -        "rds in disguise. "
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your UNIX Skill code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 08
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "++++" to ws-unix-guru
+                   else if ws-entry = 02 then
+                       move "+++" to ws-unix-guru
+                   else if ws-entry = 03 then
+                       move "++" to ws-unix-guru
+                   else if ws-entry = 04 then
+                       move "+" to ws-unix-guru
+                   else if ws-entry = 05 then
+                       move " " to ws-unix-guru
+                   else if ws-entry = 06 then
+                       move "-" to ws-unix-guru
+                   else if ws-entry = 07 then
+                       move "--" to ws-unix-guru
+                   else if ws-entry = 08 then
+                       move "---" to ws-unix-guru
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23300-perl.
+           add 1 to ws-page-cnt
+
+           display "Perl                                                
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 P++++  I don't write Perl, I speak it. Perl has s
+      -        "uperseded all"
+           end-display
+           display "          other programming languages. I firmly bel
+      -        "ieve that all"
+           end-display
+           display "          programs can be reduced to a Perl one-line
+      -        "r."
+           end-display
+           display " 2 P+++   Perl is a very powerful programming tool. 
+      -        "Not only do I"
+           end-display
+           display "          no longer write shell scripts, I also no l
+      -        "onger use awk or"
+           end-display
+           display "          sed. I use Perl for all programs of less t
+      -        "han a thousand lines.  "
+           end-display
+           display " 3 P++    Perl is a powerful programming tool. I don
+      -        "'t write shell"
+           end-display
+           display "          scripts anymore because I write them in Pe
+      -        "rl."
+           end-display
+           display " 4 P+     I know of Perl. I like Perl. I just haven'
+      -        "t learned much Perl,"
+           end-display
+           display "          but it is on my agenda. " end-display
+           display " 5 P-     What's Perl got that awk and sed don't hav
+      -        "e?  "
+           end-display
+           display " 6 P--    Perl users are sick, twisted programmers w
+      -        "ho are just"
+           end-display
+           display "          showing off. " end-display
+           display " 7 P---   Perl combines the power of sh, the clarity
+      -        " of sed, and the"
+           end-display
+           display "          performance of awk with the simplicity of 
+      -        "C. It should be banned."
+           end-display
+           display " 8 P?     What's Pearl?" end-display
+           display " 9 !P     Our paranoid admin won't let us install pe
+      -        "rl! Says it's"
+           end-display
+           display "          a 'hacking tool'."  end-display
+           display " " end-display
+           display "Enter your Perl code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 09
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "P++++" to ws-perl
+                   else if ws-entry = 02 then
+                       move "P+++" to ws-perl
+                   else if ws-entry = 03 then
+                       move "P++" to ws-perl
+                   else if ws-entry = 04 then
+                       move "P+" to ws-perl
+                   else if ws-entry = 05 then
+                       move "P-" to ws-perl
+                   else if ws-entry = 06 then
+                       move "P--" to ws-perl
+                   else if ws-entry = 07 then
+                       move "P---" to ws-perl
+                   else if ws-entry = 08 then
+                       move "P?" to ws-perl
+                   else if ws-entry = 09 then
+                       move "!P" to ws-perl
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23400-linux.
+           add 1 to ws-page-cnt
+
+           display "Linux                                               
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 L++++  I am Linus, hear me roar." end-display
+           display " 2 L+++   I am a Linux wizard. I munch C code for br
+      -        "eakfast and have enough "
+           end-display
+           display "          room left over for a kernel debugging. I h
+      -        "ave so many patches "
+           end-display
+           display "          installed that I lost track about ten vers
+      -        "ions ago. Linux"
+           end-display
+           display "          newbies consider me a net.god."
+           end-display
+           display " 3 L++    I use Linux almost exclusively on my syste
+      -       "m. I monitor "
+           end-display
+           display "          comp.os.linux.* and even answer questions
+      -        "some times. I've aliased "
+           end-display
+           display "          Linux FTP sites to make getting new softwa
+      -        "re easier.  "
+           end-display
+           display " 4 L+     I've managed to get Linux installed and ev
+      -        "en used it a few times. "
+           end-display
+           display "          It seems like it is just another OS."
+           end-display
+           display " 5 L      I know what Linux is, but that's about all
+      -        "."
+           end-display
+           display " 6 L-     I have no desire to use Linux and frankly
+      -       " don't give a rat's patootie "
+           end-display
+           display "          about it.  " end-display
+           display " 7 L--    Unix sucks. Because Linux = Unix. Linux
+      -        "sucks. I worship Bill Gates."
+           end-display
+           display " 8 L---   I am Bill Gates. " end-display
+           display " 9 !L     I don't even know what Linux is!"
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Linux code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 09
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "L++++" to ws-linux
+                   else if ws-entry = 02 then
+                       move "L+++" to ws-linux
+                   else if ws-entry = 03 then
+                       move "L++" to ws-linux
+                   else if ws-entry = 04 then
+                       move "L+" to ws-linux
+                   else if ws-entry = 05 then
+                       move "L" to ws-linux
+                   else if ws-entry = 06 then
+                       move "L-" to ws-linux
+                   else if ws-entry = 07 then
+                       move "L--" to ws-linux
+                   else if ws-entry = 08 then
+                       move "L---" to ws-linux
+                   else if ws-entry = 09 then
+                       move "!L" to ws-linux
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23500-386bsd.
+           add 1 to ws-page-cnt
+
+           display "386BSD                                              
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-displaY
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 3+++   I am a 386BSD wizard. I munch C code for b
+      -        "reakfast and have enough"
+           end-display
+           DISPLAY "          room left over for a kernel debugging. I h
+      -        "ave so many patches"
+           end-display
+           display "          installed that I lost track about ten vers
+      -        "ions ago. "
+           end-display
+           display "          386BSD newbies consider me a net.god."
+           end-display
+           display " 2 3++    I use 386BSD almost exclusively on my syst
+      -       "em. I monitor "
+           end-display
+           display "          comp.os.386bsd.* and even answer questions
+      -        "some times. I've aliased "
+           end-display
+           display "          386BSD FTP sites to make getting new softw
+      -        "are easier.  "
+           end-display
+           display " 3 3+     I've managed to get 386BSD installed and e
+      -        "ven used it a few times. "
+           end-display
+           display "          It seems like it is just another OS."
+           end-display
+           display " 4 3      I know what 386BSD is, but that's about al
+      -        "l."
+           end-display
+           display " 5 3-     I have no desire to use 386BSD and frankly
+      -       " don't give a rat's patootie "
+           end-display
+           display "          about it.  " end-display
+           display " 6 3--    Unix sucks. Because 386BSD = Unix. 386BSD 
+      -        "Sucks. I worship Bill Gates."
+           end-display
+           display " 7 3---   I am USL's lawyer. " end-display
+           display " 8 !3     I don't even know what Linux is!"
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your 386BSD code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 08
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "3+++" to ws-386bsd
+                   else if ws-entry = 02 then
+                       move "3++" to ws-386bsd
+                   else if ws-entry = 03 then
+                       move "3+" to ws-386bsd
+                   else if ws-entry = 04 then
+                       move "3" to ws-386bsd
+                   else if ws-entry = 05 then
+                       move "3-" to ws-386bsd
+                   else if ws-entry = 06 then
+                       move "3--" to ws-386bsd
+                   else if ws-entry = 07 then
+                       move "3---" to ws-386bsd
+                   else if ws-entry = 08 then
+                       move "!3" to ws-386bsd
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23600-news.
+           add 1 to ws-page-cnt
+
+           display "USENET                                              
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 N++++  I am Tim Pierce." end-display
+           display " 2 N+++   I read so many news groups that the next b
+      -        "atch of news "
+           end-display
+           display "          comes in before I finish reading the last 
+      -        "batch, and I"
+           end-display
+           display "          have to read for about 2 hours straight be
+      -        "fore I'm "
+           end-display
+           display "          caught up on the morning's news. Then ther
+      -        "e's the afternoon...  "
+           end-display
+           display " 3 N++    I read all the news in a select handful of
+      -        " groups. "
+           end-display
+           display " 4 N+     I read news recreationally when I have som
+      -        "e time to kill."
+           end-display
+           display " 5 N      Usenet News? Sure, I read that once."
+           end-display
+           display " 6 N-     News is a waste of my time and I avoid it 
+      -        "completely."
+           end-display
+           display " 7 N--    News sucks! 'Nuff said." end-display
+           display " 8 N*     All I do is read news." end-display
+           display " 9 !N     We don't have news." end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Usenet code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-iF
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 09
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "N++++" to ws-news
+                   else if ws-entry = 02 then
+                       move "N+++" to ws-news
+                   else if ws-entry = 03 then
+                       move "N++" to ws-news
+                   else if ws-entry = 04 then
+                       move "N+" to ws-news
+                   else if ws-entry = 05 then
+                       move "N" to ws-news
+                   else if ws-entry = 06 then
+                       move "N-" to ws-news
+                   else if ws-entry = 07 then
+                       move "N--" to ws-news
+                   else if ws-entry = 08 then
+                       move "N*" to ws-news
+                   else if ws-entry = 09 then
+                       move "!N" to ws-news
+                  end-if
+              end-if
+          end-if.
+
+           perform 90000-clear-screen.
+
+       23700-web.
+           add 1 to ws-page-cnt
+
+           display "World Wide Web                                      
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 W+++  I am a WebMaster. Don't even think about t
+      -        "rying to view"
+           end-display
+           display "         my homepage without the latest version of N
+      -        "etscape. When"
+           end-display
+           display "         I'm not on my normal net connection, I surf
+      -        " the web using"
+           end-display
+           display "         my Newton and a cellular modem."
+           end-display
+           display " 2 W++   I have a homepage. I surf daily. My homepag
+      -        "e is advertised"
+           end-display
+           display "         in my .signature."
+           end-display
+           display " 3 W+    I have the latest version of Netscape, and 
+      -        "wander the web"
+           end-display
+           display "         only when there's something specific I'm lo
+      -        "oking for."
+           end-display
+           display " 4 W     I have a browser and a connection. Occasio
+      -        "nally I'll use them."
+           end-display
+           display " 5 W-    The web is really a pain. Life was so much
+      -        " easier when"
+           end-display
+           display "         you could transfer information by simple 
+      -        "ASCII. Now everyone"
+           end-display
+           display "         won't even consider your ideas unless you 
+      -        "spiff them up"
+           end-display
+           display "         with bandwidth-consuming pictures and poin
+      -        "tless information links. "
+           end-display
+           display " 6 W--   A pox on the Web! It wastes time and bandw
+      -        "idth and just"
+           end-display
+           display "         gives the uneducated morons a reason to 
+      -        "clutter the Internet."
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your World Wide Web code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 06
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "W+++" to ws-web
+                   else if ws-entry = 02 then
+                       move "W++" to ws-web
+                   else if ws-entry = 03 then
+                       move "W+" to ws-web
+                   else if ws-entry = 04 then
+                       move "W" to ws-web
+                   else if ws-entry = 05 then
+                       move "W" to ws-web
+                   else if ws-entry = 06 then
+                       move "W--" to ws-web
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23800-emacs.
+           ADD 1 TO WS-PAGE-CNT
+
+           display "Emacs                                               
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 E+++   Emacs is my login shell!! M-x doctor is my
+      -         " psychologist! I use"
+           end-display
+           display "          emacs to control my TV and toaster oven! A
+      -        "ll you vi people"
+           end-display
+           display "          don't know what you're missing! I read alt
+      -        ".relgion.emacs,"
+           end-display
+           display "          alt.sex.emacs, and comp.os.emacs."
+           end-display
+           display " 2 E++    I know and use elisp regularly!"
+           end-display
+           display " 3 E+     Emacs is great! I read my mail and news wi
+      -        "th it!"
+           end-display
+           display " 4 E      Yeah, I know what emacs is, and use it as
+      -        "my regular editor."
+           end-display
+           display " 5 E-     Emacs is too big and bloated for my tastes
+      -        "."
+           end-display
+           display " 6 E--    Emacs is just a fancy word processor."
+           end-display
+           display " 7 E---   Emacs sucks! vi forever!!!"
+           end-display
+           display " 8 E----  Emacs sucks! pico forever!!!"
+           end-display
+           display " 9 !E     Emacs? What's that?" end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Emacs code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 09
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "E+++" to ws-emacs
+                   else if ws-entry = 02 then
+                       move "E++" to ws-emacs
+                   else if ws-entry = 03 then
+                       move "E+" to ws-emacs
+                   else if ws-entry = 04 then
+                       move "E" to ws-emacs
+                   else if ws-entry = 05 then
+                       move "E-" to ws-emacs
+                   else if ws-entry = 06 then
+                       move "E--" to ws-emacs
+                   else if ws-entry = 07 then
+                       move "E---" to ws-emacs
+                   else if ws-entry = 08 then
+                       move "E----" to ws-emacs
+                   else if ws-entry = 09 then
+                       move "!E" to ws-emacs
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       23900-kibo.
+           add 1 to ws-page-cnt
+
+           display "Kibo                                                
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 K++++++  I _am_ Kibo. " end-display
+           display " 2 K+++++   I've had sex with Kibo." end-display
+           display " 3 K++++    I've met Kibo." end-display
+           display " 4 K+++     I've gotten mail from Kibo." end-display
+           display " 5 K++      I've read Kibo." end-display
+           display " 6 K+       I like Kibo." end-display
+           display " 7 K        I know who Kibo is." end-display
+           display " 8 K-       I don't know who Kibo is." end-display
+           display " 9 K--      I dislike Kibo." end-display
+           display "10 K---     I am Xibo." end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Kibo code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 10
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "K++++++" to ws-kibo
+                   else if ws-entry = 02 then
+                       move "K+++++" to ws-kibo
+                   else if ws-entry = 03 then
+                       move "K++++" to ws-kibo
+                   else if ws-entry = 04 then
+                       move "K+++" to ws-kibo
+                   else if ws-entry = 05 then
+                       move "K++" to ws-kibo
+                   else if ws-entry = 06 then
+                       move "K+" to ws-kibo
+                   else if ws-entry = 07 then
+                       move "K" to ws-kibo
+                   else if ws-entry = 08 then
+                       move "K-" to ws-kibo
+                   else if ws-entry = 09 then
+                       move "K--" to ws-kibo
+                   else if ws-entry = 10 then
+                       move "K---" to ws-kibo
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       24000-ms.
+           add 1 to ws-page-cnt
+
+           display "Microsoft Windows                                   
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 w++++    I have Windows, Windows NT, and Windows
+      -        "NT Advanced Server all "
+           end-display
+           display "            running on my SMP RISC machine. I haven'
+      -        "t seen daylight in six"
+           end-display
+           display "            months." end-display
+           display " 2 w+++     I am a MS Windows programming god. I wro
+      -        "te a VxD driver to allow "
+           end-display
+           display "            MS Windows and DOS to share the use of m
+      -        "y waffle iron. "
+           end-display
+           display "            P.S. Unix sux. " end-display
+           display " 3 W++      I write MS Windows programs in C and thi
+      -        "nk about using C++ "
+           end-display
+           display "            someday. I've written at least one DLL."
+           end-display
+           display " 4 w+       I have installed my own custom sounds, w
+      -        "allpaper, and screen "
+           end-display
+           display "            savers so my PC walks and talks like a f
+      -        "un house.  Oh yeah, I have "
+           end-display
+           display "            a hundred TrueType(tm) fonts that I've i
+      -        "nstalled but never used. "
+           end-display
+           display " 5 w        Ok, so I use MS Windows, I don't have to
+      -        " like it. "
+           end-display
+           display " 6 w-       I'm still trying to install MS Windows a
+      -        "nd have at least one "
+           end-display
+           display "            peripheral that never works right."
+           end-display
+           display " 7 w--      MS Windows is a joke operating system. H
+      -        "ell, its not even an "
+           end-display
+           display "            operating system. NT is Not Tough enough
+      -        " for me either. "
+           end-display
+           display " 8 w---     Windows has set back the computing indus
+      -        "try by at least 10 "
+           end-display
+           display "            years. Bill Gates should be drawn, quart
+      -       "ered, hung, shot, poisoned, "
+           end-display
+           display "            disemboweled, and then REALLY hurt."
+           end-display
+           display " 9 !w       I don't do Windows. Got a problem with t
+      -        "hat? "
+           end-display
+           display " " end-display
+           display "Enter your Microsoft Windows code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 09
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "w++++" to ws-ms
+                   else if ws-entry = 02 then
+                       move "w+++" to ws-ms
+                   else if ws-entry = 03 then
+                       move "w++" to ws-ms
+                   else if ws-entry = 04 then
+                       move "w+" to ws-ms
+                   else if ws-entry = 05 then
+                       move "w" to ws-ms
+                   else if ws-entry = 06 then
+                       move "w-" to ws-ms
+                   else if ws-entry = 07 then
+                       move "w--" to ws-ms
+                   else if ws-entry = 08 then
+                       move "w---" to ws-ms
+                   else if ws-entry = 09 then
+                       move "!w" to ws-ms
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       24100-mac.
+           add 1 to ws-page-cnt
+
+           display "Macintosh                                           
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 M++    I am a Mac guru. Anything those dos putzes
+      -        " and unix nerds"
+           end-display
+           display "          can do, I can do better, and if not, I'll
+      -        " write the damn"
+           end-display
+           display "          software to do it. " end-display
+           display " 2 M+     A Mac has it's uses and I use it quite oft
+      -        "en."
+           end-display
+           display " 3 M      I use a Mac, but I'm pretty indifferent ab
+      -        "out it."
+           end-display
+           display " 4 M-     Macs suck. All real geeks have a character
+      -        " prompt."
+           end-display
+           display " 5 M--    Macs do more than suck. They make a user 
+      -        "stupid by allowing"
+           end-display
+           display "          them to use the system without knowing wha
+      -        "t they are doing."
+           end-display
+           display "          Mac weenies have lower IQs than the fuzz i
+      -        "n my navel."
+           end-display
+           display " 6 !M     What's a Macintosh?" end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Macintosh code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 06
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "M++" to ws-mac
+                   else if ws-entry = 02 then
+                       move "M+" to ws-mac
+                   else if ws-entry = 03 then
+                       move "M" to ws-mac
+                   else if ws-entry = 04 then
+                       move "M-" to ws-mac
+                   else if ws-entry = 05 then
+                       move "M--" to ws-mac
+                   else if ws-entry = 06 then
+                       move "!M" to ws-mac
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       24200-vms.
+           add 1 to ws-page-cnt
+
+           display "VMS                                                 
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 V++    Unix is a passing fad compared to the real
+      -        " power in the universe, "
+           end-display
+           display "          my VMS system.  " end-display
+           display " 2 V+     I tend to like VMS better than Unix."
+           end-display
+           display " 3 V      I've used VMS." end-display
+           display " 4 V-     Unix is much better than VMS for my comput
+      -        "ing needs. "
+           end-display
+           display " 5 V--    I would rather smash my head repeatedly in
+      -        "to a brick wall than "
+           end-display
+           display "          suffer the agony of working with VMS. It's
+      -        "reminiscent of a dead "
+           end-display
+           display "          and decaying pile of moose droppings. Unix
+      -        " rules the universe. "
+           end-display
+           display " 6 !V     I've not ever used VMS." end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your VMS code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 06
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "V++" to ws-vms
+                   else if ws-entry = 02 then
+                       move "V+" to ws-vms
+                   else if ws-entry = 03 then
+                       move "V" to ws-vms
+                   else if ws-entry = 04 then
+                       move "V-" to ws-vms
+                   else if ws-entry = 05 then
+                       move "V--" to ws-vms
+                   else if ws-entry = 06 then
+                       move "!V" to ws-vms
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       24400-pol.
+           add 1 to ws-page-cnt
+
+           display "Politics                                            
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 po+++  Fuckin' Minorities! Adolf Hitler is my her
+      -        "o! And so is"
+           end-display
+           display "          Rush Limbaugh!"
+           end-display
+           display " 2 po++   All in favor of eliminating free speech, s
+      -        "ay aye!"
+           end-display
+           display " 3 po+    Let's get the government off of big-busine
+      -        "ss' back."
+           end-display
+           display " 4 po     Politics? I've heard of that somewhere but
+      -        " in all honesty I "
+           end-display
+           display "          really don't give a shit. "
+           end-display
+           display " 5 po-    Bring back the 60's."
+           end-display
+           display " 6 po--   I'm still living in the 60's."
+           end-display
+           display " 7 po---  No taxes through no government."
+           end-display
+           display " 8 -po+   Don't label me you moron! Both sides are e
+      -        "qually fucked up!"
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Politics code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 08
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "po+++" to ws-pol
+                   else if ws-entry = 02 then
+                       move "po++" to ws-pol
+                   else if ws-entry = 03 then
+                       move "po+" to ws-pol
+                   else if ws-entry = 04 then
+                       move "po" to ws-pol
+                   else if ws-entry = 05 then
+                       move "po-" to ws-pol
+                   else if ws-entry = 06 then
+                       move "po--" to ws-pol
+                   else if ws-entry = 07 then
+                       move "po---" to ws-pol
+                   else if ws-entry = 08 then
+                       move "-po+" to ws-pol
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       24500-cp.
+           add 1 to ws-page-cnt
+
+           display "Cypherpunk                                          
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 Y+++   I am T.C. May" end-display
+           display " 2 Y++    I am on the cypherpunks mailing list and a
+      -        "ctive around"
+           end-display
+           display "          Usenet. I never miss an opportunity to tal
+      -        "k about the"
+           end-display
+           display "          evils of Clipper and the NSA. Orwells' 198
+      -        "4 is more than"
+           end-display
+           display "          a story, it is a warning to ours' and futu
+      -        "re generations."
+           end-display
+           display "          I'm a member of the EFF." end-display
+           display " 3 Y+     I have an interest and concern in privacy 
+      -        "issues, but in"
+           end-display
+           display "          reality I am not really all that active or
+      -       " vocal."
+           end-display
+           display " 4 Y      I'm pretty indifferent on the whole issue"
+           end-display
+           display " 5 Y-     It seems to me that all of these concerns 
+      -        "are a little "
+           end-display
+           display "          extreme. I mean, the government must be ab
+      -        "le to protect"
+           end-display
+           display "          itself from criminals." end-display
+           display " 6 Y--    Get a life. The only people that need this
+      -        " kind of protection"
+           end-display
+           display "          are people with something to hide. I think
+      -        " cypherpunks are "
+           end-display
+           display "          just a little paranoid."
+           end-display
+           display " 7 Y---   I am L. Dietweiller." end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Cypherpunk code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 07
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "Y+++" to ws-cp
+                   else if ws-entry = 02 then
+                       move "Y++" to ws-cp
+                   else if ws-entry = 03 then
+                       move "Y+" to ws-cp
+                   else if ws-entry = 04 then
+                       move "Y" to ws-cp
+                   else if ws-entry = 05 then
+                       move "Y-" to ws-cp
+                   else if ws-entry = 06 then
+                       move "Y--" to ws-cp
+                   else if ws-entry = 07 then
+                       move "Y---" to ws-cp
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       24700-trek.
+           add 1 to ws-page-cnt
+
+           display "Star Trek                                           
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 t+++ It's not just a TV show, its a religion. I k
+      -        "now all about"
+           end-display
+           display "        warp field dynamics and the principles behin
+      -        "d the transporter."
+           end-display
+           display "        I have memorized the TECH manual. I speak Kl
+      -        "ingon. I go to"
+           end-display
+           display "        cons with Vulcan ears on. I have no life. It
+      -        "'s not just a "
+           end-display
+           display "        TV show, its a religion. " end-display
+           display " 2 t++  It's the best show around. I have all the ep
+      -        "isodes and the"
+           end-display
+           display "        movies on tape and can quote entire scenes v
+      -        "erbatim.  I've "
+           end-display
+           display "        built a few of the model kits too. But you l
+      -        "l never catch"
+           end-display
+           display "        me at one of those conventions. Those people
+      -        " are kooks."
+           end-display
+           display " 3 t+   It's a damn fine TV show and is one of the o
+      -        "nly things "
+           end-display
+           display "        good on television any more. " end-display
+           display " 4 t    It's just another TV show." end-display
+           display " 5 t-   Maybe it is just me, but I have no idea what
+      -        " the big deal"
+           end-display
+           display "        with Star Trek is. Perhaps I'm missing somet
+      -        "hing but I "
+           end-display
+           display "        just think it is bad drama. " end-display
+           DISPLAY " 6 t--  Star Trek is just another Space Opera."
+           end-display
+           display " 7 t--- Star Trek SUCKS! It is the worst crap I ha
+      -        "ve ever seen!"
+           end-display
+           display "        Hey, all you trekkies out there, GET A LIFE
+      -        "!!!"
+           end-display
+           display " " end-display
+           display "Enter your Star Trek code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 07
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "t+++" to ws-trek
+                   else if ws-entry = 02 then
+                       move "t++" to ws-trek
+                   else if ws-entry = 03 then
+                       move "t+" to ws-trek
+                   else if ws-entry = 04 then
+                       move "t" to ws-trek
+                   else if ws-entry = 05 then
+                       move "t-" to ws-trek
+                   else if ws-entry = 06 then
+                       move "t--" to ws-trek
+                   else if ws-entry = 07 then
+                       move "t---" to ws-trek
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       24800-bab.
+           add 1 to ws-page-cnt
+
+           display "Babylon 5                                           
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           END-DISPLAY
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 5+++   I am a True Worshipper of the Church of Jo
+      -        "e who lives"
+           end-display
+           display "          eats breathes and thinks Babylon 5, and ha
+      -        "s Evil thoughts"
+           end-display
+           display "          about stealing Joe's videotape archives ju
+      -        "st to see "
+           end-display
+           display "          episodes earlier." end-display
+           display " 2 5++    Finally a show that shows what a real futu
+      -        "re would look"
+           end-display
+           display "          like. None of this Picardian 'Let's talk a
+      -        "bout it and"
+           end-display
+           display "          be friends' crap. And what's this? We fina
+      -        "lly get to "
+           end-display
+           display "          see a bathroom!  Over on that Enterprise, 
+      -        "they've been "
+           end-display
+           display "          holding it for over seven years.  "
+           end-display
+           display " 3 5+     Babylon 5 certainly presents a fresh persp
+      -        "ective in the"
+           end-display
+           display "          Sci-Fi universe. I watch it weekly."
+           end-display
+           display " 4 5      I've seen it, I am pretty indifferent to i
+      -        "t."
+           end-display
+           display " 5 5-     This show is sub-par. The acting is wooden
+      -        ", the special "
+           end-display
+           display "          effects are obviously poor quality. In gen
+      -        "eral, it"
+           end-display
+           display "          seems like a very cheap Star Trek ripoff."
+           end-display
+           display " 6 5--    You call this Sci-Fi? That is such a load 
+      -        "of crap! This"
+           end-display
+           display "          show is just a soap with bad actors, piss-
+      -        "poor effects,"
+           end-display
+           display "          and lame storylines. Puh-leese."
+           end-display
+           display " 7 !5     I've never seen Babylon 5."
+           end-display
+           display " " end-display
+           display "Enter your Babylon 5 code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 07
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "5+++" to ws-bab
+                   else if ws-entry = 02 then
+                       move "5++" to ws-bab
+                   else if ws-entry = 03 then
+                       move "5+" to ws-bab
+                   else if ws-entry = 04 then
+                       move "5" to ws-bab
+                   else if ws-entry = 05 then
+                       move "5-" to ws-bab
+                   else if ws-entry = 06 then
+                       move "5--" to ws-bab
+                   else if ws-entry = 07 then
+                       move "!5" to ws-bab
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       25000-jeop.
+           add 1 to ws-page-cnt
+
+           display "Jeopardy                                            
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 j+++   I dress like Art Fleming, practice Alex Tr
+      -        "ebek's vocal"
+           end-display
+           display "          nuances, and make a pilgrimage to the Jeop
+      -        "ardy studio"
+           end-display
+           display "          every six months to either take the contes
+      -        "tant test or"
+           end-display
+           display "          to cheer from the audience. "
+           end-display
+           display " 2 j++    I watch Jeopardy regularly, and annoy othe
+      -        "rs in the college"
+           end-display
+           display "          rec center by shouting out the answers."
+           end-display
+           display " 3 j+     I watch Jeopardy regularly."
+           end-display
+           display " 4 j      Sure I watch it, but, hey, it's only a sho
+      -        "w."
+           end-display
+           display " 5 j-     Jeopardy? That's show's for a bunch of no-
+      -        "life eggheads. "
+           end-display
+           display " 6 j--    I annoy others in the college rec center b
+      -        "y shouting out"
+           end-display
+           display "          the *wrong* answers." end-display
+           display " 7 !j     I've never seen Jeopardy or don't watch it
+      -        "."
+           end-display
+           display " 8 j$     I've won money on the show." end-display
+           display " 9 jP     I've gotten the d*mn Lee Press-On Nails on
+      -        " the show (or"
+           end-display
+           display "          some other lame-o consolation prize). "
+           end-display
+           display "10 jx     I don't watch Jeopardy because it's too ea
+      -        "sy."
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Jeopardy code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 10
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "j+++" to ws-jeop
+                   else if ws-entry = 02 then
+                       move "j++" to ws-jeop
+                   else if ws-entry = 03 then
+                       move "j+" to ws-jeop
+                   else if ws-entry = 04 then
+                       move "j" to ws-jeop
+                   else if ws-entry = 05 then
+                       move "j-" to ws-jeop
+                   else if ws-entry = 06 then
+                       move "j--" to ws-jeop
+                   else if ws-entry = 07 then
+                       move "!j" to ws-jeop
+                   else if ws-entry = 08 then
+                       move "j$" to ws-jeop
+                   else if ws-entry = 09 then
+                       move "jP" to ws-jeop
+                   else if ws-entry = 10 then
+                       move "jx" to ws-jeop
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       25100-role.
+           add 1 to ws-page-cnt
+
+           display "Role Playing                                        
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 R+++   I've written and publish my own gaming mat
+      -        "erials. "
+           end-display
+           display " 2 R++    There is no life outside the role of the d
+      -        "ie. I know all"
+           end-display
+           display "          of piddly rules of (chosen game). _MY_ own
+      -        " warped rules"
+           end-display
+           display "          scare the rest of the players."
+           end-display
+           display " 3 R+     I've got my weekly sessions set up and a c
+      -        "haracter that"
+           end-display
+           display "          I know better than I know myself. "
+           end-display
+           display " 4 R      Role-Playing? That's just something to do
+      -        " to kill a"
+           end-display
+           display "          Saturday afternoon." end-display
+           display " 5 R-     Gosh, what an utter waste of time!"
+           end-display
+           display " 6 R--    Role-Players are instruments of pure evil"
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Role Playing code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry < 07
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "R+++" to ws-role
+                   else if ws-entry = 02 then
+                       move "R++" to ws-role
+                   else if ws-entry = 03 then
+                       move "R+" to ws-role
+                   else if ws-entry = 04 then
+                       move "R" to ws-role
+                   else if ws-entry = 05 then
+                       move "R-" to ws-role
+                   else if ws-entry = 06 then
+                       move "R--" to ws-role
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       25200-magic.
+           add 1 to ws-page-cnt
+
+           display "MAGIC: The Gathering                                
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 G++++  I am considered a Magic(tm) god. I have
+      -        "nicknames for"
+           end-display
+           display "          every card and know just about every strat
+      -        "egy there is."
+           end-display
+           display " 2 G+++   I have a Lord of the Pit, a Black Lotus an
+      -        "d a Reverse"
+           end-display
+           display "          Damage. I play for hours every night."
+           end-display
+           display " 3 G++    I've spent almost $100 on cards. A good ch
+      -        "unk of my"
+           end-display
+           display "          spare time goes into playing or constructi
+      -        "ng decks and"
+           end-display
+           display "          keeping up my checklist." end-display
+           display " 4 G+     Ok, ok, so I bought a few packs of cards.
+      -        " Big deal."
+           end-display
+           display " 5 G      I play Magic, if I can borrow a deck. It's
+      -        " an ok game."
+           end-display
+           display " 6 G-     I don't even play anymore. I just collect.
+      -       " My cards fill "
+           end-display
+           display "          three shoeboxes." end-display
+           display " 7 G--    I don't go to class/work anymore.  Sometim
+      -        "es I don't sleep."
+           end-display
+           display " 8 G---   I have 3 Lords of the Pit, Armageddon, Wra
+      -        "th of God,"
+           end-display
+           display "          and two Reverse Damages. I also have all f
+      -        "ive of the"
+           end-display
+           display "          Greater Legends Dragons. I can quote the e
+      -        "xact wording"
+           end-display
+           display "          and, in some cases, casting cost, of any c
+      -        "ard on demand."
+           end-display
+           display "          I've memorized the PPG. I am a Magic munch
+      -        "kin. "
+           end-display
+           display " 9 G----  Some friends and I are trying to get boxes
+      -        " of booster"
+           end-display
+           display "          packs at cost so we can sell them at a pro
+      -        "fit and buy more"
+           end-display
+           display "          cards at cost that we can sell for profit 
+      -        "and buy more"
+           end-display
+           display "          cards at.... " end-display
+           display "10 G?     What the hell _IS_ Magic?"
+           end-display
+           display " " end-display
+           display "Enter your MAGIC code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 10
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "G++++" to ws-magic
+                   else if ws-entry = 02 then
+                       move "G+++" to ws-magic
+                   else if ws-entry = 03 then
+                       move "G++" to ws-magic
+                   else if ws-entry = 04 then
+                       move "G+" to ws-magic
+                   else if ws-entry = 05 then
+                       move "G" to ws-magic
+                   else if ws-entry = 06 then
+                       move "G-" to ws-magic
+                   else if ws-entry = 07 then
+                       move "G--" to ws-magic
+                   else if ws-entry = 08 then
+                       move "G---" to ws-magic
+                   else if ws-entry = 09 then
+                       move "G----" to ws-magic
+                   else if ws-entry = 10 then
+                       move "G?" to ws-magic
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       25300-tv.
+           add 1 to ws-page-cnt
+
+           display "Television                                          
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 tv+++  There's nothing I can experience 'out ther
+      -        "e' that I can't"
+           end-display
+           display "          see coming over my satellite dish. I wish 
+      -        "there were"
+           end-display
+           display "          MORE channels. " end-display
+           display " 2 tv++   I just leave the tv on, to make sure I don
+      -        "'t miss anything."
+           end-display
+           display " 3 tv+    I watch some tv every day. "
+           end-display
+           display " 4 tv     I watch only the shows that are actually w
+      -        "orth while."
+           end-display
+           display " 5 tv-    I watch tv for the news and 'special progr
+      -        "amming.' "
+           end-display
+           display " 6 tv--   I turn my tv on during natural disasters."
+           end-display
+           display " 7 !tv    I do not own a television. " end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Television code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 07
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "tv+++" to ws-tv
+                   else if ws-entry = 02 then
+                       move "tv++" to ws-tv
+                   else if ws-entry = 03 then
+                       move "tv+" to ws-tv
+                   else if ws-entry = 04 then
+                       move "tv" to ws-tv
+                   else if ws-entry = 05 then
+                       move "tv-" to ws-tv
+                   else if ws-entry = 06 then
+                       move "tv--" to ws-tv
+                   else if ws-entry = 07 then
+                       move "!tv" to ws-tv
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       25400-books.
+           add 1 to ws-page-cnt
+
+           display "Books                                               
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 b+++   I consume a few books a week as part of a 
+      -        "staple diet."
+           end-display
+           display " 2 b++    I find the time to get through at least on
+      -        "e new book a month. "
+           end-display
+           display " 3 b+     I enjoy reading, but don't get the time ve
+      -        "ry often.  "
+           end-display
+           display " 4 b      I read the newspaper and the occasional bo
+      -        "ok. "
+           end-display
+           display " 5 b-     I read when there is no other way to get t
+      -        "he information. "
+           end-display
+           display " 6 b--    I did not actually READ the geek code, "
+           end-display
+           display "          I just had someone tell me. "
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Books code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 06
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "b+++" to ws-books
+                   else if ws-entry = 02 then
+                       move "b++" to ws-books
+                   else if ws-entry = 03 then
+                       move "b+" to ws-books
+                   else if ws-entry = 04 then
+                       move "b" to ws-books
+                   else if ws-entry = 05 then
+                       move "b-" to ws-books
+                   else if ws-entry = 06 then
+                       move "b--" to ws-books
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       25500-doom.
+           add 1 to ws-page-cnt
+
+           display "DOOM!                                               
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 D+++   I crank out PWAD files daily, complete wit
+      -        "h new monsters,"
+           end-display
+           display "          weaponry, sounds and maps. I'm a DOOM God.
+      -        " I can solve the"
+           end-display
+           display "          original maps in nightmare mode with my ey
+      -        "es closed. "
+           end-display
+           display " 2 D++    I've played the shareware version and boug
+      -        "ht the real one"
+           end-display
+           display "          and I'm actually pretty good at the game. 
+      -        "I occasionally "
+           end-display
+           display "          download PWAD files and play them too. "
+           end-display
+           display " 3 D+     It's a fun, action game that is a nice div
+      -        "ersion on a "
+           end-display
+           display "          lazy afternoon." end-display
+           display " 4 D      I've played the game and I'm pretty indiff
+      -        "erent."
+           end-display
+           display " 5 D-     I've played the game and really didn't thi
+      -        "nk it was"
+           end-display
+           display "          all that impressive." end-display
+           display " 6 D--    It's an overly-violent game and pure crap"
+           end-display
+           display " 7 D---   I've seen better on my Atari 2600."
+           end-display
+           display " 8 !D     I've never played Doom!" end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your DOOM code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 08
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "D+++" to ws-doom
+                   else if ws-entry = 02 then
+                       move "D++" to ws-doom
+                   else if ws-entry = 03 then
+                       move "D+" to ws-doom
+                   else if ws-entry = 04 then
+                       move "D" to ws-doom
+                   else if ws-entry = 05 then
+                       move "D-" to ws-doom
+                   else if ws-entry = 06 then
+                       move "D--" to ws-doom
+                   else if ws-entry = 07 then
+                       move "D---" to ws-doom
+                   else if ws-entry = 08 then
+                       move "!D" to ws-doom
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       25600-barney.
+           add 1 to ws-page-cnt
+
+           display "Barney                                              
+      -       "             Page: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 B+++   I worship the ground He walks on. I wish t
+      -        "o erect a"
+           end-display
+           display "          shrine for Him in my front yard. I feel a
+      -        " need to sell"
+           end-display
+           display "          all my worldly belongings, shave my head,
+      -        "and go to "
+           end-display
+           display "          airports where I will hand out Barney doll
+      -        "s and spread"
+           end-display
+           display "          His message of universal love for everyone
+      -        " regardless of"
+           end-display
+           display "          race, creed, color, sexual preference, or 
+      -        "species. "
+           end-display
+           display " 2 B++    I don't miss an episode, except when I hav
+      -        "e to work"
+           end-display
+           display "          or go in for a root canal. Barney loves me
+      -        ". "
+           end-display
+           display " 3 B+     I like him. He has a nice, wholesome messa
+      -        "ge. He's"
+           end-display
+           display "          good for the country. " end-display
+           display " 4 B      Hey, the little tykes love him, they don't
+      -       " go around "
+           end-display
+           display "          karate-chopping each other any more; what'
+      -        "s the big deal?"
+           end-display
+           display " 5 B-     Barney is annoying." end-display
+           display " 6 B--    Don't talk to me about him. I'm getting si
+      -        "ck of his "
+           end-display
+           display "          smarmy message. He makes me ill."
+           end-display
+           display " 7 B---   He's sick. He's polluting our children's m
+      -       "inds with this"
+           end-display
+           display "          love and tolerance crap."
+           end-display
+           display " 8 !B     Who's Barney?" end-display
+           display " " end-display
+           display "Enter your Barney code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 08
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "B+++" to ws-barney
+                   else if ws-entry = 02 then
+                       move "B++" to ws-barney
+                   else if ws-entry = 03 then
+                       move "B+" to ws-barney
+                   else if ws-entry = 04 then
+                       move "B" to ws-barney
+                   else if ws-entry = 05 then
+                       move "B-" to ws-barney
+                   else if ws-entry = 06 then
+                       move "B--" to ws-barney
+                   else if ws-entry = 07 then
+                       move "B---" to ws-barney
+                   else if ws-entry = 08 then
+                       move "!B" to ws-barney
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       25700-educ.
+           add 1 to ws-page-cnt
+
+           display "Education                                           
+      -       "              age: " ws-page-cnt " of " ws-tot-page
+           end-display
+           display "====================================================
+      -"==========================="
+           end-display
+           display " 1 e++++  Still pretty stupid, over qualified to wor
+      -        "k any"
+           end-display
+           display "          job, went and got my Ph.D. "
+           end-display
+           display " 2 e+++   Had not learned enough to know better not 
+      -        "to go back"
+           end-display
+           display "          and try for a master's degree."
+           end-display
+           display " 3 e++    Managed to finish my bachelors. " 
+           end-display
+           display " 4 e+     Started a degree, plan to finish it some d
+      -        "ay.  "
+           end-display
+           display " 5 e      K-12, been on a college campus."
+           end-display
+           display " 6 e-     Got my bachelors, escaped alive, and am ma
+      -        "king hoards"
+           end-display
+           display "          of money writing unmaintainable (except by
+      -        " me) software. "
+           end-display
+           display " 7 e--    The company I work for was dumb enough to 
+      -        "fund my way"
+           end-display
+           display "          through a masters degree, then started pay
+      -        "ing me even more money."
+           end-display
+           display " 8 e---   Achieved a Ph.D, have devoted my life to i
+      -        "nsignificant"
+           end-display
+           display "          research, which my employer pays dearly fo
+      -        "r.  "
+           end-display
+           display " 9 !e     Flunked high school, learned life the hard
+      -        " way."
+           end-display
+           display "10 e*     I learned everything there is to know abou
+      -        "t life from"
+           end-display
+           display "          the 'Hitchhiker's Trilogy'. "
+           end-display
+           display " " end-display
+           display " " end-display
+           display " " end-display
+           display "Enter your Education code "
+               "number here [0 to quit]: " with no advancing
+           end-display
+
+           accept ws-entry end-accept
+
+           if ws-entry (2:1) = space
+               move ws-entry (1:1) to ws-entry (2:1)
+               move 0              to ws-entry (1:1)   
+           end-if
+
+           if ws-entry not numeric
+               continue 
+           else
+               if ws-entry <= 10
+                   set ws-valid-flag to "y"
+                   if ws-entry = 00 then
+                       perform 92000-abend
+                   else if ws-entry = 01 then
+                       move "e++++" to ws-educ
+                   else if ws-entry = 02 then
+                       move "e+++" to ws-educ
+                   else if ws-entry = 03 then
+                       move "e++" to ws-educ
+                   else if ws-entry = 04 then
+                       move "e+" to ws-educ
+                   else if ws-entry = 05 then
+                       move "e" to ws-educ
+                   else if ws-entry = 06 then
+                       move "e-" to ws-educ
+                   else if ws-entry = 07 then
+                       move "e--" to ws-educ
+                   else if ws-entry = 08 then
+                       move "e---" to ws-educ
+                   else if ws-entry = 09 then
+                       move "!e" to ws-educ
+                   else if ws-entry = 10 then
+                       move "e*" to ws-educ
+                   end-if
+               end-if
+           end-if.
+
+           perform 90000-clear-screen.
+
+       25800-music.
+           add 1 to ws-page-cnt

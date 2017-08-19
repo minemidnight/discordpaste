@@ -1,0 +1,2174 @@
+import std.stdio;
+
+void main()
+{
+    writeln("hello");
+}
+
+public import std.base64;
+public import std.compiler;
+public import std.concurrency;
+public import std.conv;
+public import std.container;
+public import std.datetime;
+public import std.demangle;
+public import std.file;
+public import std.format;
+public import std.getopt;
+public import std.math;
+public import std.mathspecial;
+public import std.mmfile;
+public import std.outbuffer;
+public import std.parallelism;
+public import std.path;
+public import std.process;
+public import std.random;
+public import std.regex;
+public import std.signals;
+//public import std.slist;
+public import std.socket;
+public import std.stdint;
+public import std.stdio;
+public import std.string;
+public import std.system;
+public import std.traits;
+public import std.typetuple;
+public import std.uni;
+public import std.uri;
+public import std.utf;
+public import std.uuid;
+public import std.variant;
+public import std.zip;
+public import std.zlib;
+public import std.net.isemail;
+public import std.net.curl;
+public import std.digest.digest;
+public import std.digest.crc;
+public import std.digest.sha;
+public import std.digest.md;
+public import std.digest.hmac;
+
+int main(string[] args)
+{
+    // Bring in unit test for module by referencing function in it
+
+    cast(void) cmp("foo", "bar");                  // string
+    cast(void) filenameCharCmp('a', 'b');          // path
+    cast(void) isNaN(1.0);                         // math
+    std.conv.to!double("1.0");          // std.conv
+    OutBuffer b = new OutBuffer();      // outbuffer
+    auto r = regex("");                 // regex
+    uint ranseed = std.random.unpredictableSeed;
+    thisTid;
+    int[] a;
+    import std.algorithm.sorting : sort;
+    import std.algorithm.mutation : reverse;
+    reverse(a);                         // adi
+    sort(a);                            // qsort
+    Clock.currTime();                   // datetime
+    cast(void) isValidDchar(cast(dchar) 0);          // utf
+    string s1 = "http://www.digitalmars.com/~fred/fredsRX.html#foo end!";
+    assert(uriLength(s1) == 49);
+    std.zlib.adler32(0,null);            // D.zlib
+    auto t = task!cmp("foo", "bar");  // parallelism
+
+    creal c = 3.0 + 4.0i;
+    c = sqrt(c);
+    assert(c.re == 2);
+    assert(c.im == 1);
+
+    printf("args.length = %d\n", args.length);
+    for (int i = 0; i < args.length; i++)
+        printf("args[%d] = '%.*s'\n", i, args[i].length, args[i].ptr);
+
+    int[3] x;
+    x[0] = 3;
+    x[1] = 45;
+    x[2] = -1;
+    sort(x[]);
+    assert(x[0] == -1);
+    assert(x[1] == 3);
+    assert(x[2] == 45);
+
+    cast(void) std.math.sin(3.0);
+    cast(void) std.mathspecial.gamma(6.2);
+
+    std.demangle.demangle("hello");
+
+    cast(void) std.uni.isAlpha('A');
+
+    std.file.exists("foo");
+
+    foreach_reverse (dchar d; "hello"c) { }
+    foreach_reverse (k, dchar d; "hello"c) { }
+
+    std.signals.linkin();
+
+    bool isEmail = std.net.isemail.isEmail("abc");
+    auto http = std.net.curl.HTTP("dlang.org");
+    auto uuid = randomUUID();
+
+    auto md5 = md5Of("hello");
+    auto sha1 = sha1Of("hello");
+    auto crc = crc32Of("hello");
+    auto string = toHexString(crc);
+    puts("Success!");
+    return 0;
+}
+
+import std.algorithm;
+import std.array;
+private import std.conv, std.stdio, std.string, std.path, std.file,
+	std.random, std.cstream, std.stream;
+private import std.process;
+private import std.c.stdlib;
+
+private import dfl.all, dfl.internal.winapi, dfl.internal.utf;
+
+alias dfl.internal.winapi.ShellExecuteA ShellExecuteA;
+alias dfl.environment.Environment Environment;
+
+pragma(lib, "ole32.lib");
+pragma(lib, "oleAut32.lib");
+pragma(lib, "gdi32.lib");
+pragma(lib, "Comctl32.lib");
+pragma(lib, "Comdlg32.lib");
+
+private extern(Windows)
+{
+	DWORD GetLogicalDriveStringsA(DWORD nBufferLength,LPSTR lpBuffer);
+	UINT GetDriveTypeA(LPCTSTR lpRootPathName);
+	DWORD GetShortPathNameA(LPCSTR lpszLongPath, LPSTR lpszShortPath, DWORD cchBuffer);
+	
+	
+	enum: UINT
+	{
+		DRIVE_FIXED = 3,
+	}
+	
+	
+	alias DWORD function(LPCWSTR lpszLongPath, LPWSTR lpszShortPath, DWORD cchBuffer) GetShortPathNameWProc;
+}
+
+
+enum Flags: DWORD
+{
+	NONE = 0,
+	
+	INSTALLED = 1, // Everything is setup.
+}
+
+
+RegistryKey rkey;
+Flags flags = Flags.NONE;
+string startpath, basepath;
+string dmdpath, dmdpath_windows = "\0";
+string libfile = "dfl_debug.lib";
+bool isPrepared = false;
+bool isDebug = true;
+bool debugSpecified = false;
+string dlibname; // Read from sc.ini
+
+string optExet = "nt"; // Exe type.
+string optSu = "console:4.0"; // Subsystem.
+bool optForceInstall = false;
+bool optBuild = false; // Build dfl.lib.
+bool optShowVer = false;
+bool optNoVer = false;
+bool alreadyBuilt = false;
+bool optTangobos = false;
+bool optTango = false;
+bool optPhobos = false;
+bool optNoDflc = false; // Don't compile dflc_ bat files.
+
+
+bool isValidDmdDir(string dir)
+{
+	if(std.path.isAbsolute(dir)
+		&& (std.file.exists(std.path.buildPath(dir, "bin\\dmd.exe"))
+			|| std.file.exists(std.path.buildPath(dir, "windows\\bin\\dmd.exe")))
+		)
+		return true;
+	return false;
+}
+
+
+void install()
+{
+	string s;
+	
+	bool mboxdmdpath(string xpath)
+	{
+		switch(msgBox("Found DMD at '" ~ xpath ~ "'.\r\n"
+			"Would you like to use this path?\r\n\r\n"
+			"Press No to keep looking.\r\n"
+			"Press Cancel to abort and try again later.",
+			"DFL", MsgBoxButtons.YES_NO_CANCEL, MsgBoxIcon.QUESTION))
+		{
+			case DialogResult.YES: return true;
+			case DialogResult.NO: return false;
+			default: exit(0);
+		}
+		return false;
+	}
+	
+	/+
+	switch(msgBox("Would you like to install DFL now?",
+		"DFL", MsgBoxButtons.YES_NO, MsgBoxIcon.QUESTION))
+	{
+		case DialogResult.YES:
+			break;
+		
+		default:
+			exit(0);
+	}
+	+/
+	
+	if(dmdpath.length)
+	{
+		if(!isValidDmdDir(dmdpath))
+			goto locate_dmd;
+		
+		if(optForceInstall)
+		{
+			if(!mboxdmdpath(dmdpath))
+				goto locate_dmd;
+		}
+		
+		//rkey.setValue("dmdpath", dmdpath);
+		rkey.deleteValue("dmdpath", false); // Since it's the base dir, it is inferred.
+	}
+	else
+	{
+		locate_dmd:
+		
+		writefln("Locating DMD...");
+		
+		char[128] drives;
+		if(GetLogicalDriveStringsA(drives.length, drives.ptr))
+		{
+			char* p;
+			for(p = drives.ptr; *p; p++)
+			{
+				if(GetDriveTypeA(p) == DRIVE_FIXED) // Only check fixed disks.
+				{
+					s = std.path.buildPath(to!string(p), "dmd");
+					if(std.file.exists(s))
+					{
+						if(isValidDmdDir(s))
+						{
+							if(mboxdmdpath(s))
+							{
+								rkey.setValue("dmdpath", s);
+								goto found_dmd;
+							}
+						}
+						else
+						{
+							writefln("Found '%s' but no bin and lib directories...", s);
+						}
+					}
+				}
+				
+				for(; *p; p++)
+				{
+				}
+			}
+		}
+		
+		// Didn't find DMD yet, so ask where it is.
+		FolderBrowserDialog fbd;
+		fbd = new typeof(fbd);
+		fbd.description = "Please locate DMD.";
+		browse_dmd_again:
+		if(fbd.showDialog() != DialogResult.OK)
+			exit(0); // Aborted.
+		if(!isValidDmdDir(fbd.selectedPath))
+		{
+			fbd.description = "DMD was not found at that location. Please try again.";
+			goto browse_dmd_again;
+		}
+		rkey.setValue("dmdpath", fbd.selectedPath);
+	}
+	
+	found_dmd:
+	
+	flags |= Flags.INSTALLED;
+	rkey.setValue("flags", cast(DWORD)flags);
+	
+	writef("Installation complete.\r\n\r\n");
+}
+
+
+void prepare()
+{
+	if(isPrepared)
+		return;
+	isPrepared = true;
+	
+	RegistryValueDword regDword;
+	RegistryValueSz regSz;
+	
+	if(isValidDmdDir(basepath))
+		dmdpath = basepath;
+	
+	regDword = cast(RegistryValueDword)rkey.getValue("flags");
+	if(regDword)
+		flags = cast(Flags)regDword.value;
+	
+	if(optForceInstall || !(flags & Flags.INSTALLED))
+		install();
+	
+	
+	void badInstall()
+	{
+		writefln("Bad install. To reinstall, use   dfl -dfl-i");
+		exit(5);
+	}
+	
+	
+	//if(!dmdpath.length)
+	if(!optForceInstall)
+	{
+		regSz = cast(RegistryValueSz)rkey.getValue("dmdpath");
+		if(regSz && isValidDmdDir(regSz.value))
+		{
+			if(!dmdpath.length || isValidDmdDir(regSz.value))
+				dmdpath = regSz.value;
+		}
+		else
+		{
+			if(!dmdpath.length)
+				badInstall();
+		}
+	}
+	
+	dmdpath_windows = dmdpath;
+	{
+		string dpw = std.path.buildPath(dmdpath, "windows");
+		if(std.file.exists(std.path.buildPath(dpw, "bin\\dmd.exe"))
+			&& std.file.isDir(dpw))
+		{
+			dmdpath_windows = dpw;
+		}
+	}
+}
+
+
+// Returns true if it's actually a DFL switch.
+// The "-dfl-" part must be stripped.
+bool doDflSwitch(string arg)
+{
+	int i;
+	string equ = null;
+	
+	i = std.string.indexOf(arg, '=');
+	if(i != -1)
+	{
+		equ = arg[i + 1 .. arg.length];
+		arg = arg[0 .. i];
+	}
+	
+	
+	void oops(string equName = "value")
+	{
+		writefln("Expected %s=<%s>", arg, equName);
+		exit(2);
+	}
+	
+	
+	switch(arg)
+	{
+		case "dmd":
+			prepare();
+			std.process.system(quotearg(std.path.buildPath(dmdpath_windows, "bin\\dmd.exe\"")));
+			exit(0); assert(0);
+		
+		case "gui", "winexe", "windowed":
+			i = std.string.indexOf(optSu, ':');
+			optSu = "windows:" ~ optSu[i + 1 .. optSu.length];
+			break;
+		
+		case "con", "console", "exe":
+			i = std.string.indexOf(optSu, ':');
+			optSu = "console:" ~ optSu[i + 1 .. optSu.length];
+			break;
+		
+		case "i":
+			optForceInstall = true;
+			break;
+		
+		case "nodflc", "no-dflc":
+			optNoDflc = true;
+			break;
+		
+		case "dflc":
+			if(optNoDflc)
+				throw new Exception("Both switches nodflc and dflc specified");
+			optNoDflc = false;
+			break;
+		
+		/+
+		case "h", "help", "?":
+			showUsage();
+			exit(0);
+			break;
+		+/
+		
+		case "exet", "exetype":
+			if(equ.length)
+			{
+				optExet = equ;
+			}
+			else
+			{
+				oops();
+			}
+			break;
+		
+		case "su", "subsystem":
+			if(equ.length > 3 && std.string.indexOf(equ, ':') != -1)
+			{
+				optSu = equ;
+			}
+			else
+			{
+				oops("name:version");
+			}
+			break;
+		
+		case "doc":
+			arg = std.path.buildPath(basepath, "packages\\dfl\\doc\\index.html");
+			if(!std.file.exists(arg))
+				throw new Exception("'" ~ arg ~ "' not found");
+			ShellExecuteA(null, null, std.string.toStringz(quotearg(arg)), null, null, 0);
+			exit(0); assert(0);
+		
+		case "readme":
+			arg = std.path.buildPath(basepath, "packages\\dfl\\readme.txt");
+			if(!std.file.exists(arg))
+				throw new Exception("'" ~ arg ~ "' not found");
+			ShellExecuteA(null, null, std.string.toStringz(quotearg(arg)), null, null, SW_SHOWNORMAL);
+			exit(0); assert(0);
+		
+		case "tips":
+			arg = std.path.buildPath(basepath, "packages\\dfl\\tips.txt");
+			if(!std.file.exists(arg))
+				throw new Exception("'" ~ arg ~ "' not found");
+			ShellExecuteA(null, null, std.string.toStringz(quotearg(arg)), null, null, SW_SHOWNORMAL);
+			exit(0); assert(0);
+		
+		case "examples", "samples", "eg", "ex":
+			arg = std.path.buildPath(basepath, "packages\\dfl\\examples");
+			if(!std.file.exists(arg))
+				throw new Exception("'" ~ arg ~ "' not found");
+			ShellExecuteA(null, "explore", std.string.toStringz(quotearg(arg)), null, null, SW_SHOWNORMAL);
+			exit(0); assert(0);
+		
+		case "release":
+			if(debugSpecified)
+				throw new Exception("-release specified with -debug");
+			libfile = "dfl.lib";
+			isDebug = false;
+			return false;
+		
+		case "debug":
+			if(!isDebug)
+				throw new Exception("-debug specified with -release");
+			debugSpecified = true;
+			return false;
+		
+		case "ver":
+			optShowVer = true;
+			return true;
+		
+		case "nover":
+			optNoVer = true;
+			return true;
+		
+		case "tangobos", "Tangobos":
+			if(optPhobos)
+				throw new Exception("-phobos specified with -tangobos");
+			optTangobos = true;
+			return true;
+		
+		case "phobos", "Phobos":
+			if(optTango)
+				throw new Exception("-tango specified with -phobos");
+			if(optTangobos)
+				throw new Exception("-tangobos specified with -phobos");
+			optPhobos = true;
+			return true;
+		
+		case "tango", "Tango":
+			if(optPhobos)
+				throw new Exception("-phobos specified with -tango");
+			optTango = true;
+			return true;
+		
+		default:
+			return false;
+	}
+	
+	return true;
+}
+
+
+void showUsage()
+{
+	writefln("DFL written by Christopher E. Miller");
+	writef("Usage:\n"
+		"   dfl [<switches...>] <files...>\n\n");
+	writef("Switches:\n"
+		"   -dmd             Show DMD's usage.\n"
+		"   -dfl-ver         Show DFL version installed.\n"
+		"   -dfl-nover       Do not perform version check.\n"
+		"   -dfl-build       Build DFL lib files.\n"
+		"   -dfl-nodflc      Do not run dflc batch files.\n"
+		//"   -dfl-dflc        Run dflc batch files if building DFL lib files.\n"
+		"   -dfl-readme      Open the DFL readme.txt file.\n"
+		"   -dfl-doc         Open the DFL documentation.\n"
+		"   -dfl-tips        Open the DFL tips.txt file.\n"
+		"   -dfl-eg          Explore the DFL examples directory.\n"
+		"   -dfl-gui         Make a Windows GUI exe without a console.\n"
+		"   -dfl-con         Make a console exe (default).\n"
+		"   -dfl-exet=<x>    Override executable type.\n"
+		"   -dfl-su=<x1:x2>  Override subsystem name and version.\n"
+		"   -dfl-i           Force install.\n"
+		"   <other>          Any other non-dfl switches are passed to DMD.\n");
+	writef("Files:\n"
+		"   Files passed to DMD. File name wildcard expansion supported.\n");
+}
+
+
+string quotearg(string s)
+{
+	if(std.string.indexOf(s, ' ') != -1)
+		return `"` ~ s ~ `"`;
+	return s;
+}
+
+
+string[] quoteexpandwcfile(string s)
+{
+	string[] result;
+	if(s.length)
+	{
+		string wc, ppath;
+		bool foundwc = false;
+		size_t iw;
+		for(iw = s.length - 1;; iw--)
+		{
+			if('\\' == s[iw] || '/' == s[iw] || ':' == s[iw])
+			{
+				if(foundwc)
+				{
+					wc = s[iw + 1 .. s.length];
+					ppath = s[0 .. iw + 1];
+					// Sanity check; make sure the rest of the path doesn't contain wildcards.
+					for(--iw;; iw--)
+					{
+						if('*' == s[iw] || '?' == s[iw])
+							throw new Exception("Unable to expand wildcard path '" ~ s ~ "'; directories cannot be wildcard expanded");
+						if(!iw)
+							break;
+					}
+					break;
+				}
+				result ~= quotearg(s);
+				return result;
+			}
+			if('*' == s[iw] || '?' == s[iw])
+				foundwc = true;
+			if(!iw)
+			{
+				if(foundwc)
+				{
+					wc = s;
+					//ppath = null;
+					break;
+				}
+				result ~= quotearg(s);
+				return result;
+			}
+		}
+		
+		assert(wc.length);
+		
+		if(ppath.length)
+		{
+			if(!std.file.exists(ppath))
+			{
+				result ~= quotearg(s); // ?
+				return result;
+			}
+			
+			if(!std.file.isDir(ppath))
+			{
+				throw new Exception("Unable to expand wildcard path '" ~ s ~ "'");
+			}
+		}
+		
+		// This version of listdir is not recursive.
+		foreach(de; dirEntries(ppath, SpanMode.shallow))
+			if(de.isFile)
+			{
+				string sf;
+				size_t iwsf;
+				sf = de.name;
+				if(std.path.globMatch(sf, wc)) // Note: also does [] stuff.
+				{
+					result ~= quotearg(sf);
+				}
+			}
+	}
+	return result;
+}
+
+
+string getshortpath(string fn)
+{
+	if(dfl.internal.utf.useUnicode)
+	{
+		version(STATIC_UNICODE)
+		{
+			alias GetShortPathNameW proc;
+		}
+		else
+		{
+			const string NAME = "GetShortPathNameW";
+			static GetShortPathNameWProc proc = null;
+			
+			if(!proc)
+			{
+				proc = cast(GetShortPathNameWProc)GetProcAddress(GetModuleHandleA("kernel32.dll"), NAME.ptr);
+				if(!proc)
+					throw new Exception("GetShortPathNameW not found");
+			}
+		}
+		
+		DWORD len;
+		wchar[MAX_PATH] s;
+		len = proc(dfl.internal.utf.toUnicodez(fn), s.ptr, s.length);
+		return to!string(s[0..len]);
+	}
+	else
+	{
+		DWORD len;
+		char[MAX_PATH] s;
+		len = GetShortPathNameA(dfl.internal.utf.toAnsiz(fn), s.ptr, s.length);
+		return to!string(s[0..len]);
+	}
+}
+
+
+string getParentDir(string dir)
+{
+	int i;
+	
+	for(;;)
+	{
+		if(!dir.length)
+			return null;
+		if(dir[dir.length - 1] == '/' || dir[dir.length - 1] == '\\')
+			dir = dir[0 .. dir.length - 1];
+		else
+			break;
+	}
+	string result = null;
+	for(i = dir.length - 1;;)
+	{
+		if(dir[i] == '/' || dir[i] == '\\')
+		{
+			result = dir[0 .. i];
+			break;
+		}
+		if(!--i)
+			break;
+	}
+	return result;
+}
+
+
+int main(/+ string[] args +/)
+{
+	startpath = getshortpath(Application.startupPath);
+	basepath = getParentDir(startpath);
+	{
+		while(basepath.length > 0
+			&& ('\\' == basepath[basepath.length - 1]
+				|| '/' == basepath[basepath.length - 1])
+			)
+		{
+			basepath = basepath[0 .. basepath.length - 1];
+		}
+		string platformdirname = "windows";
+		if(basepath.length > platformdirname.length
+			&& ('\\' == basepath[basepath.length - 1 - platformdirname.length]
+				|| '/' == basepath[basepath.length - 1 - platformdirname.length])
+			&& (0 == std.string.icmp(platformdirname,
+				basepath[basepath.length - platformdirname.length .. basepath.length]))
+			)
+		{
+			basepath = getParentDir(basepath);
+		}
+	}
+	rkey = Registry.currentUser.createSubKey("Software\\DFL");
+	
+	bool gotargfn = false;
+	string[] dmdargs = null;
+	int i;
+	
+	string[] args;
+	args = Environment.getCommandLineArgs();
+	
+	if(args.length > 1
+		&& args[1] == "-dfl-bp")
+	{
+		writefln("basepath = %s", basepath);
+		return 0;
+	}
+	
+	if(args.length > 1)
+	{
+		foreach(string _origarg; args[1 .. args.length])
+		{
+			if(_origarg.length && (_origarg[0] == '-' || _origarg[0] == '/'))
+			{
+				string arg;
+				arg = _origarg[1 .. _origarg.length];
+				i = std.string.indexOf(arg, '-');
+				
+				if(i == -1)
+					goto regular_switch;
+				
+				switch(arg[0 .. i])
+				{
+					case "dfl":
+						if(!doDflSwitch(arg[i + 1 .. arg.length]))
+						{
+							if("build" == arg[i + 1 .. arg.length])
+							{
+								optBuild = true;
+							}
+							else
+							{
+								writefln("Unrecognized DFL switch '-%s'", arg);
+								return 1;
+							}
+						}
+						break;
+					
+					case "dmd":
+						dmdargs ~= "-" ~ quotearg(arg[i + 1 .. arg.length]);
+						break;
+					
+					default: regular_switch:
+						if(!doDflSwitch(arg))
+							dmdargs ~= quotearg(_origarg);
+				}
+			}
+			else
+			{
+				gotargfn = true;
+				dmdargs ~= quoteexpandwcfile(_origarg);
+			}
+		}
+		
+		prepare();
+		
+		
+		string dfllib;
+		string importdir;
+		
+		
+		void findimportdir()
+		{
+			if(!importdir.length)
+			{
+				importdir = std.path.buildPath(basepath, "import");
+				if(!std.file.exists(importdir) || !std.file.exists(std.path.buildPath(importdir, "dfl")))
+				{
+					importdir = std.path.buildPath(dmdpath, "import");
+					if(!std.file.exists(importdir) || !std.file.exists(std.path.buildPath(importdir, "dfl")))
+					{
+						importdir = std.path.buildPath(dmdpath_windows, "import");
+						if(!std.file.exists(importdir) || !std.file.exists(std.path.buildPath(importdir, "dfl")))
+						{
+							importdir = std.path.buildPath(dmdpath, "src");
+							if(!std.file.exists(importdir) || !std.file.exists(std.path.buildPath(importdir, "dfl")))
+							{
+								importdir = std.path.buildPath(dmdpath, "src\\phobos");
+								if(!std.file.exists(importdir) || !std.file.exists(std.path.buildPath(importdir, "dfl")))
+								{
+									importdir = null;
+									throw new Exception("DFL import directory not found");
+								}
+							}
+						}
+					}
+				}
+				
+				/+
+				if(!optTangobos)
+				{
+					if(std.file.exists(std.path.buildPath(importdir, "tangobos")))
+					{
+						writefln("Tangobos detected; use switch -tangobos to use Tangobos.");
+					}
+				}
+				+/
+			}
+		}
+		
+		
+		void finddlibname()
+		{
+			if(dlibname.length)
+				return;
+			
+			if(optPhobos)
+			{
+				dlibname = "Phobos";
+				return;
+			}
+			
+			if(optTangobos)
+			{
+				dlibname = "Tango+Tangobos";
+				return;
+			}
+			
+			if(optTango)
+			{
+				dlibname = "Tango";
+				return;
+			}
+			
+			// Autodetect...
+			
+			dlibname = "Phobos";
+			try
+			{
+				string scx = cast(string)std.file.read(std.path.buildPath(basepath, "bin\\sc.ini"));
+				if(-1 != std.string.indexOf(scx, "-version=Tango"))
+					dlibname = "Tango";
+			}
+			catch
+			{
+			}
+		}
+		
+		
+		void buildDflLibs()
+		{
+			if(alreadyBuilt)
+				return;
+			alreadyBuilt = true;
+			
+			findimportdir();
+			
+			string dflsrcdir = std.path.buildPath(importdir, "dfl");
+			string batfilepath = std.path.buildPath(dflsrcdir, "_dflexe.bat");
+			
+			string dmcpathbefore, dmcpathafter;
+			string dmcpath;
+			if(std.file.exists(std.path.buildPath(dmdpath_windows, "bin\\link.exe"))
+				&& std.file.exists(std.path.buildPath(dmdpath_windows, "bin\\lib.exe")))
+			{
+				dmcpath = dmdpath_windows;
+			}
+			else
+			{
+				dmcpath = std.path.buildPath(dmdpath, "..\\dm");
+			}
+			if(std.file.exists(dmcpath))
+			{
+				dmcpathbefore =
+					"\r\n   @set _old_dmc_path=%dmc_path%"
+					"\r\n   @set dmc_path=" ~ dmcpath
+					;
+				dmcpathafter =
+					"\r\n   @set dmc_path=%_old_dmc_path%"
+					;
+			}
+			
+			string oldcwd = getcwd();
+			string olddrive = std.path.driveName(oldcwd);
+			
+			string[] dflcs;
+			if(!optNoDflc)
+				foreach(filename; dirEntries(dflsrcdir, SpanMode.shallow))
+					if(globMatch(filename, "dflc_*.bat"))
+						dflcs ~= filename;
+			
+			//@
+			scope batf = new BufferedFile(batfilepath, FileMode.OutNew);
+			
+			batf.writeString(
+				"\r\n   @" ~ std.path.driveName(dflsrcdir)
+				~ "\r\n   @cd \"" ~ dflsrcdir ~ "\"");
+			
+			batf.writeString(
+				"\r\n   @set _old_dmd_path=%dmd_path%"
+				"\r\n   @set dmd_path=" ~ dmdpath
+				~"\r\n   @set _old_dmd_path_windows=%dmd_path_windows%"
+				"\r\n   @set dmd_path_windows=" ~ dmdpath_windows
+				
+				);
+			
+			batf.writeString(dmcpathbefore);
+			
+			batf.writeString(
+				"\r\n   @set _old_dlib=%dlib%"
+				"\r\n   @set dlib=" ~ dlibname);
+			
+			batf.writeString(
+				"\r\n   @set _old_dfl_go_move=%dfl_go_move%"
+				"\r\n   @set dfl_go_move=1");
+			
+			batf.writeString("\r\n   @set dfl_failed=-1"); // Let makelib.bat unset this.
+			
+			//batf.writeString("\r\n   @call \"" ~ std.path.buildPath(dflsrcdir, "go.bat") ~ "\"\r\n");
+			batf.writeString("\r\n   @call \"" ~ std.path.buildPath(dflsrcdir, "makelib.bat") ~ "\"\r\n");
+			
+			batf.writeString("\r\n" `@if not "%dfl_failed%" == "" goto fail`); // No longer using go.bat for this.
+			
+			if(dflcs.length)
+			{
+				batf.writeString("\r\n   @set _old_path=%path%");
+				batf.writeString("\r\n   @set path=%dmd_path_windows%;%dmc_path%;%path%");
+				batf.writeString("\r\n   @set dflc=true");
+				
+				foreach(dflc; dflcs)
+				{
+					auto ssd = dflc;
+					if(ssd.length > 5 && 0 == std.string.icmp("dflc_", ssd[0 .. 5]))
+						ssd = ssd[5 .. $];
+					if(ssd.length > 4 && 0 == std.string.icmp(".bat", ssd[$ - 4 .. $]))
+						ssd = ssd[0 .. $ - 4];
+					if(0 == ssd.length)
+						continue;
+					ssd = std.string.toUpper(ssd[0 .. 1]) ~ ssd[1 .. $];
+					batf.writeString("\r\n   @echo.\r\n   @echo Setting up DFL " ~ ssd ~ "...");
+					batf.writeString("\r\n   @call \"" ~ std.path.buildPath(dflsrcdir, dflc) ~ "\"\r\n");
+				}
+				
+				batf.writeString("\r\n   @set dflc=");
+				batf.writeString("\r\n   @set path=%_old_path%");
+			}
+			
+			batf.writeString("\r\n   @move /Y dfl*.lib %dmd_path_windows%\\lib > NUL"); // Important! no longer using go.bat for this.
+			
+			batf.writeString("\r\n:fail\r\n");
+			
+			batf.writeString(dmcpathafter);
+			
+			batf.writeString("\r\n   @set dlib=%_old_dlib%");
+			
+			batf.writeString("\r\n   @set dfl_go_move=%_old_dfl_go_move%");
+			
+			batf.writeString("\r\n   @set dmd_path=%_old_dmd_path%"
+				"\r\n   @set dmd_path_windows=%_old_dmd_path_windows%");
+			
+			batf.writeString(
+				"\r\n   @" ~ olddrive
+				~ "\r\n   @cd \"" ~ oldcwd ~ "\"");
+			
+			batf.writeString("\r\n");
+			
+			batf.close();
+			
+			std.process.system(batfilepath);
+			
+			std.file.remove(batfilepath);
+		}
+		
+		
+		bool askBuildDflNow()
+		{
+			if(alreadyBuilt)
+				return false;
+			
+			writef("Would you like to build the DFL lib files now? [Y/n] ");
+			char userc = 'y';
+			for(;;)
+			{
+				string s = to!string(std.string.toLower(din.readLine()));
+				if((!s.length && 'y' == userc)
+					|| "y" == s || "yes" == s)
+				{
+					userc = 'y';
+					break;
+				}
+				if("no" == s || "n" == s)
+				{
+					userc = 'n';
+					break;
+				}
+				userc = ' ';
+				writef("[y/n] ");
+			}
+			if('y' == userc)
+			{
+				buildDflLibs();
+				return true;
+			}
+			alreadyBuilt = true; // ? stop asking...
+			return false;
+		}
+		
+		
+		void findlibdir()
+		{
+			try_lib_again:
+			if(!dfllib.length)
+			{
+				//dfllib = std.path.buildPath(basepath, "lib\\" ~ libfile);
+				//if(!std.file.exists(dfllib))
+				{
+					dfllib = std.path.buildPath(dmdpath_windows, "lib\\" ~ libfile);
+					if(!std.file.exists(dfllib))
+					{
+						dfllib = null;
+						writefln("DFL lib files not found.");
+						if(askBuildDflNow())
+							goto try_lib_again;
+						throw new Exception(libfile ~ " not found");
+					}
+				}
+			}
+		}
+		
+		
+		void findpaths()
+		{
+			findlibdir();
+			findimportdir();
+		}
+		
+		
+
+		void doVerCheck(bool vcVerbose = false, bool vcPrintIssues = true)
+		{
+			findpaths();
+			finddlibname();
+			
+			if(vcVerbose)
+				writefln("Using %s library", dlibname);
+			
+			string x, x2, xver;
+			int ix;
+			
+			//x = cast(string)std.file.read(std.path.buildPath(importdir, r"dfl\readme.txt"));
+			x = cast(string)std.file.read(std.path.buildPath(basepath, "packages\\dfl\\readme.txt"));
+			
+			const string FINDDFLVER = "\nVersion ";
+			ix = std.string.indexOf(x, FINDDFLVER);
+			if(-1 == ix)
+			{
+				bad_readme_ver:
+				throw new Exception("Unable to find version information from readme.txt");
+			}
+			xver = x[ix + FINDDFLVER.length .. x.length];
+			for(ix = 0;; ix++)
+			{
+				if(ix == xver.length || '\r' == xver[ix] || '\n' == xver[ix])
+				{
+					xver = xver[0 .. ix];
+					break;
+				}
+			}
+			ix = std.string.indexOf(xver, " by Christopher E. Miller");
+			if(-1 == ix)
+				goto bad_readme_ver;
+			xver = std.string.strip(xver[0 .. ix]); // DFL version.
+			if(vcVerbose)
+				writefln("DFL version %s", xver);
+			
+			string dmdverdfl;
+			const string FINDTESTEDDMDVER = "\nTested with DMD v";
+			ix = std.string.indexOf(x, FINDTESTEDDMDVER);
+			if(-1 == ix)
+			{
+				//goto bad_readme_ver;
+			}
+			else
+			{
+				x2 = x[ix + FINDTESTEDDMDVER.length .. x.length];
+				xver = x[ix + 1 .. x.length];
+				for(ix = 0;; ix++)
+				{
+					if(ix == xver.length || '\r' == xver[ix] || '\n' == xver[ix])
+					{
+						xver = xver[0 .. ix];
+						break;
+					}
+				}
+				xver = std.string.strip(xver);
+				if(vcVerbose)
+					writefln("%s", xver);
+				
+				xver = x2;
+				for(ix = 0;; ix++)
+				{
+					if(ix == xver.length || ' ' == xver[ix] || '\r' == xver[ix] || '\n' == xver[ix])
+						break;
+				}
+				dmdverdfl = std.string.strip(xver[0 .. ix]);
+				if(ix && '.' == xver[ix - 1])
+					dmdverdfl = xver[0 .. ix - 1];
+			}
+			
+			string dfllibdmdver;
+			string dfllibdlibname = "Phobos";
+			string dfllibdfloptions = "";
+			try
+			{
+				x = cast(string)std.file.read(std.path.buildPath(importdir, r"dfl\dflcompile.info"));
+				
+				dfllibdmdver = scanDmdOut(x, xver);
+				if(dfllibdmdver.length)
+				{
+					if(vcVerbose)
+						writefln("DFL lib files compiled with %s", xver);
+				}
+				
+				{
+					const string finding = "dlib=";
+					int idx = std.string.indexOf(x, finding);
+					if(-1 != idx)
+					{
+						string sub = x[idx + finding.length .. $];
+						idx = std.string.indexOf(sub, '\n');
+						if(-1 != idx)
+						{
+							dfllibdlibname = std.string.strip(sub[0 .. idx]);
+						}
+					}
+				}
+				{
+					const string finding = "dfl_options=";
+					int idx = std.string.indexOf(x, finding);
+					if(-1 != idx)
+					{
+						string sub = x[idx + finding.length .. $];
+						idx = std.string.indexOf(sub, '\n');
+						if(-1 != idx)
+						{
+							dfllibdfloptions = std.string.strip(sub[0 .. idx]);
+						}
+					}
+				}
+			}
+			catch
+			{
+			}
+			
+			string dmdver;
+			x2 = "dmd" ~ to!string(uniform(1, 10000)) ~ ".info";
+			std.process.system(getshortpath(std.path.buildPath(dmdpath_windows, "bin\\dmd.exe")) ~ " > " ~ x2);
+			scope(exit) std.file.remove(x2);
+			x = std.file.readText(x2);
+			dmdver = scanDmdOut(x, xver);
+			if(dmdver.length)
+			{
+				if(vcVerbose)
+					writefln("Installed compiler is %s", xver);
+			}
+
+			if(vcPrintIssues)
+			{
+				string dfloptions = std.string.strip(Environment.getEnvironmentVariable("dfl_options", false)); // throwIfMissing=false
+				if(!dmdver.length || !dfllibdmdver.length)
+				{
+					writefln("*** Warning: Unable to verify if current DFL and DMD versions are compatible.");
+					askBuildDflNow();
+				}
+				else
+				{
+					if(dfllibdmdver != dmdver
+						|| std.string.icmp(dfllibdlibname, dlibname))
+					{
+						writefln("*** Warning: DFL lib files were not compiled with the current DMD compiler."
+							"\nIt is recommended you rebuild the DFL lib files to ensure binary compatibility."
+							/+ "\n (-nover skips this check) " +/);
+						askBuildDflNow();
+					}
+					else if(dfloptions != dfllibdfloptions)
+					{
+						writefln("*** Warning: DFL lib files were not compiled with the current dfl_options."
+							"\nIt is recommended you rebuild the DFL lib files to ensure binary compatibility."
+							);
+						askBuildDflNow();
+					}
+				}
+			}
+		}
+		
+		
+		if(optShowVer)
+		{
+			if(optNoVer)
+			{
+				throw new Exception("Conflicting switches: -ver -nover");
+			}
+			else
+			{
+				doVerCheck(true);
+			}
+		}
+		
+		finddlibname();
+		
+		if(optBuild)
+			buildDflLibs();
+		
+		if(!dmdargs.length)
+		{
+			if(gotargfn)
+				throw new Exception("No files found");
+			
+			if(!optShowVer && !optForceInstall && !optBuild)
+			{
+				showUsage();
+			}
+		}
+		else
+		{
+			findpaths();
+			
+			if(optNoVer)
+			{
+				writefln("Bypassing version check");
+			}
+			else if(!optShowVer)
+			{
+				try
+				{
+					doVerCheck();
+				}
+				catch
+				{
+					writefln("Error checking versions; use switch -ver for details");
+				}
+			}
+			
+			dmdargs ~= "-version=DFL_EXE";
+			
+			if(optTangobos)
+				dmdargs ~= "-version=Tangobos";
+			
+			if(optTango)
+				dmdargs ~= "-version=Tango";
+			
+			if(isDebug && !debugSpecified)
+			{
+				//writefln("Compiling in debug mode; use -release to compile in release mode");
+				writefln("Compiling in debug mode for testing; use -release to compile in release mode");
+				dmdargs ~= "-debug";
+			}
+			else if(!isDebug)
+			{
+				writefln("Compiling in release mode; safety checks removed");
+			}
+			if(!optTangobos && "Tango" != dlibname) // Tango's std and Tangobos' std conflict; Tango automatically has this -I anyway.
+				dmdargs ~= "-I" ~ getshortpath(importdir);
+			{
+				string dfl_options = Environment.getEnvironmentVariable("dfl_options", false); // throwIfMissing=false
+				if(dfl_options.length)
+				{
+					dmdargs ~= dfl_options;
+				}
+			}
+			dmdargs ~= "-L/exet:" ~ optExet ~ "/su:" ~ optSu;
+			dmdargs ~= getshortpath(dfllib);
+			
+			// Call DMD.
+			assert(dmdpath_windows.length);
+			string cmdline;
+			int sc;
+			cmdline = getshortpath(std.path.buildPath(dmdpath_windows, "bin\\dmd.exe")) ~ " " ~ std.string.join(dmdargs, " ");
+			writefln("%s", cmdline);
+			sc = std.process.system(cmdline);
+			if(sc)
+				writef("\nReturned status code %d\n", sc);
+		}
+	}
+	else
+	{
+		prepare();
+		showUsage();
+	}
+	
+	return 0;
+}
+
+// Version number returned; fullver filled with entire version string.
+string scanDmdOut(string data, out string fullver)
+{
+	const string FINDDMDVER = "D Compiler v";
+	if(!data.findSkip(FINDDMDVER))
+		return "";
+	auto ver = to!string(array(data.until("\n")));
+	fullver = "v"~ver;
+	return ver;
+}
+
+unittest {
+	auto data = "hello D Compiler v2.60\nbye";
+	string fullver;
+
+	auto ver =scanDmdOut(data, fullver);
+
+	assert(ver == "2.60", "Not: " ~ ver);
+	assert(fullver == "v2.60", "Not: " ~ fullver);
+}
+
+module stb_image;
+
+private import core.stdc.stdio;
+
+enum STBI_VERSION = 1;
+
+enum {
+    STBI_default = 0,
+    
+    STBI_grey = 1,
+    STBI_grey_alpha = 2,
+    STBI_rgb = 3,
+    STBI_rgb_alpha = 4
+}
+
+
+alias ubyte stbi_uc;
+
+
+// see stb_image.c for comments
+extern (C) {
+    stbi_uc* stbi_load_from_memory(const stbi_uc* buffer, int len, int* x, int* y, int* comp, int req_comp);
+
+    stbi_uc* stbi_load(const char* filename, int* x, int* y, int* comp, int req_comp);
+    stbi_uc* stbi_load_from_file(FILE* f, int* x, int* y, int* comp, int req_comp);
+
+    struct stbi_io_callbacks {
+        int function(void*, char*, int) read; 
+        void function(void*, uint) skip;
+        int function(void*) eof;
+    }
+
+    stbi_uc* stbi_load_from_callbacks(const stbi_io_callbacks* clbk, void* user, int* x, int* y, int* comp, int req_comp);
+
+    float* stbi_loadf_from_memory(const stbi_uc* buffer, int len, int* x, int* y, int* comp, int req_comp);
+
+    float* stbi_loadf(const char* filename, int* x, int* y, int* comp, int req_comp);
+    float* stbi_loadf_from_file(FILE* f, int* x, int* y, int* comp, int req_comp);
+
+    float* stbi_loadf_from_callbacks(const stbi_io_callbacks* clbk, void* user, int* x, int* y, int* comp, int req_comp);
+
+    void stbi_hdr_to_ldr_gamma(float gamma);
+    void stbi_hdr_to_ldr_scale(float scale);
+
+    void stbi_ldr_to_hdr_gamma(float gamma);
+    void stbi_ldr_to_hdr_scale(float scale);
+
+    int stbi_is_hdr_from_callbacks(const stbi_io_callbacks* clbk, void* user);
+    int stbi_is_hdr_from_memory(const stbi_uc* buffer, int len);
+
+    int stbi_is_hdr(const char* filename);
+    int stbi_is_hdr_from_file(FILE* f);
+
+
+    const(char)* stbi_failure_reason(); 
+
+    void stbi_image_free (void* retval_from_stbi_load);
+
+    int stbi_info_from_memory(const stbi_uc* buffer, int len, int* x, int* y, int* comp);
+    int stbi_info_from_callbacks(const stbi_io_callbacks* clbk, void* user, int* x, int* y, int* comp);
+
+    int stbi_info(const char* filename, int* x, int* y, int* comp);
+    int stbi_info_from_file(FILE* f, int* x, int* y, int* comp);
+
+    void stbi_set_unpremultiply_on_load(int flag_true_if_should_unpremultiply);
+
+    void stbi_convert_iphone_png_to_rgb(int flag_true_if_should_convert);
+
+    char* stbi_zlib_decode_malloc_guesssize(const char* buffer, int len, int initial_size, int* outlen);
+    char* stbi_zlib_decode_malloc(const char* buffer, int len, int* outlen);
+    int stbi_zlib_decode_buffer(char* obuffer, int olen, const char* ibuffer, int ilen);
+
+    char* stbi_zlib_decode_noheader_malloc(const char* buffer, int len, int* outlen);
+    int stbi_zlib_decode_noheader_buffer(char* obuffer, int olen, const char* ibuffer, int ilen);
+
+
+    alias void function(stbi_uc*, int, short*, ushort*) stbi_idct_8x8;
+    alias void function(stbi_uc*, const stbi_uc*, const stbi_uc*, const stbi_uc*, int, int) stbi_YCbCr_to_RGB_run;
+
+    void stbi_install_idct(stbi_idct_8x8 func);
+    void stbi_install_YCbCr_to_RGB(stbi_YCbCr_to_RGB_run func);
+
+    // stb_image_write
+
+    int stbi_write_png(const(char)* filename, int w, int h, int comp, const(void)* data, int stride_in_bytes);
+    int stbi_write_bmp(const(char)* filename, int w, int h, int comp, const(void)* data);
+    int stbi_write_tga(const(char)* filename, int w, int h, int comp, const(void)* data);
+}
+
+/**
+ * Defines the GameObject class, to be subclassed by scripts and instantiated for static objects.
+ */
+module dash.core.gameobject;
+import dash.core, dash.components, dash.graphics, dash.utility;
+
+import yaml;
+import std.conv, std.variant, std.array, std.algorithm, std.typecons, std.range, std.string, std.math;
+
+enum AnonymousName = "__anonymous";
+
+/**
+ * Contains flags for all things that could be disabled.
+ */
+struct ObjectStateFlags
+{
+    bool updateComponents;
+    bool updateBehaviors;
+    bool updateChildren;
+    bool drawMesh;
+    bool drawLight;
+
+    /**
+     * Set each member to false.
+     */
+    void pauseAll()
+    {
+        foreach( member; __traits(allMembers, ObjectStateFlags) )
+            static if( __traits(compiles, __traits(getMember, ObjectStateFlags, member) = false) )
+                __traits(getMember, ObjectStateFlags, member) = false;
+    }
+
+    /**
+     * Set each member to true.
+     */
+    void resumeAll()
+    {
+        foreach( member; __traits(allMembers, ObjectStateFlags) )
+            static if( __traits(compiles, __traits(getMember, ObjectStateFlags, member) = true) )
+                __traits(getMember, ObjectStateFlags, member) = true;
+    }
+}
+
+/// A tuple of a resource and a gameobject reference
+alias GameObjectResource = Tuple!( Resource, "resource", GameObject, "object" );
+GameObjectResource[][Resource] objectsByResource;
+
+/**
+ * Manages all components and transform in the world. Can be overridden.
+ */
+final class GameObject
+{
+private:
+    GameObject _parent;
+    GameObject[] _children;
+    Prefab _prefab;
+    Component[ClassInfo] componentList;
+    string _name;
+    bool canChangeName;
+    static uint nextId = 1;
+
+    enum componentProperty( Type ) = q{
+        @property $type $property() { return getComponent!$type; }
+        @property void $property( $type v ) { addComponent( v ); }
+    }.replaceMap( [ "$property": Type.stringof.toLower, "$type": Type.stringof ] );
+
+package:
+    /// THIS IS ONLY SET IF THIS OBJECT IS SCENE _ROOT
+    Scene scene;
+
+    /// Searche the parent tree until we find the scene object
+    Scene findScene()
+    {
+        // Get root object
+        GameObject par;
+        for( par = this; par.parent; par = par.parent ) { }
+        
+        return par.scene;
+    }
+
+public:
+    /**
+     * The struct that will be directly deserialized from the ddl.
+     */
+    static struct Description
+    {
+        /// The name of the object.
+        @rename( "Name" )
+        string name;
+
+        /// The name of the prefab to create from. Do you use with $(D prefab).
+        @rename( "InstanceOf" ) @optional
+        string prefabName = null;
+
+        /// The Prefab to create from.
+        @ignore
+        Prefab prefab;
+
+        /// The transform of the object.
+        @rename( "Transform" ) @optional
+        Transform.Description transform;
+
+        /// Children of this object.
+        @rename( "Children" ) @optional
+        Description[] children;
+
+        @rename( "Components" ) @optional
+        Component.Description[] components;
+    }
+
+    /// The current transform of the object.
+    Transform transform;
+    /// The light attached to this object.
+    @property void light( Light v ) { addComponent( v ); }
+    /// ditto
+    @property Light light()
+    {
+        enum get( Type ) = q{
+            if( auto l = getComponent!$type )
+                return l;
+        }.replace( "$type", Type.stringof );
+        mixin( get!AmbientLight );
+        mixin( get!DirectionalLight );
+        mixin( get!PointLight );
+        mixin( get!SpotLight );
+        return null;
+    }
+    /// The Mesh belonging to the object.
+    mixin( componentProperty!Mesh );
+    /// The Material belonging to the object.
+    mixin( componentProperty!Material );
+    /// The animation on the object.
+    mixin( componentProperty!Animation );
+    /// The camera attached to this object.
+    mixin( componentProperty!Camera );
+    /// The emitter attached to this object.
+    mixin( componentProperty!Emitter );
+    /// The object that this object belongs to.
+    mixin( Property!_parent );
+    /// All of the objects which list this as parent
+    mixin( Property!_children );
+    /// The prefab that this object is based on.
+    mixin( Property!_prefab );
+    /// The name of the object.
+    mixin( Property!( _name, AccessModifier.Package ) );
+    /// Change the name of the object.
+    void changeName( string newName )
+    in
+    {
+        assert( newName && newName.length, "Invalid name given." );
+    }
+    body
+    {
+        // Ignore an unchanging name.
+        if( name == newName )
+        {
+            return;
+        }
+        else if( canChangeName || DGame.instance.currentState == EngineState.Editor )
+        {
+            // Update mappings in the scene.
+            if( auto scene = findScene() )
+            {
+                scene.idByName.remove( name );
+                scene.idByName[ newName ] = id;
+            }
+
+            // Change the name.
+            name = newName;
+        }
+        else
+        {
+            throw new Exception( "Unable to rename gameobject at this time." );
+        }
+    }
+    /// The ID of the object.
+    immutable uint id;
+    /// The current update settings
+    ObjectStateFlags* stateFlags;
+    /// Allow setting of state flags directly.
+    //alias stateFlags this;
+
+    /**
+     * Create a GameObject from a description object.
+     *
+     * Params:
+     *  desc =              The description to pull info from.
+     *
+     * Returns:
+     *  A new game object with components and info pulled from desc.
+     */
+    static GameObject create( const Description desc )
+    {
+        GameObject obj;
+
+        // Create the object
+        if( desc.prefabName )
+        {
+            auto fab = Prefabs[ desc.prefabName ];
+            obj = fab.createInstance();
+            obj.prefab = fab;
+        }
+        else if( desc.prefab )
+        {
+            obj = desc.prefab.createInstance();
+        }
+        else
+        {
+            obj = new GameObject;
+        }
+
+        // Set object name
+        obj.name = desc.name;
+
+        // Init transform
+        obj.transform = desc.transform;
+
+        // Create children
+        if( desc.children.length > 0 )
+        {
+            foreach( child; desc.children )
+            {
+                obj.addChild( GameObject.create( child ) );
+            }
+        }
+
+        // Add components
+        foreach( component; desc.components )
+        {
+            obj.addComponent( component.createInstance() );
+        }
+
+        // Init components
+        foreach( comp; obj.componentList )
+            comp.initialize();
+
+        return obj;
+    }
+
+    /**
+     * Create a description from a GameObject.
+     *
+     * Returns:
+     *  A new description with components and info.
+     */
+    Description toDescription()
+    {
+        Description desc;
+        desc.name = name;
+        desc.prefab = prefab;
+        desc.prefabName = prefab ? prefab.name : null;
+        desc.transform = transform.toDescription();
+        desc.children = children.map!( child => child.toDescription() ).array();
+        desc.components = componentList.values.map!( comp => cast()comp.description ).array();
+        return desc;
+    }
+
+    /// To complement the descriptions, and make serialization easier.
+    static GameObject fromRepresentation( Description desc )
+    {
+        return GameObject.create( desc );
+    }
+    /// ditto
+    Description toRepresentation()
+    {
+        return toDescription();
+    }
+    static assert( isCustomSerializable!GameObject );
+
+    /**
+     * Creates basic GameObject with transform and connection to transform's emitter.
+     */
+    this()
+    {
+        transform = Transform( this );
+
+        // Create default material
+        material = new Material( new MaterialAsset( "default" ) );
+        id = nextId++;
+
+        stateFlags = new ObjectStateFlags;
+        stateFlags.resumeAll();
+
+        name = typeid(this).name.split( '.' )[ $-1 ] ~ id.to!string;
+        canChangeName = true;
+    }
+
+    /**
+     * Allows you to create an object with a set list of components you already have.
+     *
+     * Params:
+     *  newComponents =     The list of components to add.
+     */
+    this( Component[] newComponents... )
+    {
+        this();
+
+        foreach( comp; newComponents )
+            addComponent( comp );
+    }
+
+    /**
+     * Called once per frame to update all children and components.
+     */
+    final void update()
+    {
+        if( stateFlags.updateComponents )
+            foreach( ci, component; componentList )
+                component.update();
+
+        if( stateFlags.updateChildren )
+            foreach( obj; children )
+                obj.update();
+    }
+
+    /**
+     * Called once per frame to draw all children.
+     */
+    final void draw()
+    {
+        foreach( component; componentList )
+            component.draw();
+
+        foreach( obj; children )
+            obj.draw();
+    }
+
+    /**
+     * Called when the game is shutting down, to shutdown all children.
+     */
+    final void shutdown()
+    {
+        foreach( component; componentList )
+            component.shutdown();
+
+        foreach( obj; children )
+            obj.shutdown();
+    }
+
+    /**
+     * Refreshes the object with the given YAML node.
+     *
+     * Params:
+     *  desc =          The node to refresh the object with.
+     */
+    final void refresh( Description node )
+    {
+        if( name != node.name )
+            changeName( node.name );
+
+        transform.refresh( node.transform );
+
+        // Refresh components
+        bool[string] componentExists = zip( StoppingPolicy.shortest, componentList.byKey.map!( k => k.name ), false.repeat ).assocArray();
+        foreach( compDesc; node.components )
+        {
+            // Found it!
+            componentExists[ compDesc.componentType.name ] = true;
+
+            // Refresh, or add if it's new
+            if( auto comp = compDesc.componentType in componentList )
+                comp.refresh( compDesc );
+            else
+                addComponent( compDesc.createInstance() );
+        }
+
+        // Remove old components
+        foreach( key; componentExists.keys.filter!( k => !componentExists[k] ) )
+            componentList.remove( cast(ClassInfo)ClassInfo.find( key ) );
+
+        // Refresh children
+        bool[string] childrenExist = zip( StoppingPolicy.shortest, _children.map!( child => child.name ), false.repeat ).assocArray();
+        foreach( childDesc; node.children )
+        {
+            // Found it!
+            childrenExist[ childDesc.name ] = true;
+
+            // Refresh, or add if it's new
+            if( auto child = _children.filter!( child => child.name == childDesc.name ).front )
+                child.refresh( childDesc );
+            else
+                addChild( GameObject.create( childDesc ) );
+        }
+
+        foreach( key; childrenExist.keys.filter!( k => !childrenExist[k] ) )
+            childrenExist.remove( key );
+    }
+
+    /**
+     * Refresh the component of the given type.
+     *
+     * Params:
+     *  componentType = The type of teh component to refresh.
+     *  desc =          The new description of the component.
+     */
+    final void refreshComponent( ClassInfo componentType, Component.Description desc )
+    {
+        if( auto comp = componentType in componentList )
+        {
+            comp.refresh( desc );
+        }
+    }
+
+    /**
+     * Refresh the component of the given type.
+     *
+     * Params:
+     *  ComponentType = The type of teh component to refresh.
+     *  desc =          The new description of the component.
+     */
+    final void refreshComponent( ComponentType )( Component.Description desc )
+    {
+        refreshComponent( typeid(ComponentType), desc );
+    }
+
+    /**
+     * Refresh the component of the given type.
+     *
+     * Params:
+     *  componentName = The type of teh component to refresh.
+     *  desc =          The new description of the component.
+     */
+    final void refreshComponent( string componentName, Component.Description desc )
+    {
+        refreshComponent( getDescription( componentName ).componentType, desc );
+    }
+
+    /**
+     * Adds a component to the object.
+     */
+    final void addComponent( Component newComponent )
+    in
+    {
+        assert( newComponent, "Null component added." );
+    }
+    body
+    {
+        componentList[ typeid(newComponent) ] = newComponent;
+        newComponent.owner = this;
+    }
+
+    /**
+     * Gets a component of the given type.
+     */
+    final T getComponent( T )() if( is( T : Component ) )
+    {
+        if( auto comp = typeid(T) in componentList )
+            return cast(T)*comp;
+        else
+            return null;
+    }
+
+    /**
+     * Adds object to the children, adds it to the scene graph.
+     *
+     * Params:
+     *  newChild =            The object to add.
+     */
+    final void addChild( GameObject newChild )
+    {
+        // Nothing to see here.
+        if( newChild.parent == this )
+            return;
+        // Remove from current parent
+        else if( newChild.parent )
+            newChild.parent.removeChild( newChild );
+
+        _children ~= newChild;
+        newChild.parent = this;
+        newChild.canChangeName = false;
+
+        Scene currentScene = findScene();
+
+        if( currentScene )
+        {
+            GameObject[] objectChildren;
+            {
+                GameObject[] objs;
+                objs ~= newChild;
+
+                while( objs.length )
+                {
+                    auto obj = objs[ 0 ];
+                    objs = objs[ 1..$ ];
+                    objectChildren ~= obj;
+
+                    foreach( child; obj.children )
+                        objs ~= child;
+                }
+            }
+
+            // If adding to the scene, make sure all new children are in.
+            foreach( child; objectChildren )
+            {
+                currentScene.objectById[ child.id ] = child;
+                currentScene.idByName[ child.name ] = child.id;
+            }
+        }
+    }
+
+    /**
+     * Removes the given object as a child from this object.
+     *
+     * Params:
+     *  oldChild =            The object to remove.
+     */
+    final void removeChild( GameObject oldChild )
+    {
+        children = children.remove( children.countUntil( oldChild ) );
+
+        oldChild.canChangeName = true;
+        oldChild.parent = null;
+
+        Scene currentScene = findScene();
+
+        // Remove from scene.
+        if( currentScene )
+        {
+            currentScene.objectById.remove( oldChild.id );
+            currentScene.idByName.remove( oldChild.name );
+        }
+    }
+}
+
+/**
+ * Handles 3D Transformations for an object.
+ * Stores position, rotation, and scale
+ * and can generate a World matrix, worldPosition/Rotation (based on parents' transforms)
+ * as well as forward, up, and right axes based on rotation
+ */
+struct Transform
+{
+private:
+    vec3f _prevPos;
+    quatf _prevRot;
+    vec3f _prevScale;
+    mat4f _matrix;
+
+    void opAssign( Description desc )
+    {
+        position = vec3f( desc.position[] );
+        rotation = fromEulerAngles( desc.rotation[ 0 ], desc.rotation[ 1 ], desc.rotation[ 2 ] );
+        scale = vec3f( desc.scale[] );
+    }
+
+    /**
+     * Default constructor, most often created by GameObjects.
+     *
+     * Params:
+     *  obj =            The object the transform belongs to.
+     */
+    this( GameObject obj )
+    {
+        owner = obj;
+        position = vec3f(0,0,0);
+        scale = vec3f(1,1,1);
+        rotation = quatf.identity;
+    }
+
+public:
+    /**
+     * The struct that will be directly deserialized from the ddl.
+     */
+    static struct Description
+    {
+        /// The position of the object.
+        @rename( "Position" ) @optional
+        float[3] position = [ 0.0f, 0.0f, 0.0f ];
+
+        /// The position of the object.
+        @rename( "Rotation" ) @optional
+        float[3] rotation = [ 0.0f, 0.0f, 0.0f ];
+
+        /// The position of the object.
+        @rename( "Scale" ) @optional
+        float[3] scale = [ 1.0f, 1.0f, 1.0f ];
+    }
+
+    void refresh( Description desc )
+    {
+        // TODO: Track if the transform actually changed.
+        this = desc;
+    }
+
+    /**
+     * Create a description from a Transform.
+     *
+     * Returns:
+     *  A new description with components.
+     */
+    Description toDescription()
+    {
+        Description desc;
+        desc.position = position.vector[ 0..3 ];
+        desc.rotation = rotation.toEulerAngles().vector[ 0..3 ];
+        desc.scale = scale.vector[ 0..3 ];
+        return desc;
+    }
+
+    // these should remain public fields, properties return copies not references
+    /// The position of the object in local space.
+    vec3f position;
+    /// The rotation of the object in local space.
+    quatf rotation;
+    /// The absolute scale of the object. Ignores parent scale.
+    vec3f scale;
+
+    /// The object which this belongs to.
+    GameObject owner;
+    /// The world matrix of the transform.
+    mixin( Getter!_matrix );
+    //mixin( ThisDirtyGetter!( _matrix, updateMatrix ) );
+
+    @disable this();
+
+    /**
+     * This returns the object's position relative to the world origin, not the parent.
+     *
+     * Returns: The object's position relative to the world origin, not the parent.
+     */
+    final @property vec3f worldPosition() @safe pure nothrow
+    {
+        if( owner.parent is null )
+            return position;
+        else
+            return (owner.parent.transform.matrix * vec4f(position, 1.0f)).xyz;
+    }
+
+    /**
+     * This returns the object's rotation relative to the world origin, not the parent.
+     *
+     * Returns: The object's rotation relative to the world origin, not the parent.
+     */
+    final @property quatf worldRotation() @safe pure nothrow
+    {
+        if( owner.parent is null )
+            return rotation;
+        else
+            return owner.parent.transform.worldRotation * rotation;
+    }
+
+    /*
+     * Check if current or a parent's matrix needs to be updated.
+     * Called automatically when getting matrix.
+     *
+     * Returns: Whether or not the object is dirty.
+     */
+    final @property bool isDirty() @safe pure nothrow
+    {
+        bool result = position != _prevPos ||
+                      rotation != _prevRot ||
+                      scale != _prevScale;
+
+        return owner.parent ? (result || owner.parent.transform.isDirty()) : result;
+    }
+
+    /*
+     * Gets the forward axis of the current transform.
+     *
+     * Returns: The forward axis of the current transform.
+     */
+    final @property const vec3f forward()
+    {
+        return vec3f( -2 * (rotation.x * rotation.z + rotation.w * rotation.y),
+                            -2 * (rotation.y * rotation.z - rotation.w * rotation.x),
+                            -1 + 2 * (rotation.x * rotation.x + rotation.y * rotation.y ));
+    }
+    ///
+    unittest
+    {
+        import std.stdio;
+        writeln( "Dash Transform forward unittest" );
+
+        auto trans = new Transform( null );
+        auto forward = vec3f( 0.0f, 1.0f, 0.0f );
+        trans.rotation.rotatex( 90.radians );
+        assert( almost_equal( trans.forward, forward ) );
+    }
+
+    /*
+     * Gets the up axis of the current transform.
+     *
+     * Returns: The up axis of the current transform.
+     */
+    final @property const vec3f up()
+    {
+        return vec3f( 2 * (rotation.x * rotation.y - rotation.w * rotation.z),
+                        1 - 2 * (rotation.x * rotation.x + rotation.z * rotation.z),
+                        2 * (rotation.y * rotation.z + rotation.w * rotation.x));
+    }
+    ///
+    unittest
+    {
+        import std.stdio;
+        writeln( "Dash Transform up unittest" );
+
+        auto trans = new Transform( null );
+        auto up = vec3f( 0.0f, 0.0f, 1.0f );
+        trans.rotation.rotatex( 90.radians );
+        assert( almost_equal( trans.up, up ) );
+    }
+
+    /*
+     * Gets the right axis of the current transform.
+     *
+     * Returns: The right axis of the current transform.
+     */
+    final @property const vec3f right()
+    {
+        return vec3f( 1 - 2 * (rotation.y * rotation.y + rotation.z * rotation.z),
+                        2 * (rotation.x * rotation.y + rotation.w * rotation.z),
+                        2 * (rotation.x * rotation.z - rotation.w * rotation.y));
+    }
+    ///
+    unittest
+    {
+        import std.stdio;
+        writeln( "Dash Transform right unittest" );
+
+        auto trans = new Transform( null );
+        auto right = vec3( 0.0f, 0.0f, -1.0f );
+        trans.rotation.rotatey( 90.radians );
+        assert( almost_equal( trans.right, right ) );
+    }
+
+    /**
+     * Rebuilds the object's matrix.
+     */
+    final void updateMatrix() @safe pure nothrow
+    {
+        _prevPos = position;
+        _prevRot = rotation;
+        _prevScale = scale;
+
+        _matrix = mat4f.identity;
+        // Scale
+        _matrix[ 0 ][ 0 ] = scale.x;
+        _matrix[ 1 ][ 1 ] = scale.y;
+        _matrix[ 2 ][ 2 ] = scale.z;
+
+        // Rotate
+        _matrix = _matrix * rotation.toMatrix!4;
+
+        // Translate
+        _matrix[ 0 ][ 3 ] = position.x;
+        _matrix[ 1 ][ 3 ] = position.y;
+        _matrix[ 2 ][ 3 ] = position.z;
+
+        // include parent objects' transforms
+        if( owner.parent )
+            _matrix = owner.parent.transform.matrix * _matrix;
+
+        // force children to update to reflect changes to this
+        // compensates for children that don't update properly when only parent is dirty
+        foreach( child; owner.children )
+            child.transform.updateMatrix();
+    }
+}

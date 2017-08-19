@@ -1,0 +1,1324 @@
+module SDL2
+  @[Flags]
+  enum INIT : UInt32
+    TIMER          = 0x00000001
+    AUDIO          = 0x00000010
+    VIDEO          = 0x00000020 # SDL_INIT_VIDEO implies SDL_INIT_EVENTS
+    JOYSTICK       = 0x00000200 # SDL_INIT_JOYSTICK implies SDL_INIT_EVENTS
+    HAPTIC         = 0x00001000
+    GAMECONTROLLER = 0x00002000 # SDL_INIT_GAMECONTROLLER implies SDL_INIT_JOYSTICK
+    EVENTS         = 0x00004000
+    NOPARACHUTE    = 0x00100000
+    EVERYTHING     = (TIMER | AUDIO | VIDEO | EVENTS | JOYSTICK | HAPTIC | GAMECONTROLLER)
+  end
+
+  struct Window
+    @[Flags]
+    enum Flags : UInt32
+      FULLSCREEN = 0x00000001,
+      OPENGL = 0x00000002,
+      SHOWN = 0x00000004,
+      HIDDEN = 0x00000008,
+      BORDERLESS = 0x00000010,
+      RESIZABLE = 0x00000020,
+      MINIMIZED = 0x00000040,
+      MAXIMIZED = 0x00000080,
+      INPUT_GRABBED = 0x00000100,
+      INPUT_FOCUS = 0x00000200,
+      MOUSE_FOCUS = 0x00000400,
+      FULLSCREEN_DESKTOP = ( FULLSCREEN | 0x00001000 ),
+      FOREIGN = 0x00000800,
+      ALLOW_HIGHDPI = 0x00002000
+    end
+  end
+
+  struct Renderer
+    @[Flags]
+    enum Flags : UInt32
+      ACCELERATED = 0x00000002
+      PRESENTVSYNC = 0x00000004
+      TARGETTEXTURE = 0x00000008
+    end
+  end
+
+  enum RenderFlip
+    NONE
+  end
+
+  enum EventType : UInt32
+    FIRSTEVENT     = 0
+
+    QUIT           = 0x100
+
+    APP_TERMINATING
+    APP_LOWMEMORY
+    APP_WILLENTERBACKGROUND
+    APP_DIDENTERBACKGROUND
+    APP_WILLENTERFOREGROUND
+    APP_DIDENTERFOREGROUND
+    WINDOWEVENT    = 0x200
+    SYSWMEVENT
+
+    KEYDOWN        = 0x300
+    KEYUP
+    TEXTEDITING
+    TEXTINPUT
+
+    MOUSEMOTION    = 0x400
+    MOUSEBUTTONDOWN
+    MOUSEBUTTONUP
+    MOUSEWHEEL
+
+    JOYAXISMOTION  = 0x600
+    JOYBALLMOTION
+    JOYHATMOTION
+    JOYBUTTONDOWN
+    JOYBUTTONUP
+    JOYDEVICEADDED
+    JOYDEVICEREMOVED
+
+    CONTROLLERAXISMOTION  = 0x650
+    CONTROLLERBUTTONDOWN
+    CONTROLLERBUTTONUP
+    CONTROLLERDEVICEADDED
+    CONTROLLERDEVICEREMOVED
+    CONTROLLERDEVICEREMAPPED
+
+    FINGERDOWN      = 0x700
+    FINGERUP
+    FINGERMOTION
+
+    DOLLARGESTURE
+    DOLLARRECORD
+    MULTIGESTURE
+
+    CLIPBOARDUPDATE = 0x900
+
+    DROPFILE        = 0x1000
+
+    RENDER_TARGETS_RESET = 0x2000
+
+    USEREVENT    = 0x8000
+
+    LASTEVENT    = 0xFFFF
+  end
+
+  enum Scancode
+    A = 4,
+    B = 5,
+    C = 6,
+    D = 7,
+    E = 8,
+    F = 9,
+    G = 10,
+    H = 11,
+    I = 12,
+    J = 13,
+    K = 14,
+    L = 15,
+    M = 16,
+    N = 17,
+    O = 18,
+    P = 19,
+    Q = 20,
+    R = 21,
+    S = 22,
+    T = 23,
+    U = 24,
+    V = 25,
+    W = 26,
+    X = 27,
+    Y = 28,
+    Z = 29,
+
+    NUM_1 = 30,
+    NUM_2 = 31,
+    NUM_3 = 32,
+    NUM_4 = 33,
+    NUM_5 = 34,
+    NUM_6 = 35,
+    NUM_7 = 36,
+    NUM_8 = 37,
+    NUM_9 = 38,
+    NUM_0 = 39,
+
+    RETURN = 40,
+    ESCAPE = 41,
+    BACKSPACE = 42,
+    TAB = 43,
+    SPACE = 44,
+
+    MINUS = 45,
+    EQUALS = 46,
+    LEFTBRACKET = 47,
+    RIGHTBRACKET = 48,
+    BACKSLASH = 49,
+    NONUSHASH = 50,
+    SEMICOLON = 51,
+    APOSTROPHE = 52,
+    GRAVE = 53,
+    COMMA = 54,
+    PERIOD = 55,
+    SLASH = 56,
+
+    CAPSLOCK = 57,
+
+    F1 = 58,
+    F2 = 59,
+    F3 = 60,
+    F4 = 61,
+    F5 = 62,
+    F6 = 63,
+    F7 = 64,
+    F8 = 65,
+    F9 = 66,
+    F10 = 67,
+    F11 = 68,
+    F12 = 69,
+
+    PRINTSCREEN = 70,
+    SCROLLLOCK = 71,
+    PAUSE = 72,
+    INSERT = 73,
+    HOME = 74,
+    PAGEUP = 75,
+    DELETE = 76,
+    END = 77,
+    PAGEDOWN = 78,
+    RIGHT = 79,
+    LEFT = 80,
+    DOWN = 81,
+    UP = 82,
+
+    NUMLOCKCLEAR = 83,
+    KP_DIVIDE = 84,
+    KP_MULTIPLY = 85,
+    KP_MINUS = 86,
+    KP_PLUS = 87,
+    KP_ENTER = 88,
+    KP_1 = 89,
+    KP_2 = 90,
+    KP_3 = 91,
+    KP_4 = 92,
+    KP_5 = 93,
+    KP_6 = 94,
+    KP_7 = 95,
+    KP_8 = 96,
+    KP_9 = 97,
+    KP_0 = 98,
+    KP_PERIOD = 99,
+
+    NONUSBACKSLASH = 100,
+    APPLICATION = 101,
+    POWER = 102,
+    KP_EQUALS = 103,
+    F13 = 104,
+    F14 = 105,
+    F15 = 106,
+    F16 = 107,
+    F17 = 108,
+    F18 = 109,
+    F19 = 110,
+    F20 = 111,
+    F21 = 112,
+    F22 = 113,
+    F23 = 114,
+    F24 = 115,
+    EXECUTE = 116,
+    HELP = 117,
+    MENU = 118,
+    SELECT = 119,
+    STOP = 120,
+    AGAIN = 121,
+    UNDO = 122,
+    CUT = 123,
+    COPY = 124,
+    PASTE = 125,
+    FIND = 126,
+    MUTE = 127,
+    VOLUMEUP = 128,
+    VOLUMEDOWN = 129,
+    KP_COMMA = 133,
+    KP_EQUALSAS400 = 134,
+
+    INTERNATIONAL1 = 135,
+    INTERNATIONAL2 = 136,
+    INTERNATIONAL3 = 137,
+    INTERNATIONAL4 = 138,
+    INTERNATIONAL5 = 139,
+    INTERNATIONAL6 = 140,
+    INTERNATIONAL7 = 141,
+    INTERNATIONAL8 = 142,
+    INTERNATIONAL9 = 143,
+    LANG1 = 144,
+    LANG2 = 145,
+    LANG3 = 146,
+    LANG4 = 147,
+    LANG5 = 148,
+    LANG6 = 149,
+    LANG7 = 150,
+    LANG8 = 151,
+    LANG9 = 152,
+
+    ALTERASE = 153,
+    SYSREQ = 154,
+    CANCEL = 155,
+    CLEAR = 156,
+    PRIOR = 157,
+    RETURN2 = 158,
+    SEPARATOR = 159,
+    OUT = 160,
+    OPER = 161,
+    CLEARAGAIN = 162,
+    CRSEL = 163,
+    EXSEL = 164,
+
+    KP_00 = 176,
+    KP_000 = 177,
+    THOUSANDSSEPARATOR = 178,
+    DECIMALSEPARATOR = 179,
+    CURRENCYUNIT = 180,
+    CURRENCYSUBUNIT = 181,
+    KP_LEFTPAREN = 182,
+    KP_RIGHTPAREN = 183,
+    KP_LEFTBRACE = 184,
+    KP_RIGHTBRACE = 185,
+    KP_TAB = 186,
+    KP_BACKSPACE = 187,
+    KP_A = 188,
+    KP_B = 189,
+    KP_C = 190,
+    KP_D = 191,
+    KP_E = 192,
+    KP_F = 193,
+    KP_XOR = 194,
+    KP_POWER = 195,
+    KP_PERCENT = 196,
+    KP_LESS = 197,
+    KP_GREATER = 198,
+    KP_AMPERSAND = 199,
+    KP_DBLAMPERSAND = 200,
+    KP_VERTICALBAR = 201,
+    KP_DBLVERTICALBAR = 202,
+    KP_COLON = 203,
+    KP_HASH = 204,
+    KP_SPACE = 205,
+    KP_AT = 206,
+    KP_EXCLAM = 207,
+    KP_MEMSTORE = 208,
+    KP_MEMRECALL = 209,
+    KP_MEMCLEAR = 210,
+    KP_MEMADD = 211,
+    KP_MEMSUBTRACT = 212,
+    KP_MEMMULTIPLY = 213,
+    KP_MEMDIVIDE = 214,
+    KP_PLUSMINUS = 215,
+    KP_CLEAR = 216,
+    KP_CLEARENTRY = 217,
+    KP_BINARY = 218,
+    KP_OCTAL = 219,
+    KP_DECIMAL = 220,
+    KP_HEXADECIMAL = 221,
+
+    LCTRL = 224,
+    LSHIFT = 225,
+    LALT = 226,
+    LGUI = 227,
+    RCTRL = 228,
+    RSHIFT = 229,
+    RALT = 230,
+    RGUI = 231,
+
+    MODE = 257,
+
+    AUDIONEXT = 258,
+    AUDIOPREV = 259,
+    AUDIOSTOP = 260,
+    AUDIOPLAY = 261,
+    AUDIOMUTE = 262,
+    MEDIASELECT = 263,
+    WWW = 264,
+    MAIL = 265,
+    CALCULATOR = 266,
+    COMPUTER = 267,
+    AC_SEARCH = 268,
+    AC_HOME = 269,
+    AC_BACK = 270,
+    AC_FORWARD = 271,
+    AC_STOP = 272,
+    AC_REFRESH = 273,
+    AC_BOOKMARKS = 274,
+
+    BRIGHTNESSDOWN = 275,
+    BRIGHTNESSUP = 276,
+    DISPLAYSWITCH = 277,
+    KBDILLUMTOGGLE = 278,
+    KBDILLUMDOWN = 279,
+    KBDILLUMUP = 280,
+    EJECT = 281,
+    SLEEP = 282,
+
+    APP1 = 283,
+    APP2 = 284,
+
+    NUM_SCANCODES = 512
+  end
+end
+
+
+struct SDL2::Rect
+  property x, y, w, h
+
+  def initialize(@x : Int = 0, @y = 0, @w = 0, @h = 0)
+  end
+
+  def self.new(rect : LibSDL2::Rect)
+    new rect.x, rect.y, rect.w, rect.h
+  end
+
+  def to_unsafe
+    LibSDL2::Rect.new x: x, y: y, w: w, h: h
+  end
+end
+
+require "./protocol"
+
+class Redis::Client
+  include Protocol
+
+  def initialize(host = nil, port = nil)
+    host ||= DEFAULT_HOST
+    port ||= DEFAULT_PORT
+    @socket = TCPSocket.new host, port
+  end
+
+  def self.open(host = nil, port = nil)
+    client = new(host, port)
+    begin
+      yield client
+    ensure
+      client.disconnect
+    end
+  end
+
+  def disconnect
+    @socket.close
+  end
+
+  def del(*keys)
+    command "DEL", *keys, &.to_s
+  end
+
+  def exists(key)
+    bool "EXISTS", key.to_s
+  end
+
+  def get(key)
+    string? "GET", key.to_s
+  end
+
+  def incr(key)
+    int "INCR", key.to_s
+  end
+
+  def decr(key)
+    int "DECR", key.to_s
+  end
+
+  def set(key, value)
+    command "SET", key.to_s, value.to_s
+  end
+
+  def [](key)
+    string "GET", key.to_s
+  end
+
+  def []?(key)
+    get key
+  end
+
+  def []=(key, value)
+    set key, value
+  end
+
+  private def bool(name, *args)
+    command(name, *args) == 1
+  end
+
+  private def int(name, *args)
+    command(name, *args).as Int64
+  end
+
+  private def string(name, *args)
+    command(name, *args).as String
+  end
+
+  private def string?(name, *args)
+    command(name, *args).as String?
+  end
+
+  private def command(name, *args)
+    command(name, *args) { |x| x }
+  end
+
+  private def command(name, *args)
+    array(args.size + 1, @socket) do
+      write name, @socket
+      args.each do |arg|
+        write yield(arg), @socket
+      end
+    end
+    @socket.flush
+
+    read @socket
+  end
+end
+
+require "file"
+require "string_scanner"
+
+class Bunny
+  def parse(view_path, locals)
+    output_html = ""
+    File.each_line(view_path) do |line|
+      scanner = StringScanner.new(line)
+      str = scanner.scan(/.+<%= .+ %>.+/)
+      if str
+        str = str.replace(/.+<%=\s/, "").replace(/\s%>.+/,"")
+      end
+
+      if locals.has_key? str
+        local = locals[str]
+        line = line.replace(/<%= .+ %>/, local)
+      end
+
+      output_html += line
+    end
+    
+    return output_html
+  end
+end
+
+require "openssl/cipher"
+
+module Cryptopals
+  module AES
+    enum Mode
+      ECB
+      CBC
+    end
+
+    def self.encrypt(mode : Mode, plaintext : Bytes, key : Bytes, iv : Bytes = Slice(UInt8).new(16))
+      case mode
+      when Mode::ECB then encrypt_ecb_128(plaintext, key)
+      when Mode::CBC then encrypt_cbc_128(plaintext, key, iv)
+      else                raise "Unknown mode #{mode}"
+      end
+    end
+
+    def self.decrypt(mode : Mode, ciphertext : Bytes, key : Bytes, iv : Bytes = Slice(UInt8).new(16))
+      case mode
+      when Mode::ECB then decrypt_ecb_128(ciphertext, key)
+      when Mode::CBC then decrypt_cbc_128(ciphertext, key, iv)
+      else                raise "Unknown mode #{mode}"
+      end
+    end
+
+    def self.decrypt_cbc_128(ciphertext : Bytes, key : Bytes, iv : Bytes = Slice(UInt8).new(16))
+      raise "Invalid key size: #{key.size}" unless key.size == 16
+      raise "Invalid iv size: #{iv.size}" unless iv.size == 16
+
+      result = Slice(UInt8).new(ciphertext.size)
+      previous = iv
+      (0...ciphertext.size).step(16) do |index|
+        block = ciphertext[index, 16]
+        decrypted = decrypt_ecb_128(block, key).xor(previous)
+        target = result + index
+        target.copy_from(decrypted.to_unsafe, 16)
+        previous = block
+      end
+      result
+    end
+
+    def self.encrypt_cbc_128(plaintext : Bytes, key : Bytes, iv : Bytes = Slice(UInt8).new(16))
+      raise "Invalid key size: #{key.size}" unless key.size == 16
+      raise "Invalid iv size: #{iv.size}" unless iv.size == 16
+      raise "Unpadded plaintext: #{plaintext.size}" unless plaintext.size % 16 == 0
+
+      result = Slice(UInt8).new(plaintext.size)
+      previous = iv
+      (0...plaintext.size).step(16) do |index|
+        block = plaintext[index, 16]
+        encrypted = encrypt_ecb_128(block.xor(previous), key)
+        target = result + index
+        target.copy_from(encrypted.to_unsafe, 16)
+        previous = encrypted
+      end
+      result
+    end
+
+    def self.decrypt_ecb_128(ciphertext : Bytes, key : Bytes)
+      raise "Invalid key size: #{key.size}" unless key.size == 16
+      cipher("AES-128-ECB", false, ciphertext, key)
+    end
+
+    def self.encrypt_ecb_128(plaintext : Bytes, key : Bytes)
+      raise "Invalid key size: #{key.size}" unless key.size == 16
+      cipher("AES-128-ECB", true, plaintext, key)
+    end
+
+    private def self.cipher(cipher_algorithm : String, encrypt : Bool, text : Bytes, key : Bytes, iv = nil)
+      cipher = OpenSSL::Cipher.new(cipher_algorithm)
+      result = IO::Memory.new
+      encrypt ? cipher.encrypt : cipher.decrypt
+      cipher.padding = false
+      cipher.key = key
+      cipher.iv = iv if iv
+      result.write(cipher.update(text))
+      result.write(cipher.final)
+      result.to_slice
+    end
+  end
+end
+
+module Cryptopals
+
+  module PKCS
+
+    def self.pad(input : Bytes, size = 16) : Bytes
+      newsize = ((input.size / size) + 1) * size
+      padded = Slice(UInt8).new(newsize)
+      padded.copy_from(input.to_unsafe, input.size)
+      fillvalue = (newsize - input.size).to_u8
+      (input.size...newsize).each { |i| padded[i] = fillvalue }
+      padded
+    end
+
+    def self.unpad(input : Bytes, size = 16) : Bytes
+      last = input[-1]
+      raise "Invalid padding: invalid last byte #{last} for unpadding on size #{size}" if last > size || last == 0
+      (input + (input.size - last)).each_with_index do |b, i|
+        raise "Invalid padding: expected byte #{last} but found #{b} on position #{i + input.size - last}" unless b == last
+      end
+      input[0, (input.size - last)]
+    end
+
+    def self.valid_padding?(input : Bytes, size = 16) : Bool
+      last = input[-1]
+      return false if last > size || last == 0
+      (input + (input.size - last)).each_with_index do |b, i|
+        return false unless b == last
+      end
+      return true
+    end
+
+  end
+
+end
+
+struct Slice(T)
+  def pad(size = 16)
+    Cryptopals::PKCS.pad(self, size)
+  end
+
+  def unpad(size = 16)
+    Cryptopals::PKCS.unpad(self, size)
+  end
+end
+
+require "kemal-session"
+require "openssl"
+require "openssl/pkcs5"
+require "openssl/cipher"
+require "openssl/hmac"
+require "digest/sha1"
+require "secure_random"
+require "json"
+require "base64"
+require "./kemal-session-client-engine/*"
+
+class Session
+  class ClientEngine < Engine
+    class StorageInstance
+    end
+
+    def initialize(@secret_key_base : String)
+    end
+
+    def run_gc
+      # Cookies should expire by the date
+    end
+    
+    def create_session(session_id : String)
+
+    end
+
+    def destroy_session(session_id : String)
+
+    end
+
+    def destroy_all_sessions
+
+    end
+
+    def all_sessions
+      
+    end
+
+    def each_session(&block)
+      yield Session.new("1")
+    end
+
+    def get_session(session_id : String)
+
+    end
+
+    macro define_delegators(vars)
+      {% for name, type in vars %}
+        def {{name.id}}(session_id : String, k : String) : {{type}}
+        end
+
+        def {{name.id}}?(session_id : String, k : String) : {{type}}?
+        end
+
+        def {{name.id}}(session_id : String, k : String, v : {{type}})
+        end
+
+        def {{name.id}}s(session_id : String) : Hash(String, {{type}})
+        end
+      {% end %}
+    end
+
+    define_delegators({
+      int: Int32,
+      bigint: Int64,
+      string: String,
+      float: Float64,
+      bool: Bool,
+      object: StorableObjects,
+    })
+  end 
+end
+
+module Kemal
+  class ClientEngine
+    class MessageVerifier
+      class InvalidMessage < Exception; end
+
+      def initialize(@secret : String, @digest : Symbol = :sha1)
+      end
+
+      # TODO: Add configuration for serializer
+      def generate(value)
+        data = Base64.strict_encode(value.to_json)
+        "#{data}--#{generate_digest(data)}"
+      end
+
+      def valid_message?(signed_message : String)
+        parts = signed_message.split("--")
+        data = parts[0]
+        digest = parts[1]?
+        return false if data.blank? || digest.nil?
+        data && digest && compare(digest, generate_digest(data))
+      end
+
+      def verify(signed_message : String)
+        if valid_message?(signed_message)
+          data = signed_message.split("--")[0]
+          decoded = String.new(Base64.decode(data))
+          decoded
+        else
+          raise InvalidMessage.new("Unable to verify message")
+        end
+      end
+
+      def compare(a : String, b : String)
+        return false unless a.bytesize == b.bytesize
+        l = a.bytes
+        res = 0
+        begin
+          b.each_byte { |byte| res |= byte ^ l.shift }
+        rescue IndexError
+          res = 1
+        end
+        res == 0
+      end
+
+      private def generate_digest(data)
+        OpenSSL::HMAC.hexdigest(@digest, @secret, data)
+      end
+    end
+  end
+end
+
+require "net/http"
+
+class Stretchy
+  @http_client = HTTP::Client
+  
+  def initialize(host = "127.0.0.1", port = "9200")
+    @es_url = "http://#{host}:#{port}"
+  end
+
+  def search(query)
+    post_json("#{@es_url}/_search", query)
+  end
+
+  def match_all(size = "10")
+    query = "{\"query\":{\"bool\":{\"must\":{\"match_all\":{}}}},\"size\":#{size.to_s}}"
+
+    search(query)
+  end
+
+  def post_json(url, json)
+    Json.parse(@http_client.post(url, json).body.not_nil!)
+  end
+
+end
+
+require "sdl2"
+
+include SDL2
+
+RAND = Random.new
+
+UP = 0
+DOWN = 1
+LEFT = 2
+RIGHT = 3
+
+SDL2.init INIT::VIDEO
+
+record World, w, h
+
+class Entity
+  property x, y
+  delegate h, @tex_rect
+  delegate w, @tex_rect
+
+  def initialize(@texture, @tex_rect)
+    @x = 0.0
+    @y = 0.0
+  end
+
+  def render(renderer)
+    rect = Rect.new @x.to_i - (@tex_rect.w / 2), @y.to_i - (@tex_rect.h / 2), @tex_rect.w, @tex_rect.h
+    renderer.copy @texture, @tex_rect, rect
+  end
+end
+
+class Ball < Entity
+  property vx, vy
+  property hold
+
+  @hold = 2000
+  @vx = 0.0
+  @vy = 0.0
+
+  def r
+    (h + w) / 4
+  end
+end
+
+class Paddle < Entity
+  property speed_modifier
+  @speed_modifier = 0.5
+end
+
+def reset_ball(ball)
+  ball.x = GAME_WIDTH / 2
+  ball.y = GAME_HEIGHT / 2
+  ball.vx = -ball.vx
+  ball.vy = 0.3 * (RAND.rand > 0.5 ? -1 : 1)
+  ball.hold = 2000
+end
+
+def update_all(world, paddles, ball, scores, controls, dt)
+  if ball.hold > 0
+    ball.hold -= dt
+  else
+    ball.x += ball.vx * dt
+    ball.y += ball.vy * dt
+  end
+
+  if (ball.y < ball.r && ball.vy < 0) || (ball.y > (world.h - ball.r) && ball.vy > 0)
+    ball.vy = -ball.vy
+  end
+
+  if ball.vx < 0
+    if ball.x < ball.r
+      scores[1] += 1
+      reset_ball ball
+    elsif ball.x - ball.r < paddles[0].x + paddles[0].w / 2
+      if ball.y + ball.r > paddles[0].y - paddles[0].h/2 &&
+          ball.y - ball.r < paddles[0].y + paddles[0].h/2
+        ball.vx = -ball.vx
+        ball.vy = (ball.y - paddles[0].y) / paddles[0].h
+      end
+    end
+  end
+
+  if ball.vx > 0
+    if ball.x > (world.w - ball.r)
+      scores[0] += 1
+      reset_ball ball
+    elsif ball.x + ball.r > paddles[1].x - paddles[1].w / 2
+      if ball.y + ball.r > paddles[1].y - paddles[1].h/2 &&
+          ball.y - ball.r < paddles[1].y + paddles[1].h/2
+        ball.vx = -ball.vx
+        ball.vy = (ball.y - paddles[1].y) / paddles[1].h
+      end
+    end
+  end
+
+  paddles.each_with_index do |paddle, i|
+    paddle.y += (controls[i][DOWN] - controls[i][UP]) * dt * paddle.speed_modifier
+    paddle.y = world.h - paddle.h/2 if paddle.y > world.h - paddle.h/2
+    paddle.y = paddle.h/2 if paddle.y < paddle.h/2
+  end
+end
+
+class Numbers
+  def initialize(@texture, @rect)
+  end
+
+  def digit_width
+    @rect.w / 10
+  end
+
+  def digit_height
+    @rect.h
+  end
+
+  def digit_rect(digit)
+    digit = Math.max(Math.min(digit, 9), 0)
+    Rect.new digit * digit_width, 0, digit_width, digit_height
+  end
+
+  def render(renderer, number, right_align, x, y)
+    digits = [] of Int32
+    if number == 0
+      digits << 0
+    end
+    while number > 0
+      digits << number % 10
+      number = number / 10
+    end
+    digits.reverse!
+    if right_align
+      x -= digit_width * digits.size
+    end
+    digits.each do |d|
+      renderer.copy @texture, digit_rect(d), Rect.new(x, y, digit_width, digit_height)
+      x += digit_width
+    end
+  end
+end
+
+def load_texture(renderer, filename)
+  bitmap = SDL2.load_bmp_from_file filename
+  bitmap_rect = bitmap.rect
+
+  texture = renderer.create_texture bitmap
+  bitmap.free
+  {texture, bitmap_rect}
+end
+
+GAME_WIDTH = 1024
+GAME_HEIGHT = 768
+window = Window.new "Pong", 100, 100, GAME_WIDTH, GAME_HEIGHT, Window::Flags::SHOWN
+renderer = window.create_renderer flags: Renderer::Flags::ACCELERATED | Renderer::Flags::PRESENTVSYNC
+
+paddle_tex, paddle_rect = load_texture renderer, "assets/GreenPaddle.bmp"
+ball_tex, ball_rect = load_texture renderer, "assets/Ball.bmp"
+numbers_tex, numbers_rect = load_texture renderer, "assets/Numbers.bmp"
+
+world = World.new GAME_WIDTH, GAME_HEIGHT
+paddles = [Paddle.new(paddle_tex, paddle_rect), Paddle.new(paddle_tex, paddle_rect)]
+paddles[0].x = 10 + paddle_rect.w / 2
+paddles[0].y = (GAME_HEIGHT - paddle_rect.h) / 2
+paddles[1].x = GAME_WIDTH - paddle_rect.w / 2 - 10
+paddles[1].y = (GAME_HEIGHT - paddle_rect.h) / 2
+numbers = Numbers.new numbers_tex, numbers_rect
+
+scores = [0,0]
+paddles[0].speed_modifier = 1
+paddles[1].speed_modifier = 0.4
+
+ball = Ball.new(ball_tex, ball_rect)
+ball.x = (GAME_WIDTH - ball_rect.w) / 2
+ball.y = (GAME_HEIGHT - ball_rect.h) / 2
+
+ball.vx = 0.5 * (RAND.rand > 0.5 ? -1 : 1)
+ball.vy = 0.5 * (RAND.rand > 0.5 ? -1 : 1)
+
+quit = false
+
+controls = Array.new(2) { Array.new(4, 0) }
+
+last_ticks = SDL2.ticks
+frames_ticks = last_ticks
+frames = 0
+
+until quit
+  now_ticks = SDL2.ticks
+  dt = now_ticks - last_ticks
+
+  SDL2.poll_events do |event|
+    case event.type
+    when EventType::QUIT
+      quit = true
+    when EventType::KEYDOWN, EventType::KEYUP
+      is_down = event.type == EventType::KEYDOWN ? 1 : 0
+      case event.key.key_sym.scan_code
+      when Scancode::ESCAPE
+        quit = true
+      when Scancode::UP
+        controls[0][UP] = is_down
+      when Scancode::DOWN
+        controls[0][DOWN] = is_down
+      when Scancode::LEFT
+        controls[0][LEFT] = is_down
+      when Scancode::RIGHT
+        controls[0][RIGHT] = is_down
+      end
+    end
+  end
+
+  # "AI"
+  if ball.y > paddles[1].y + ball.r
+    controls[1][DOWN] = 1
+    controls[1][UP] = 0
+  elsif ball.y < paddles[1].y - ball.r
+    controls[1][DOWN] = 0
+    controls[1][UP] = 1
+  else
+    controls[1][UP] = 0
+    controls[1][DOWN] = 0
+  end
+
+  update_all world, paddles, ball, scores, controls, dt
+
+  renderer.clear
+  paddles.each &.render(renderer)
+  ball.render renderer
+  numbers.render renderer, scores[0], false, 10, 10
+  numbers.render renderer, scores[1], true, GAME_WIDTH - 10, 10
+  renderer.present
+
+  last_ticks = now_ticks
+  frames += 1
+
+  if now_ticks - frames_ticks > 1000
+    #puts "FPS: #{frames.to_f / (now_ticks - frames_ticks) * 1000}"
+    frames_ticks = now_ticks
+    frames = 0
+  end
+end
+
+SDL2.quit
+
+
+struct Complex
+  getter real
+  getter imag
+
+  def initialize(real : Number, imag : Number)
+    @real = real.to_f
+    @imag = imag.to_f
+  end
+
+  def ==(other : Complex)
+    @real == other.real && @imag == other.imag
+  end
+
+  def ==(other : Number)
+    self == other.to_c
+  end
+
+  def ==(other)
+    false
+  end
+
+  def to_s(io : IO)
+    io << @real
+    io << (@imag >= 0 ? " + " : " - ")
+    io << @imag.abs
+    io << "i"
+  end
+
+  def abs
+    Math.hypot(@real, @imag)
+  end
+
+  def abs2
+    @real * @real + @imag * @imag
+  end
+
+  def sign
+    self / abs
+  end
+
+  def phase
+    Math.atan2(@imag, @real)
+  end
+
+  def polar
+    {abs, phase}
+  end
+
+  def conj
+    Complex.new(@real, - @imag)
+  end
+
+  def inv
+    conj / abs2
+  end
+
+  # Complex.sqrt was inspired by the following blog post of Pavel Panchekha on floating point precision:
+  # https://pavpanchekha.com/casio/index.html
+  def sqrt
+    r = abs
+
+    re = if @real >= 0
+      0.5 * Math.sqrt(2.0 * (r + @real))
+    else
+      @imag.abs / Math.sqrt(2 * (r - @real))
+    end
+
+    im = if @real <= 0
+      0.5 * Math.sqrt(2.0 * (r - @real))
+    else
+      @imag.abs / Math.sqrt(2 * (r + @real))
+    end
+
+    if @imag >= 0
+      Complex.new(re, im)
+    else
+      Complex.new(re, - im)
+    end
+  end
+
+  def exp
+    r = Math.exp(@real)
+    Complex.new(r * Math.cos(@imag), r * Math.sin(@imag))
+  end
+
+  def log
+    Complex.new(Math.log(abs), phase)
+  end
+
+  def log2
+    log / Math::LOG2
+  end
+
+  def log10
+    log / Math::LOG10
+  end
+
+  def +(other : Complex)
+    Complex.new(@real + other.real, @imag + other.imag)
+  end
+
+  def +(other : Number)
+    Complex.new(@real + other, @imag)
+  end
+
+  def -
+    Complex.new(- @real, - @imag)
+  end
+
+  def -(other : Complex)
+    Complex.new(@real - other.real, @imag - other.imag)
+  end
+
+  def -(other : Number)
+    Complex.new(@real - other, @imag)
+  end
+
+  def *(other : Complex)
+    Complex.new(@real * other.real - @imag * other.imag, @real * other.imag + @imag * other.real)
+  end
+
+  def *(other : Number)
+    Complex.new(@real * other, @imag * other)
+  end
+
+  def /(other : Complex)
+    if other.real <= other.imag
+      r = other.real / other.imag
+      d = other.imag + r * other.real
+      Complex.new((@real * r + @imag) / d, (@imag * r - @real) / d)
+    else
+      r = other.imag / other.real
+      d = other.real + r * other.imag
+      Complex.new((@real + @imag * r) / d, (@imag - @real * r) / d)
+    end
+  end
+
+  def /(other : Number)
+    Complex.new(@real / other, @imag / other)
+  end
+end
+
+struct Number
+  def to_c
+    Complex.new(self, 0)
+  end
+
+  def i
+    Complex.new(0, self)
+  end
+
+  def ==(other : Complex)
+    to_c == other
+  end
+
+  def cis
+    Complex.new(Math.cos(self), Math.sin(self))
+  end
+
+  def +(other : Complex)
+    Complex.new(self + other.real, other.imag)
+  end
+
+  def -(other : Complex)
+    Complex.new(self - other.real, - other.imag)
+  end
+
+  def *(other : Complex)
+    Complex.new(self * other.real, self * other.imag)
+  end
+
+  def /(other : Complex)
+    self * inv(other)
+  end
+end
+
+struct Float
+  def self.zero
+    cast(0)
+  end
+
+  def +
+    self
+  end
+end
+
+struct Float32
+  NAN = 0_f32 / 0_f32
+  INFINITY = 1_f32 / 0_f32
+  MIN = -INFINITY
+  MAX =  INFINITY
+
+  def -
+    0.0_f32 - self
+  end
+
+  def ceil
+    LibM.ceil_f32(self)
+  end
+
+  def floor
+    LibM.floor_f32(self)
+  end
+
+  def round
+    LibM.round_f32(self)
+  end
+
+  def trunc
+    LibM.trunc_f32(self)
+  end
+
+  def **(other : Int32)
+    LibM.powi_f32(self, other)
+  end
+
+  def **(other : Float32)
+    LibM.pow_f32(self, other)
+  end
+
+  def **(other)
+    self ** other.to_f32
+  end
+
+  def to_s
+    to_f64.to_s
+  end
+
+  def to_s(io : IO)
+    to_f64.to_s(io)
+  end
+
+  def hash
+    n = self
+    (pointerof(n) as Int32*).value
+  end
+
+  def self.cast(value)
+    value.to_f32
+  end
+end
+
+struct Float64
+  NAN = 0_f64 / 0_f64
+  INFINITY = 1_f64 / 0_f64
+  MIN = -INFINITY
+  MAX =  INFINITY
+
+  def -
+    0.0 - self
+  end
+
+  def ceil
+    LibM.ceil_f64(self)
+  end
+
+  def floor
+    LibM.floor_f64(self)
+  end
+
+  def round
+    LibM.round_f64(self)
+  end
+
+  def trunc
+    LibM.trunc_f64(self)
+  end
+
+  def **(other : Int32)
+    LibM.powi_f64(self, other)
+  end
+
+  def **(other : Float64)
+    LibM.pow_f64(self, other)
+  end
+
+  def **(other)
+    self ** other.to_f64
+  end
+
+  def to_s
+    String.new(22) do |buffer|
+      C.sprintf(buffer, "%g", self)
+      len = C.strlen(buffer)
+      {len, len}
+    end
+  end
+
+  def to_s(io : IO)
+    chars = StaticArray(UInt8, 22).new(0_u8)
+    C.sprintf(chars, "%g", self)
+    io.write(chars.to_slice, C.strlen(chars.buffer))
+  end
+
+  def hash
+    n = self
+    (pointerof(n) as Int64*).value
+  end
+
+  def self.cast(value)
+    value.to_f64
+  end
+end

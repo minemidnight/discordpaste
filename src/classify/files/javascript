@@ -1,0 +1,4085 @@
+(function() {
+
+'use strict';
+
+module.exports = function(grunt) {
+
+    var fs          = require("fs"),
+        path        = require("path"),
+        phantom     = require("grunt-lib-phantomjs").init(grunt);
+
+    var asset = path.join.bind(null, __dirname, '..');
+
+    grunt.registerMultiTask('htmlSnapshot','fetch html snapshots', function(){
+
+        var options = this.options({
+          urls: [],
+          msWaitForPages: 500,
+          fileNamePrefix: 'snapshot_',
+          sanitize: function(requestUri) {
+            return requestUri.replace(/#|\/|\!/g, '_');
+          },
+          snapshotPath: '',
+          sitePath: '',
+          removeScripts: false,
+          removeLinkTags: false,
+          removeMetaTags: false,
+          replaceStrings: [],
+          haltOnError: true,
+          pageOptions: {}
+        });
+
+        // the channel prefix for this async grunt task
+        var taskChannelPrefix = "" + new Date().getTime();
+
+        var sanitizeFilename = options.sanitize;
+
+        var isLastUrl = function(url){
+            return options.urls[options.urls.length - 1] === url;
+        };
+
+        phantom.on(taskChannelPrefix + ".error.onError", function (msg, trace) {
+            if (options.haltOnError) {
+                phantom.halt();
+                grunt.warn('error: ' + msg, 6);
+            } else {
+                grunt.log.writeln(msg);
+            }
+        });
+
+        phantom.on(taskChannelPrefix + ".console", function (msg, trace) {
+            grunt.log.writeln(msg);
+        });
+
+        phantom.on(taskChannelPrefix + ".htmlSnapshot.pageReady", function (msg, url) {
+            var plainUrl = url.replace(sitePath, '');
+
+            var fileName =  options.snapshotPath +
+                            options.fileNamePrefix +
+                            sanitizeFilename(plainUrl) +
+                            '.html';
+
+            if (options.removeScripts){
+                msg = msg.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+            }
+
+            if (options.removeLinkTags){
+                msg = msg.replace(/<link\s.*?(\/)?>/gi, '');
+            }
+
+            if (options.removeMetaTags) {
+                msg = msg.replace(/<meta\s.*?(\/)?>/gi, '');
+            }
+
+            options.replaceStrings.forEach(function(obj) {
+                var key = Object.keys(obj);
+                var value = obj[key];
+                var regex = new RegExp(key, 'g');
+                msg = msg.replace(regex, value);
+            });
+
+            grunt.file.write(fileName, msg);
+            grunt.log.writeln(fileName, 'written');
+            phantom.halt();
+
+            isLastUrl(plainUrl) && done();
+        });
+
+        var done = this.async();
+
+        var urls = options.urls;
+        var sitePath = options.sitePath;
+
+        grunt.util.async.forEachSeries(urls, function(url, next) {
+
+            phantom.spawn(sitePath + url, {
+                // Additional PhantomJS options.
+                options: {
+                    phantomScript: asset('phantomjs/bridge.js'),
+                    msWaitForPages: options.msWaitForPages,
+                    bodyAttr: options.bodyAttr,
+                    cookies: options.cookies,
+                    taskChannelPrefix: taskChannelPrefix,
+                    pageOptions: options.pageOptions
+                },
+                // Complete the task when done.
+                done: function (err) {
+                    if (err) {
+                        // If there was an error, abort the series.
+                        done();
+                    }
+                    else {
+                        // Otherwise, process next url.
+                        next();
+                    }
+                }
+            });
+        });
+        grunt.log.writeln('running html-snapshot task...hold your horses');
+    });
+};
+
+}());
+
+const rethinkdbdash = require("rethinkdbdash");
+module.exports = {
+	init: async () => {
+		const config = require(require("path").resolve("config.json"));
+		if(!config.other.database) {
+			console.warn("No RethinkDB connection info in config.json, Oxyl won't work as expected");
+			return false;
+		}
+
+		let dbName = config.other.databaseName || "Oxyl";
+		let connectionInfo = config.other.database;
+		connectionInfo.silent = true;
+		connectionInfo.db = dbName;
+		const r = rethinkdbdash(connectionInfo); // eslint-disable-line id-length
+
+		let dbs = await r.dbList().run();
+		if(!~dbs.indexOf(dbName)) {
+			console.info(`Creating database ${dbName}...`);
+			await r.dbCreate(dbName).run();
+		}
+
+		let tableList = await r.tableList().run();
+		let tablesExpected = [{
+			name: "autoRole",
+			primary: "roleID",
+			indexes: ["guildID"]
+		}, {
+			name: "censors",
+			primary: "id", // [censorID, guildID]
+			indexes: ["guildID"]
+		}, {
+			name: "donators",
+			primary: "userID"
+		}, {
+			name: "editedCommands",
+			primary: "id" // [command, guildID]
+		}, {
+			name: "ignoredChannels",
+			primary: "channelID"
+		}, {
+			name: "locales",
+			primary: "id"
+		}, {
+			name: "modLog",
+			primary: "id", // [caseNum, guildID]
+			indexes: ["guildID"]
+		}, {
+			name: "roleMe",
+			primary: "roleID",
+			indexes: ["guildID"]
+		}, {
+			name: "rolePersistRules",
+			primary: "roleID",
+			indexes: ["guildID"]
+		}, {
+			name: "rolePersistStorage",
+			primary: "id" // [memberID, guildID]
+		}, {
+			name: "savedQueues",
+			primary: "id" // [savedID, userID]
+		}, {
+			name: "settings",
+			primary: "id", // [name, guildID]
+			indexes: ["guildID"]
+		}, {
+			name: "tags",
+			primary: "name",
+			indexes: ["ownerID"]
+		}, {
+			name: "timedEvents",
+			primary: "uuid",
+			indexes: ["date"]
+		}, {
+			name: "warnings",
+			primary: "uuid",
+			indexes: ["userID"]
+		}];
+
+		for(let table of tablesExpected) {
+			if(~tableList.indexOf(table.name)) continue;
+
+			console.info(`Creating "${table.name}" table...`);
+			await r.tableCreate(table.name, { primaryKey: table.primary }).run();
+
+			if(table.indexes) {
+				for(let index of table.indexes) await r.table(table.name).indexCreate(index).run();
+			}
+			if(table.insertions) {
+				for(let insertion of table.insertions) await r.table(table.name).insert(insertion).run();
+			}
+		}
+
+		console.startup(`RethinkDB initated on master`);
+		await r.getPoolMaster().drain();
+		return true;
+	},
+	connect: async () => {
+		const config = require(require("path").resolve("config.json"));
+		if(!config.other.database) return;
+
+		let dbName = config.other.databaseName || "Oxyl";
+		let connectionInfo = config.other.database;
+		connectionInfo.silent = true;
+		connectionInfo.db = dbName;
+		global.r = rethinkdbdash(connectionInfo); // eslint-disable-line id-length
+
+		if(bot) module.exports.botStuff();
+	},
+	botStuff: async () => {
+		let prefixes = await r.table("settings").filter({ name: "prefix" }).run();
+		prefixes.forEach(setting => {
+			let shard = ~~((setting.guildID / 4194304) % cluster.worker.maxShards);
+			if(shard >= cluster.worker.shardStart && shard <= cluster.worker.shardEnd) {
+				bot.prefixes.set(setting.guildID, setting.value);
+			}
+		});
+
+		let censors = await r.table("censors").run();
+		censors.forEach(censor => {
+			let shard = ~~((censor.guildID / 4194304) % cluster.worker.maxShards);
+			if(shard >= cluster.worker.shardStart && shard <= cluster.worker.shardEnd) {
+				let censorsCache = bot.censors.get(censor.guildID);
+				if(censorsCache) {
+					censorsCache.set(censor.censorID, { action: censor.action, regex: censor.regex });
+				} else {
+					bot.censors.set(censor.guildID, new Map())
+						.get(censor.guildID)
+						.set(censor.censorID, { action: censor.action, regex: censor.regex });
+				}
+			}
+		});
+
+		let channels = await r.table("ignoredChannels").run();
+		channels.forEach(ignored => {
+			let shard = ~~((ignored.guildID / 4194304) % cluster.worker.maxShards);
+			if(shard >= cluster.worker.shardStart && shard <= cluster.worker.shardEnd) {
+				bot.ignoredChannels.set(ignored.channelID, ignored.guildID);
+			}
+		});
+
+		let locales = await r.table("locales").run();
+		locales.forEach(locale => bot.localeCache.set(locale.id, locale.locale));
+	}
+};
+
+if(!cluster.isMaster) module.exports.connect();
+
+const Eris = require("eris-additions")(require("eris"), {
+	enabled: [
+		"Channel.awaitMessages",
+		"Member.bannable",
+		"Member.kickable",
+		"Member.punishable",
+		"Role.addable"
+	]
+});
+const path = require("path");
+const fs = Promise.promisifyAll(require("fs"));
+const config = require(path.resolve("config.json"));
+
+let raven = require("raven");
+if(config.bot.sentryLink) raven.config(config.bot.sentryLink).install();
+
+async function init() {
+	if(!config.bot.token) {
+		console.error("No token found in config.json");
+		process.exit(0);
+	} else if(!config.bot.prefixes) {
+		console.error("No prefix(es) found in config.json");
+		process.exit(0);
+	} else {
+		global.bot = new Eris(config.bot.token, {
+			firstShardID: cluster.worker.shardStart,
+			lastShardID: cluster.worker.shardEnd,
+			maxShards: cluster.worker.totalShards,
+			disableEvents: { TYPING_START: true },
+			messageLimit: 0,
+			defaultImageFormat: "png",
+			defaultImageSize: 256
+		});
+	}
+
+	bot.config = config;
+	bot.ignoredChannels = new Map();
+	bot.players = new Map();
+	bot.prefixes = new Map();
+	bot.censors = new Map();
+
+	let locales = await getFiles(path.resolve("locales"), file => file.endsWith(".json"));
+	bot.locales = locales.map(file => file.substring(file.lastIndexOf("/") + 1, file.lastIndexOf(".")));
+	bot.localeCache = new Map();
+	require(path.resolve("src", "misc", "rethink"));
+	require(path.resolve("src", "misc", "outputHandler"));
+	require(path.resolve("src", "bot", "modules", "locales"));
+
+	bot.utils = {};
+	let utils = await loadScripts(path.resolve("src", "bot", "utils"));
+	utils.forEach(script => bot.utils[script.name] = script.exports);
+
+	let onceListeners = await loadScripts(path.resolve("src", "bot", "listeners", "once"));
+	let onListeners = await loadScripts(path.resolve("src", "bot", "listeners", "on"));
+	onceListeners.forEach(script => bot.once(script.name, script.exports));
+	onListeners.forEach(script => bot.on(script.name, script.exports));
+
+	bot.commands = {};
+	const Command = require(path.resolve("src", "bot", "structures", "command"));
+	let commands = await loadScripts(path.resolve("src", "bot", "commands"), true);
+	commands.forEach(script => {
+		let finalPath = script.path.dir.substring(script.path.dir.lastIndexOf("/") + 1);
+		script.exports.name = script.name.toLowerCase();
+		script.exports.type = finalPath;
+
+		let command = new Command(script.exports);
+	});
+
+	bot.connect();
+}
+
+async function loadScripts(filepath, deep = false) {
+	if(!fs.existsSync(filepath)) return [];
+
+	let scripts = [];
+	let files = await getFiles(filepath, file => file.endsWith(".js"), deep);
+
+	files.forEach(file => {
+		scripts.push({
+			name: file.substring(file.lastIndexOf("/") + 1, file.length - 3),
+			exports: require(file),
+			path: path.parse(file)
+		});
+	});
+
+	return scripts;
+}
+
+async function getFiles(filepath, filter = () => true, deep = false) {
+	let files = await fs.readdirAsync(filepath);
+	let validFiles = [];
+
+	for(let file of files) {
+		if(deep) {
+			let stats = await fs.lstatAsync(`${filepath}/${file}`);
+			if(stats.isDirectory()) validFiles = validFiles.concat(await getFiles(`${filepath}/${file}`, filter, deep));
+		}
+
+		if(filter(file)) validFiles.push(`${filepath}/${file}`);
+	}
+
+	return validFiles;
+}
+
+const statPoster = require(path.resolve("src", "bot", "modules", "statPoster"));
+setInterval(statPoster, 1800000);
+
+process.on("unhandledRejection", err => {
+	if(err.message.startsWith("Request timed out")) return;
+	try {
+		let resp = JSON.parse(err.response);
+		// these codes mean someone bamboozled perms
+		if(~[10003, 10008, 40005, 50001, 50013].indexOf(resp.code)) return;
+		else throw err;
+	} catch(err2) {
+		console.error(err.stack);
+		if(raven.installed) raven.captureException(err);
+	}
+});
+
+cluster.worker.on("message", async msg => {
+	if(msg.type === "eval") {
+		try {
+			let result = await eval(msg.input);
+			process.send({ type: "output", result, id: msg.id });
+		} catch(err) {
+			process.send({ type: "output", error: err.stack, id: msg.id });
+		}
+	} else if(msg.type === "output") {
+		cluster.worker.emit("outputMessage", msg);
+	}
+});
+
+init();
+
+// Load Backbone dependency first.
+exports.Backbone = (typeof Backbone !== 'undefined') ? Backbone : require('backbone');
+
+var _ = require('underscore'),
+    Parser = require('./parser'),
+    TemplateStore = require('./template_store'),
+    PageHelper = require('./page_helper'),
+    Reaction  = require('./reaction'),
+    ViewStore = require('./view_store');
+
+var templateStore = new TemplateStore(),
+    viewStore = new ViewStore();
+
+exports.templateStore = templateStore;
+
+exports.registerTemplate = _.bind(templateStore.load, templateStore);
+
+exports.getTemplateClass = _.bind(templateStore.getTemplateClass, templateStore); //Deprecated
+
+exports.viewStore = viewStore;
+
+exports.registerView = _.bind(viewStore.load, viewStore);
+
+exports.setCustomGetView = _.bind(viewStore.setCustomGetView, viewStore);
+
+exports.setGetPresenter = _.bind(Reaction.setGetPresenter, Reaction);
+
+exports.bootstrap = PageHelper.loadFromPage;
+
+exports.getTemplate = function(templatePath, model) {
+  var Template = this.getTemplateClass(templatePath);
+  return new Template(model);
+};
+
+exports.compile = function(module, filename) {
+  // This is a hack to make requiring a file that ends in .js.ed to return a
+  // EndDash compiled version of that file. We need to expose it publicly,
+  // because we have code that relies on it, but it's deprecated and not
+  // officially a part of the public API.
+  var fs = require('fs'),
+      markup = fs.readFileSync(filename, 'utf8'),
+      templateName = filename.replace(/\.js\.ed(\.erb)?$/, '');
+
+  module.exports = templateStore.loadAndParse(templateName, markup);
+};
+
+var reactions = [
+    // The load order matters here...
+    require('./reactions/partial'),
+    require('./reactions/scope'),
+    require('./reactions/model'),
+    require('./reactions/looping'),
+    require('./reactions/deprecated_looping'),
+    require('./reactions/attribute'),
+    require('./reactions/variable'),
+    require('./reactions/conditional'),
+    require('./reactions/view'),
+    require('./reactions/debugger')
+  ];
+
+_.each(reactions, Parser.registerReaction);
+
+EndDash = module.exports;
+
+var EndDash = require('./end-dash');
+
+// Only load HTML do not parse until template is requested
+// If this is changed be aware, order matters. If templates with
+// partials are parsed before their partials raw HTML are parser.js will error
+exports.loadFromPage = function () {
+  $('script[type="text/enddash"]').each(function() {
+    var $el = $(this),
+        // Need to trim whitespace or else jQuery will complain.
+        markup = $.trim($el.html()),
+        name = $el.attr('name');
+
+    if (!name) {
+      throw new Error("Script tags of type text/enddash must have a 'name' attribute");
+    }
+
+    EndDash.registerTemplate($el.attr('name'), markup);
+  });
+};
+
+var Template = require("./template"),
+    path = require('path'),
+    util = require("./util"),
+    _ = require("underscore"),
+    reactions = [];
+
+var Parser = module.exports = function(markup, opts) {
+  opts = opts || {};
+
+  this.markup = $(markup);
+
+  if (this.markup.length !== 1) {
+    throw new Error('Template '+opts.templateName+' invalid: a template must have exactly one root node.');
+  }
+
+  this.absolutePath = opts.templateName;
+  this.reactions = reactions;
+  this.structure = { children: [] };
+  this.structureStack = [this.structure];
+
+  this._state = {
+    templates: opts.templates,
+    pathStack: [this.absolutePath],
+    currentDir: function() {
+      return path.dirname(_.last(this.pathStack));
+    }
+  };
+
+  this.preparse(this.markup);
+  this.parse(this.markup);
+};
+
+Parser.registerReaction = function(reaction) {
+  reactions.push(reaction);
+};
+
+Parser.prototype.traverse = function(el, callback) {
+  var that = this;
+  el.each(function(i, el) {
+    callback.call(that, $(el), function() {
+      that.traverse($(el).children(), callback);
+    });
+  });
+};
+
+Parser.prototype.preparse = function(root) {
+  this.traverse(root, function(el, next) {
+    _(this.reactions).each(function(Reaction) {
+      if(Reaction.preparse) {
+        if(el.is(Reaction.selector) && Reaction.reactIf(el)) {
+          Reaction.preparse(el, this._state);
+        }
+      }
+    }, this);
+    next();
+    _(this.reactions).each(function(Reaction) {
+      if(Reaction.afterPreparse) {
+        if(el.is(Reaction.selector) && Reaction.reactIf(el)) {
+          Reaction.afterPreparse(el, this._state);
+        }
+      }
+    }, this);
+  });
+};
+
+Parser.prototype.parse = function(root) {
+  this.traverse(root, function(el, next) {
+    var toClose = this.startReactions(el);
+    next();
+    for(var i = 0 ; i < toClose ; i++) {
+      this.closeNode();
+    }
+  });
+};
+
+Parser.prototype.serialize = function() {
+  return {
+    structure: this.structure,
+    markup: this.markup
+  };
+};
+
+Parser.prototype.generate = function() {
+  var Generated = Template.extend(this.serialize());
+  return Generated;
+};
+
+Parser.prototype.startReactions = function(el) {
+  var toClose = 0,
+      properties;
+
+  _(this.reactions).each(function(Reaction) {
+    if(el.is(Reaction.selector) && Reaction.reactIf(el)) {
+      properties = Reaction.startParse(el, this._state);
+      this.openNode(el, Reaction, properties);
+      toClose++;
+    }
+  }, this);
+  return toClose;
+};
+
+Parser.prototype.openNode = function(el, Reaction, properties) {
+  var structure = _(this.structureStack).last();
+
+  structure.children.push({
+    id: _.uniqueId("struct"),
+    selector: util.getSelector(el, this.markup),
+    Reaction: Reaction,
+    properties: properties,
+    children: []
+  });
+  this.structureStack.push(_(structure.children).last());
+};
+
+Parser.prototype.closeNode = function() {
+  this.structureStack.pop();
+};
+
+var Backbone = require('./end-dash').Backbone,
+    get = require("./util").get,
+    _ = require("underscore"),
+    extend = Backbone.Model.extend,
+    getPresenter;
+
+getPresenter = function(model) {
+  return model;
+};
+
+function Reaction(properties) {
+  this.cid = _.uniqueId("Reaction");
+  _.extend(this, properties);
+}
+
+Reaction.reactIf = function() {
+  return true;
+};
+
+Reaction.prototype.getPresenter = function(model) {
+  return getPresenter(model);
+};
+
+Reaction.prototype.start = function(el, stack, next) {
+  var that = this;
+
+  this.el = el;
+  this.stack = stack.slice(0);
+  this.model = _.last(this.stack);
+  this._presenter = getPresenter(this.model);
+
+  this.init(function() {
+    that.observe(function() {
+      next(that.stack, true);
+    });
+    next(that.stack);
+  });
+};
+
+Reaction.prototype.end = function() {};
+
+Reaction.prototype.afterAll = function(next) {
+  this.afterDOMConstruction(next);
+};
+
+Reaction.startParse = function(el, state) {
+  this._previousPaths = state.pathStack.slice(0);
+  return this.parse(el, state);
+};
+
+Reaction.endParse = function(el, state) {
+  state.pathStack = this._previousPaths;
+  this.afterParse(el, state);
+};
+
+Reaction.prototype.init = function(next) {
+  next();
+};
+
+Reaction.prototype.get = function(key) {
+  return get(this._presenter, key);
+};
+
+Reaction.prototype.set = function(key, value) {
+  return this._presenter.set(key, value);
+};
+
+Reaction.prototype.clearUiEvent = function(events) {
+  var namespace = ".endDash" + this.cid + " ";
+  events = events.replace(/($| )/g, namespace).slice(0, -1);
+  this.el.off(events);
+};
+
+Reaction.prototype.uiEvent = function(events, callback, context) {
+  var namespace = ".endDash" + this.cid + " ";
+  events = events.replace(/($| )/g, namespace).slice(0, -1);
+  this.el.on(events, function() {
+    callback.apply(context, arguments);
+  });
+};
+
+Reaction.prototype.change = function(property, callback, context) {
+  if(typeof property === "string") {
+    if(this._presenter.on) {
+      var events = property.replace(/(^| )/g, " change:").slice(1);
+      this.listenTo(this._presenter, events, callback, context);
+    }
+  } else {
+    callback = property;
+    if(this._presenter.on) {
+      this.listenTo(this._presenter, "change", callback, context);
+    }
+  }
+};
+
+Reaction.prototype.stopObserving = function() {
+  this.el.off(".endDash" + this.cid);
+  this.stopListening();
+};
+
+Reaction.parse = function() {};
+Reaction.afterParse = function() {};
+
+Reaction.setGetPresenter = function(getPresenterFn) {
+  getPresenter = getPresenterFn;
+};
+
+Reaction.prototype.setupScope = function() {};
+Reaction.prototype.observe = function() {};
+
+_.extend(Reaction.prototype, Backbone.Events);
+Reaction.extend = extend;
+
+module.exports = Reaction;
+
+
+var rules = module.exports = {},
+    inflection = require('inflection'),
+    _ = require('underscore');
+
+rules.hasSingularNamedChild = function(el, className) { //Deprecated
+  var name = inflection.singularize(className.slice(0, -1));
+  return el.children("." + name + "-").length;
+};
+
+rules.deprecatedLooping = function(el) { //Deprecated
+  var collectionName = firstClassWhere(el, function(className) {
+    return this.hasSingularNamedChild(el, className);
+  }, this);
+  return collectionName ? undash(collectionName) : false;
+};
+
+rules.deprecatedLoopingCheck = function(el) { //Deprecated
+  return !!(this.deprecatedLooping(el) || this.deprecatedLooping(el.parent()));
+};
+
+function uncapitalize(str) {
+  return str.charAt(0).toLowerCase() + str.slice(1);
+}
+
+function undash(str) {
+  return str.replace(/-$/, "");
+}
+
+function firstClassWhere(el, cb, context) {
+  var classes = (el.attr("class") || "").split(/\s+/);
+  return _(classes).find(function(className) {
+    if(!className || !className.match(/^.*-$/)) return;
+    return cb.call(this, className, el);
+  }, context);
+}
+
+rules.viewClass = function(className) {
+  var match = className.match(/(\S+View)-(?:\s|$)/);
+  return (match) ? match[1] : false;
+};
+
+rules.conditionalClass = function(className) {
+  var match = className.match(/(?:^|\s)(?:isnt|isNot|hasNo|is|has)(\S+)-(?:$|\s)/);
+  return (match) ? uncapitalize(match[1]) : false;
+};
+
+rules.conditionals = function(el) {
+  var conditionals = {};
+  el.attr("class").replace(/(?:(?:isnt|isNot|hasNo|is|has)(\S+)-)+/g, function(cond, variableName) {
+    rules.negationClass(cond);
+    conditionals[uncapitalize(variableName)] = rules.negationClass(cond);
+  });
+  return conditionals;
+};
+
+rules.negationClass = function(className) {
+  return !!className.match(/(?:^|\s)(?:isnt|isNot|hasNo)(\S+)-(?:$|\s)/);
+};
+
+rules.polymorphicKeyClass = function(el) {
+  var match = (el.attr('class') || "").match(/(\S+)Polymorphic-(?:\s|$)/);
+  return (match) ? match[1] : "";
+};
+
+rules.polymorphicValueClass = function(el) {
+  var match = (el.attr('class') || "").match(/when(\S+)-(?:\s|$)/);
+  return (match) ? uncapitalize(match[1]) : "";
+};
+
+rules.hasPolymorphicClass = function(el) {
+  return this.hasPolymorphicKeyClass(el) || this.hasPolymorphicValueClass(el);
+};
+
+rules.hasPolymorphicKeyClass = function(el) {
+ return !!this.polymorphicKeyClass(el);
+};
+
+rules.hasPolymorphicValueClass = function(el) {
+ return !!this.polymorphicValueClass(el);
+};
+
+rules.looping = function(el) {
+  return (el.is("[data-each]"));
+};
+
+rules.view = function(el) {
+  return el.attr("data-view") || this.viewClass(el.attr("class"));
+};
+
+rules.conditional = function(el) {
+  return this.conditionalClass(el.attr("class"));
+};
+
+rules.negation = function(el) {
+  return this.negationClass(el.attr("class"));
+};
+
+rules.variable = function(el) {
+  if(el.children().length && el.prop("tagName").toLowerCase() !== "select") return;
+  var variableName = firstClassWhere(el, function(className) {
+    return !this.viewClass(className) &&
+           !this.conditionalClass(className);
+  }, this);
+  if (this.hasPolymorphicClass(el)) {
+    return false;
+  }
+  return (variableName) ? undash(variableName) : false;
+};
+
+rules.model = function(el) {
+  if(el[0].tagName.toLowerCase() === "select" ||
+    this.deprecatedLoopingCheck(el) ||
+    !el.children().length) {
+    return;
+  }
+
+  var modelName = firstClassWhere(el, function(className, el) {
+    return !this.viewClass(className) &&
+           !this.conditionalClass(className) &&
+           !this.hasPolymorphicClass(el);
+  }, this);
+  return (modelName) ? undash(modelName) : false;
+};
+
+var Backbone               = require('./end-dash').Backbone,
+    util                   = require("./util"),
+    _                      = require("underscore"),
+    findDescendantsAndSelf = util.findDescendantsAndSelf;
+
+function Template(model, opts) {
+  var stack;
+
+  opts = opts || {};
+  model = model || {};
+
+  this.bound = false;
+  this.stack = opts.stack || [];
+
+  this.reactions = {};
+  this.getElement = _.memoize(this.getElement);
+
+  if (!this.markup) {
+    throw new Error("Created template without markup");
+  }
+
+  this.el = this.template = this.markup.clone(); // template is deprecated but used in some outside systems
+
+  if (model) {
+    this.bind(model);
+  }
+}
+
+Template.prototype.cleanup = function() {
+  this.traverse(this.structure, this.stack, function(el, reaction, stack, next) {
+    reaction.stopObserving();
+    next(stack);
+  });
+};
+
+Template.prototype.getElement = function(selector) {
+  return findDescendantsAndSelf(this.template, selector);
+};
+
+Template.prototype.bind = function(model) {
+  if (this.bound) {
+    throw new Error('Template already bound to a model.');
+  }
+
+  this.stack.push(util.toBackboneModel(model));
+  this.traverse(this.structure, this.stack, function(el, reaction, stack, next) {
+    reaction.start(el, stack, next);
+  });
+
+  this.bound = true;
+};
+
+Template.prototype.traverse = function(structure, stack, callback, reload) {
+  var el = this.getElement(structure.selector),
+      that = this,
+      reaction;
+
+  function next(stack, doReload) {
+    _(structure.children).each(function(child) {
+      that.traverse(child, stack, callback, reload || doReload);
+    });
+  }
+
+  if(!structure.Reaction) {
+    return next(stack, reload);
+  }
+
+  if(reload) {
+    delete this.reactions[structure.id];
+  }
+
+  reaction = (this.reactions[structure.id]) ? this.reactions[structure.id] : new structure.Reaction(structure.properties);
+  this.reactions[structure.id] = reaction;
+
+  callback.call(this, el, reaction, stack, next);
+};
+
+Template.extend = Backbone.Model.extend;
+
+module.exports = Template;
+
+// This class is responsible for storing raw HTML templates when they're loaded
+// and then returning template objects (lazily). It also parses templates.
+var path = require('path'),
+    Parser = require('./parser');
+
+var pathToName = function(templatePath) {
+  return path.normalize(templatePath);
+};
+
+function TemplateStore() {
+  this.raw_templates = {};
+  this.templates = {};
+}
+
+TemplateStore.prototype.parseTemplate = function(templatePath) {
+  var name = pathToName(templatePath);
+
+  if (!this.isLoaded(name)) {
+    throw new Error('Could not find template: '+name);
+  }
+
+  var markup = this.raw_templates[name];
+
+  return (new Parser(markup, {
+    templateName: name,
+    templates: this.raw_templates
+  })).generate();
+};
+
+TemplateStore.prototype.isLoaded = function(templatePath) {
+  return !!this.raw_templates[templatePath];
+};
+
+TemplateStore.prototype.isParsed = function(templatePath) {
+  return !!this.templates[templatePath];
+};
+
+TemplateStore.prototype.load = function(templatePath, markup) {
+  var name = pathToName(templatePath);
+
+  this.raw_templates[name] = markup;
+
+  if (this.isParsed(name)) {
+    delete this.templates[name];
+  }
+};
+
+TemplateStore.prototype.loadAndParse = function(templatePath, markup) {
+  this.load(templatePath, markup);
+  return this.getTemplateClass(templatePath);
+};
+
+TemplateStore.prototype.getTemplateClass = function(templatePath) {
+  var name = pathToName(templatePath);
+
+  if (!this.isParsed(name)) {
+    this.templates[name] = this.parseTemplate(name);
+  }
+  return this.templates[name];
+};
+
+module.exports = TemplateStore;
+
+var _ = require("underscore"),
+    Backbone = require('./end-dash').Backbone;
+
+/**
+ * Function: GetSelector
+ * Returns a unique selector from the root
+ * to el (No memoizing selectors since no performance gain)
+ **/
+exports.getSelector = function(el, root) {
+  var id = el.attr("id"),
+      classNames = (el.attr("class") || "")
+        .replace(/(^\s+|\s+$)/g, "")
+        .replace(/#{.*?}/g, "").split(" "),
+      name;
+
+  if(el.is(root))
+    return "";
+
+  if(id && !id.match(/#{/g)) {
+    return "#" + id;
+  } else {
+    classNames = _(classNames).reject(function(className) {
+      return !className || className.match(/#{/g);
+    });
+    if(classNames.length) {
+      name = "." + classNames.join(".");
+
+
+      if($(el).parent().children(name).length !== 1) {
+        name = el[0].tagName.toLowerCase();
+      }
+    } else {
+      name = el[0].tagName.toLowerCase();
+    }
+  }
+
+  var siblingsAndSelf = el.parent().children(name),
+      baseOneIndex = (el.parent().children().index(el) + 1),
+      selector = name;
+
+  if(siblingsAndSelf.length > 1)
+    selector += ":nth-child(" + baseOneIndex + ")";
+
+  var recur = this.getSelector(el.parent(), root);
+
+  if(recur)
+    selector = recur + " > " + selector;
+
+  return selector;
+};
+
+exports.trim = function(str) {
+  return (str || "").replace(/^\s+|\s+$/g, "");
+};
+
+exports.findDescendantsAndSelf = function(element, selector) {
+  if(!selector)
+    return element;
+
+  var matches = element.find(selector);
+  if(!matches.length) {
+    matches = matches.filter(selector);
+  }
+  return matches;
+};
+
+exports.get = function(obj, key) {
+  var val;
+  if(!obj) return;
+  if(typeof obj.get === "function") {
+    return obj.get(key);
+  } else {
+    return obj[key];
+  }
+};
+
+exports.toBackboneModel = function(model) {
+  if (model instanceof Backbone.Model ||
+    model instanceof Backbone.Collection) {
+    return model;
+  }
+
+  if (typeof model !== 'object' && typeof model !== 'undefined') {
+    throw new Error('Tried to bind template to a '+typeof model+', but '+
+                    'templates can only be bound to objects.');
+  }
+
+  if (_.isArray(model)) {
+    return new Backbone.Collection(model);
+  } else {
+    return new Backbone.Model(model);
+  }
+};
+
+"use strict";
+var __extends = this.__extends || function (d, b) {
+    function __() { this.constructor = d; }
+    __.prototype = b.prototype;
+    d.prototype = new __();
+};
+if(!Date.prototype.toISOString) {
+    ((function () {
+        function pad(number) {
+            var r = String(number);
+            if(r.length === 1) {
+                r = '0' + r;
+            }
+            return r;
+        }
+        Date.prototype.toISOString = function () {
+            return this.getUTCFullYear() + '-' + pad(this.getUTCMonth() + 1) + '-' + pad(this.getUTCDate()) + 'T' + pad(this.getUTCHours()) + ':' + pad(this.getUTCMinutes()) + ':' + pad(this.getUTCSeconds()) + '.' + String((this.getUTCMilliseconds() / 1000).toFixed(3)).slice(2, 5) + 'Z';
+        };
+    })());
+}
+var Helios;
+(function (Helios) {
+    var toString = Object.prototype.toString, ArrayProto = Array.prototype, push = ArrayProto.push, slice = ArrayProto.slice, indexOf = ArrayProto.indexOf;
+    var Element = (function () {
+        function Element(obj, graph) {
+            this.obj = obj;
+            this.graph = graph;
+        }
+        Element.prototype.addToIndex = function (idx, indexName) {
+            var indexes, props, tempObj = {
+            };
+            indexes = !indexName ? Utils.keys(idx) : [
+                indexName
+            ];
+            for(var i = 0, l = indexes.length; i < l; i++) {
+                props = indexes[i].indexOf(".") > -1 ? indexes[i].split(".") : [
+                    indexes[i]
+                ];
+                tempObj = this.obj;
+                for(var i2 = 0, l2 = props.length; i2 < l2; i2++) {
+                    if(tempObj.hasOwnProperty(props[i2])) {
+                        if(Utils.isObject(tempObj[props[i2]])) {
+                            tempObj = tempObj[props[i2]];
+                        } else {
+                            if(i2 < l2 - 1) {
+                                break;
+                            }
+                            var iter = Utils.isArray(tempObj[props[i2]]) ? tempObj[props[i2]] : [
+                                tempObj[props[i2]]
+                            ];
+                            for(var i3 = 0, l3 = iter.length; i3 < l3; i3++) {
+                                if(!(idx[indexes[i]].hasOwnProperty(iter[i3]))) {
+                                    idx[indexes[i]][iter[i3]] = {
+                                    };
+                                }
+                                idx[indexes[i]][iter[i3]][this.obj[this.graph.meta.id]] = this;
+                                push.call(this.indexKeys, indexes[i]);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        return Element;
+    })();
+    Helios.Element = Element;    
+    var Vertex = (function (_super) {
+        __extends(Vertex, _super);
+        function Vertex(obj, graph) {
+                _super.call(this, obj, graph);
+            this.outE = {
+            };
+            this.inE = {
+            };
+            this.Type = 'Vertex';
+        }
+        return Vertex;
+    })(Element);
+    Helios.Vertex = Vertex;    
+    var Edge = (function (_super) {
+        __extends(Edge, _super);
+        function Edge(obj, graph) {
+                _super.call(this, obj, graph);
+            this.Type = 'Edge';
+        }
+        return Edge;
+    })(Element);
+    Helios.Edge = Edge;    
+    var GraphDatabase = (function () {
+        function GraphDatabase(options) {
+            this.traceEnabled = false;
+            this.meta = {
+                id: '_id',
+                label: '_label',
+                type: '_type',
+                outEid: '_outE',
+                inEid: '_inE',
+                outVid: '_outV',
+                inVid: '_inV',
+                VOut: '_out',
+                VIn: '_in'
+            };
+            this.db = {
+                'baseUri': 'localhost',
+                'port': 8182,
+                'name': 'tinker',
+                'type': 'orientdb',
+                'ssl': false
+            };
+            if(!!options) {
+                for(var k in options) {
+                    if(options.hasOwnProperty(k)) {
+                        this[k] = options[k];
+                    }
+                }
+            } else {
+                this.vertices = {
+                };
+                this.edges = {
+                };
+                this.v_idx = {
+                };
+                this.e_idx = {
+                };
+                if(!!options) {
+                    this.setConfiguration(options);
+                }
+            }
+            this._ = new Mogwai.Pipeline(this);
+        }
+        GraphDatabase.prototype.shutdown = function () {
+            this.vertices = {
+            };
+            this.edges = {
+            };
+            this.v_idx = {
+            };
+            this.e_idx = {
+            };
+        };
+        GraphDatabase.prototype.startTrace = function (turnOn) {
+            return this.traceEnabled = turnOn;
+        };
+        GraphDatabase.prototype.setConfiguration = function (options) {
+            try {
+                for(var k in options) {
+                    if(options.hasOwnProperty(k)) {
+                        if(Utils.isObject(options[k])) {
+                            var o = options[k];
+                            for(var i in o) {
+                                if(o.hasOwnProperty(i)) {
+                                    this[k][i] = o[i];
+                                }
+                            }
+                            continue;
+                        }
+                        this[k] = options[k];
+                    }
+                }
+                return true;
+            } catch(err){
+                return false;
+            }
+        };
+        GraphDatabase.prototype.loadVertices = function (rows) {
+            var i, l = rows.length, hasVIndex = !Utils.isEmpty(this.v_idx), vertex;
+            for(i = 0; i < l; i++) {
+                vertex = new Vertex(rows[i], this);
+                this.vertices[rows[i][this.meta.id]] = vertex;
+                if(hasVIndex) {
+                    vertex.addToIndex(this.v_idx);
+                }
+            }
+        };
+        GraphDatabase.prototype.loadEdges = function (rows) {
+            var i, l, edge, hasEIndex = !Utils.isEmpty(this.e_idx);
+            for(i = 0 , l = rows.length; i < l; i += 1) {
+                edge = new Edge(rows[i], this);
+                this.edges[edge.obj[this.meta.id]] = edge;
+                this.associateVertices(edge);
+                if(hasEIndex) {
+                    edge.addToIndex(this.e_idx);
+                }
+            }
+        };
+        GraphDatabase.prototype.createVIndex = function (idxName) {
+            if(!(this.v_idx.hasOwnProperty(idxName))) {
+                this.v_idx[idxName] = {
+                };
+                for(var k in this.vertices) {
+                    if(this.vertices.hasOwnProperty(k)) {
+                        this.vertices[k].addToIndex(this.v_idx, idxName);
+                    }
+                }
+            }
+        };
+        GraphDatabase.prototype.createEIndex = function (idxName) {
+            if(!(this.e_idx.hasOwnProperty(idxName))) {
+                this.e_idx[idxName] = {
+                };
+                for(var k in this.edges) {
+                    if(this.edges.hasOwnProperty(k)) {
+                        this.edges[k].addToIndex(this.e_idx, idxName);
+                    }
+                }
+            }
+        };
+        GraphDatabase.prototype.deleteVIndex = function (idxName) {
+            delete this.v_idx[idxName];
+        };
+        GraphDatabase.prototype.deleteEIndex = function (idxName) {
+            delete this.e_idx[idxName];
+        };
+        GraphDatabase.prototype.associateVertices = function (edge) {
+            var vertex, outVobj = {
+            }, inVobj = {
+            };
+            if(!edge.graph.vertices[edge.obj[edge.graph.meta.outVid]]) {
+                outVobj[edge.graph.meta.id] = edge.obj[edge.graph.meta.outVid];
+                edge.graph.vertices[edge.obj[edge.graph.meta.outVid]] = new Vertex(outVobj, edge.graph);
+            }
+            vertex = edge.graph.vertices[edge.obj[edge.graph.meta.outVid]];
+            if(!vertex.outE[edge.obj[edge.graph.meta.label]]) {
+                vertex.outE[edge.obj[edge.graph.meta.label]] = [];
+            }
+            edge.outV = vertex;
+            edge.obj[edge.graph.meta.VOut] = edge.outV.obj[edge.graph.meta.id];
+            delete edge.obj[edge.graph.meta.outVid];
+            push.call(vertex.outE[edge.obj[edge.graph.meta.label]], edge);
+            if(!edge.graph.vertices[edge.obj[edge.graph.meta.inVid]]) {
+                inVobj[edge.graph.meta.id] = edge.obj[edge.graph.meta.inVid];
+                edge.graph.vertices[edge.obj[edge.graph.meta.inVid]] = new Vertex(inVobj, edge.graph);
+            }
+            vertex = edge.graph.vertices[edge.obj[edge.graph.meta.inVid]];
+            if(!vertex.inE[edge.obj[edge.graph.meta.label]]) {
+                vertex.inE[edge.obj[edge.graph.meta.label]] = [];
+            }
+            edge.inV = vertex;
+            edge.obj[edge.graph.meta.VIn] = edge.inV.obj[edge.graph.meta.id];
+            delete edge.obj[edge.graph.meta.inVid];
+            push.call(vertex.inE[edge.obj[edge.graph.meta.label]], edge);
+        };
+        GraphDatabase.prototype.loadGraphSON = function (jsonData) {
+            var xmlhttp;
+            var graph = this;
+            if(Utils.isUndefined(jsonData)) {
+                return null;
+            }
+            if(!!jsonData.graph) {
+                jsonData = jsonData.graph;
+            }
+            if(!!jsonData.vertices) {
+                this.loadVertices(jsonData.vertices);
+            }
+            if(!!jsonData.edges) {
+                this.loadEdges(jsonData.edges);
+            }
+            if(Utils.isString(jsonData)) {
+                xmlhttp = new XMLHttpRequest();
+                xmlhttp.open("GET", jsonData, false);
+                xmlhttp.send(null);
+                if (xmlhttp.status != 200)  {
+                    //error
+                    return false;
+                }
+                jsonData = JSON.parse(xmlhttp.responseText);
+                if(!!jsonData.graph) {
+                    jsonData = jsonData.graph;
+                }
+                if(!!jsonData.vertices.length) {
+                    graph.loadVertices(jsonData.vertices);
+                }
+                if(jsonData.edges) {
+                    graph.loadEdges(jsonData.edges);
+                }
+            }
+            return true;
+        };
+        GraphDatabase.prototype.loadGraphML = function (xmlData) {
+            var _this = this;
+            var i, j, l, propLen, xmlV = [], xmlE = [], vertex, edge, attr, vertex, edge, fileExt, xmlhttp, currProp, xmlDoc, properties, tempObj = {
+            }, parser = sax.parser(true, {
+                lowercase: true
+            });
+            var hasVIndex = !Utils.isEmpty(this.v_idx);
+            var hasEIndex = !Utils.isEmpty(this.e_idx);
+            parser.onerror = function (e) {
+            };
+            parser.ontext = function (t) {
+                if(!!tempObj && (currProp in tempObj)) {
+                    tempObj[currProp] = t;
+                    currProp = undefined;
+                }
+            };
+            parser.onopentag = function (node) {
+                switch(node.name) {
+                    case 'node':
+                        attr = node.attributes;
+                        for(var k in attr) {
+                            if(attr.hasOwnProperty(k)) {
+                                switch(k) {
+                                    case 'id':
+                                        if(!!_this.vertices[attr[k]]) {
+                                            tempObj = _this.vertices[attr[k]].obj;
+                                        } else {
+                                            tempObj[_this.meta.id] = attr[k];
+                                        }
+                                        break;
+                                    default:
+                                }
+                            }
+                        }
+                        break;
+                    case 'edge':
+                        attr = node.attributes;
+                        for(var k in attr) {
+                            if(attr.hasOwnProperty(k)) {
+                                switch(k) {
+                                    case 'id':
+                                        tempObj[_this.meta.id] = attr[k];
+                                        break;
+                                    case 'label':
+                                        tempObj[_this.meta.label] = attr[k];
+                                        break;
+                                    case 'source':
+                                        tempObj[_this.meta.outVid] = attr[k];
+                                        break;
+                                    case 'target':
+                                        tempObj[_this.meta.inVid] = attr[k];
+                                        break;
+                                    default:
+                                }
+                            }
+                        }
+                        break;
+                    case 'data':
+                        tempObj[node.attributes.key] = undefined;
+                        currProp = node.attributes.key;
+                        break;
+                    default:
+                }
+                _this;
+            };
+            parser.onclosetag = function (node) {
+                switch(node) {
+                    case 'node':
+                        vertex = new Vertex(tempObj, _this);
+                        _this.vertices[tempObj[_this.meta.id]] = vertex;
+                        if(hasVIndex) {
+                            vertex.addToIndex(_this.v_idx);
+                        }
+                        tempObj = {
+                        };
+                        break;
+                    case 'edge':
+                        edge = new Edge(tempObj, _this);
+                        _this.edges[tempObj[_this.meta.id]] = edge;
+                        _this.associateVertices(edge);
+                        if(hasEIndex) {
+                            edge.addToIndex(_this.e_idx);
+                        }
+                        tempObj = {
+                        };
+                        break;
+                    default:
+                }
+            };
+            parser.onend = function () {
+                tempObj = {
+                };
+                currProp = undefined;
+            };
+            if(Utils.isUndefined(xmlData)) {
+                return false;
+            }
+            if(Utils.isString(xmlData)) {
+                fileExt = xmlData.split('.').pop();
+                if(fileExt.toLowerCase() === 'xml') {
+                    xmlhttp = new XMLHttpRequest();
+                    xmlhttp.open("GET", xmlData, false);
+                    xmlhttp.send(null);
+                    if (xmlhttp.status != 200)  {
+                        //error
+                        return false;
+                    }
+                    parser.write(xmlhttp.responseText).close();
+                } else {
+                    return false;
+                }
+            }
+            return true;
+        };
+        GraphDatabase.prototype.v = function () {
+            var args = [];
+            for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                args[_i] = arguments[_i + 0];
+            }
+            var pipe = [], l, temp, tempObj = {
+            }, compObj = {
+            }, outputObj = {
+            }, subset = {
+            }, tempObjArray = {
+            }, preProcObj = {
+            }, postProcObj = {
+            }, tempObjArrLen = 0, isObject = false;
+            if(!args.length) {
+                return this._.startPipe(this.vertices);
+            }
+            args = Utils.flatten(args);
+            l = args.length;
+            isObject = Utils.isObject(args[0]);
+            if(isObject && !((this.meta.id in args[0]) && (args[0][this.meta.id] in this.vertices) && (this.vertices[args[0][this.meta.id]].Type == 'Vertex'))) {
+                for(var i = 0; i < l; i++) {
+                    compObj = args[i];
+                    preProcObj = {
+                    };
+                    postProcObj = {
+                    };
+                    for(var k in compObj) {
+                        if(compObj.hasOwnProperty(k)) {
+                            if(this.v_idx.hasOwnProperty(k)) {
+                                preProcObj[k] = compObj[k];
+                            } else {
+                                postProcObj[k] = compObj[k];
+                            }
+                        }
+                    }
+                    var item;
+                    for(var prop in preProcObj) {
+                        if(preProcObj.hasOwnProperty(prop)) {
+                            var items = this.v_idx[prop];
+                            for(var m in items) {
+                                if(items.hasOwnProperty(m)) {
+                                    var funcObj = preProcObj[prop];
+                                    for(var func in funcObj) {
+                                        if(funcObj.hasOwnProperty(func)) {
+                                            if(Utils.include([
+                                                '$match', 
+                                                '$all'
+                                            ], func)) {
+                                                item = items[m];
+                                                for(var it in item) {
+                                                    if(item.hasOwnProperty(it)) {
+                                                        if(Mogwai.Compare[func].call(null, item[it].obj[prop], funcObj[func])) {
+                                                            tempObj[it] = item[it];
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                if(Mogwai.Compare[func].call(null, m, funcObj[func])) {
+                                                    item = items[m];
+                                                    for(var it in item) {
+                                                        if(item.hasOwnProperty(it)) {
+                                                            tempObj[it] = item[it];
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if(!Utils.isEmpty(tempObj)) {
+                                push.call(tempObjArray, tempObj);
+                            }
+                        }
+                    }
+                    var pipeline;
+                    var postIsEmpty = Utils.isEmpty(postProcObj);
+                    tempObjArrLen = tempObjArray.length;
+                    if(!!tempObjArrLen) {
+                        if(tempObjArrLen == 1) {
+                            if(postIsEmpty) {
+                                outputObj = tempObjArray[0];
+                            } else {
+                                pipeline = this._.startPipe(tempObjArray[0]);
+                                tempObjArray = Mogwai.getEndPipe.call(pipeline.where(postProcObj));
+                            }
+                        } else {
+                            if(postIsEmpty) {
+                                outputObj = Utils.intersectElement(tempObjArray);
+                            } else {
+                                pipeline = this._.startPipe(Utils.intersectElement(tempObjArray));
+                                tempObjArray = Mogwai.getEndPipe.call(pipeline.where(postProcObj));
+                            }
+                        }
+                    } else {
+                        if(!postIsEmpty) {
+                            pipeline = this._.startPipe(this.vertices);
+                            tempObjArray = Mogwai.getEndPipe.call(pipeline.where(postProcObj));
+                        }
+                    }
+                    if(!postIsEmpty) {
+                        var id;
+                        for(var ind = 0, len = tempObjArray.length; ind < len; ind++) {
+                            id = tempObjArray[ind].obj[this.meta.id];
+                            outputObj[id] = tempObjArray[ind];
+                        }
+                    }
+                    tempObj = {
+                    };
+                    tempObjArray = [];
+                }
+                return this._.startPipe(outputObj);
+            }
+            for(var i = 0; i < l; i++) {
+                temp = isObject ? this.vertices[args[i][this.meta.id]] : this.vertices[args[i]];
+                if(typeof temp === "undefined") {
+                    throw new ReferenceError('No vertex with id ' + isObject ? args[i][this.meta.id] : args[i]);
+                }
+                push.call(pipe, temp);
+            }
+            return this._.startPipe(pipe);
+        };
+        GraphDatabase.prototype.e = function () {
+            var args = [];
+            for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                args[_i] = arguments[_i + 0];
+            }
+            var pipe = [], l, temp, tempObj = {
+            }, compObj = {
+            }, outputObj = {
+            }, subset = {
+            }, tempObjArray = [], preProcObj = {
+            }, postProcObj = {
+            }, tempObjArrLen = 0, isObject = false;
+            if(!args.length) {
+                return this._.startPipe(this.edges);
+            }
+            args = Utils.flatten(args);
+            l = args.length;
+            isObject = Utils.isObject(args[0]);
+            if(isObject && !((this.meta.id in args[0]) && (args[0][this.meta.id] in this.edges) && (this.edges[args[0][this.meta.id]].Type == 'Edge'))) {
+                for(var i = 0; i < l; i++) {
+                    compObj = args[i];
+                    preProcObj = {
+                    };
+                    postProcObj = {
+                    };
+                    for(var k in compObj) {
+                        if(compObj.hasOwnProperty(k)) {
+                            if(this.e_idx.hasOwnProperty(k)) {
+                                preProcObj[k] = compObj[k];
+                            } else {
+                                postProcObj[k] = compObj[k];
+                            }
+                        }
+                    }
+                    var item;
+                    for(var prop in preProcObj) {
+                        if(preProcObj.hasOwnProperty(prop)) {
+                            var items = this.e_idx[prop];
+                            for(var m in items) {
+                                if(items.hasOwnProperty(m)) {
+                                    var funcObj = preProcObj[prop];
+                                    for(var func in funcObj) {
+                                        if(funcObj.hasOwnProperty(func)) {
+                                            if(Utils.include([
+                                                '$match', 
+                                                '$all'
+                                            ], func)) {
+                                                item = items[m];
+                                                for(var it in item) {
+                                                    if(item.hasOwnProperty(it)) {
+                                                        if(Mogwai.Compare[func].call(null, item[it].obj[prop], funcObj[func])) {
+                                                            tempObj[it] = item[it];
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                if(Mogwai.Compare[func].call(null, m, funcObj[func])) {
+                                                    item = items[m];
+                                                    for(var it in item) {
+                                                        if(item.hasOwnProperty(it)) {
+                                                            tempObj[it] = item[it];
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if(!Utils.isEmpty(tempObj)) {
+                                tempObjArray.push(tempObj);
+                            }
+                        }
+                    }
+                    var pipeline;
+                    var postIsEmpty = Utils.isEmpty(postProcObj);
+                    tempObjArrLen = tempObjArray.length;
+                    if(!!tempObjArrLen) {
+                        if(tempObjArrLen == 1) {
+                            if(postIsEmpty) {
+                                outputObj = tempObjArray[0];
+                            } else {
+                                pipeline = this._.startPipe(tempObjArray[0]);
+                                tempObjArray = Mogwai.getEndPipe.call(pipeline.where(postProcObj));
+                            }
+                        } else {
+                            if(postIsEmpty) {
+                                outputObj = Utils.intersectElement(tempObjArray);
+                            } else {
+                                pipeline = this._.startPipe(Utils.intersectElement(tempObjArray));
+                                tempObjArray = Mogwai.getEndPipe.call(pipeline.where(postProcObj));
+                            }
+                        }
+                    } else {
+                        if(!postIsEmpty) {
+                            pipeline = this._.startPipe(this.edges);
+                            tempObjArray = Mogwai.getEndPipe.call(pipeline.where(postProcObj));
+                        }
+                    }
+                    if(!postIsEmpty) {
+                        var id;
+                        for(var ind = 0, len = tempObjArray.length; ind < len; ind++) {
+                            id = tempObjArray[ind].obj[this.meta.id];
+                            outputObj[id] = tempObjArray[ind];
+                        }
+                    }
+                    tempObj = {
+                    };
+                    tempObjArray = [];
+                }
+                return this._.startPipe(outputObj);
+            }
+            for(var i = 0; i < l; i++) {
+                temp = isObject ? this.edges[args[i][this.meta.id]] : this.edges[args[i]];
+                if(typeof temp === "undefined") {
+                    throw new ReferenceError('No edge with id ' + isObject ? args[i][this.meta.id] : args[i]);
+                }
+                push.call(pipe, temp);
+            }
+            return this._.startPipe(pipe);
+        };
+        return GraphDatabase;
+    })();
+    Helios.GraphDatabase = GraphDatabase;    
+    (function (Mogwai) {
+        function getEndPipe() {
+            return this.endPipe;
+        }
+        Mogwai.getEndPipe = getEndPipe;
+        var Pipeline = (function () {
+            function Pipeline(graph, elements) {
+                this.graph = graph;
+                if(!!elements) {
+                    this.startPipe(elements);
+                }
+            }
+            Pipeline.prototype.startPipe = function (elements) {
+                var pipe;
+                this.steps = {
+                    currentStep: 1
+                };
+                this.endPipe = [];
+                this.pipeline = this.graph.traceEnabled ? [] : undefined;
+                Utils.each(elements, function (element) {
+                    if(this.graph.traceEnabled) {
+                        pipe = [];
+                        pipe.push(element);
+                        this.pipeline.push(pipe);
+                    }
+                    this.endPipe.push(element);
+                }, this);
+                this.steps[this.steps.currentStep] = {
+                    func: 'startPipe',
+                    args: []
+                };
+                if(this.graph.traceEnabled) {
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                return this;
+            };
+            Pipeline.prototype.id = function () {
+                return this.property(this.graph.meta.id);
+            };
+            Pipeline.prototype.label = function () {
+                return this.property(this.graph.meta.label);
+            };
+            Pipeline.prototype.out = function () {
+                var labels = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    labels[_i] = arguments[_i + 0];
+                }
+                var value, vertex, iter = [], endPipeArray = [], hasArgs = !!labels.length, tracing = !!this.graph.traceEnabled, pipes, pipe;
+                if(!!this.endPipe.length && this.endPipe[0].Type !== 'Vertex') {
+                    throw new TypeError('Only accepts incoming ' + this.endPipe[0].Type + 's');
+                }
+                this.steps[++this.steps.currentStep] = {
+                    func: 'out',
+                    args: labels
+                };
+                if(tracing) {
+                    iter = this.pipeline;
+                    pipes = [];
+                } else {
+                    this.traversed = {
+                    };
+                    iter = this.endPipe;
+                }
+                Utils.each(iter, function (next) {
+                    if(tracing) {
+                        vertex = slice.call(next, -1)[0];
+                    } else {
+                        vertex = next;
+                        if(this.traversed.hasOwnProperty(vertex.obj[this.graph.meta.id])) {
+                            if(!!this.traversed[vertex.obj[this.graph.meta.id]].length) {
+                                endPipeArray.push.apply(endPipeArray, this.traversed[vertex.obj[this.graph.meta.id]]);
+                            }
+                            return;
+                        } else {
+                            this.traversed[vertex.obj[this.graph.meta.id]] = [];
+                        }
+                    }
+                    value = hasArgs ? Utils.pick(vertex.outE, labels) : vertex.outE;
+                    Utils.each(Utils.flatten(Utils.values(value)), function (edge) {
+                        endPipeArray.push(edge.inV);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(edge.inV);
+                            pipes.push(pipe);
+                        } else {
+                            push.call(this.traversed[vertex.obj[this.graph.meta.id]], edge.inV);
+                        }
+                    }, this);
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                } else {
+                    this.traversed = undefined;
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.in = function () {
+                var labels = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    labels[_i] = arguments[_i + 0];
+                }
+                var value, vertex, iter = [], endPipeArray = [], hasArgs = !!labels.length, tracing = !!this.graph.traceEnabled, pipes, pipe;
+                if(!!this.endPipe.length && this.endPipe[0].Type !== 'Vertex') {
+                    throw new TypeError('Only accepts incoming ' + this.endPipe[0].Type + 's');
+                }
+                this.steps[++this.steps.currentStep] = {
+                    func: 'in',
+                    args: labels
+                };
+                if(tracing) {
+                    iter = this.pipeline;
+                    pipes = [];
+                } else {
+                    this.traversed = {
+                    };
+                    iter = this.endPipe;
+                }
+                Utils.each(iter, function (next) {
+                    if(tracing) {
+                        vertex = slice.call(next, -1)[0];
+                    } else {
+                        vertex = next;
+                        if(this.traversed.hasOwnProperty(vertex.obj[this.graph.meta.id])) {
+                            if(!!this.traversed[vertex.obj[this.graph.meta.id]].length) {
+                                endPipeArray.push.apply(endPipeArray, this.traversed[vertex.obj[this.graph.meta.id]]);
+                            }
+                            return;
+                        } else {
+                            this.traversed[vertex.obj[this.graph.meta.id]] = [];
+                        }
+                    }
+                    value = hasArgs ? Utils.pick(vertex.inE, labels) : vertex.inE;
+                    Utils.each(Utils.flatten(Utils.values(value)), function (edge) {
+                        endPipeArray.push(edge.outV);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(edge.outV);
+                            pipes.push(pipe);
+                        } else {
+                            push.call(this.traversed[vertex.obj[this.graph.meta.id]], edge.outV);
+                        }
+                    }, this);
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                } else {
+                    this.traversed = undefined;
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.outV = function () {
+                var edge, iter, endPipeArray = [], tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe;
+                this.steps[++this.steps.currentStep] = {
+                    func: 'outV'
+                };
+                if(!!this.endPipe.length && this.endPipe[0].Type !== 'Edge') {
+                    throw new TypeError('Step ' + this.steps.currentStep + ' only accepts incoming ' + this.endPipe[0].Type + 's');
+                }
+                iter = tracing ? this.pipeline : this.endPipe;
+                Utils.each(iter, function (next) {
+                    edge = tracing ? slice.call(next, -1)[0] : next;
+                    endPipeArray.push(edge.outV);
+                    if(tracing) {
+                        pipe = [];
+                        pipe.push.apply(pipe, next);
+                        pipe.push(edge.outV);
+                        pipes.push(pipe);
+                    }
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.inV = function () {
+                var edge, iter = [], endPipeArray = [], tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe;
+                ;
+                this.steps[++this.steps.currentStep] = {
+                    func: 'inV'
+                };
+                if(!!this.endPipe.length && this.endPipe[0].Type !== 'Edge') {
+                    throw new TypeError('Step ' + this.steps.currentStep + ' only accepts incoming ' + this.endPipe[0].Type + 's');
+                }
+                iter = tracing ? this.pipeline : this.endPipe;
+                Utils.each(iter, function (next) {
+                    edge = tracing ? slice.call(next, -1)[0] : next;
+                    endPipeArray.push(edge.inV);
+                    if(tracing) {
+                        pipe = [];
+                        pipe.push.apply(pipe, next);
+                        pipe.push(edge.inV);
+                        pipes.push(pipe);
+                    }
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.outE = function () {
+                var labels = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    labels[_i] = arguments[_i + 0];
+                }
+                var value, vertex, iter = [], endPipeArray = [], hasArgs = !!labels.length, tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe;
+                if(!!this.endPipe.length && this.endPipe[0].Type !== 'Vertex') {
+                    throw new TypeError('Only accepts incoming ' + this.endPipe[0].Type + 's');
+                }
+                this.steps[++this.steps.currentStep] = {
+                    func: 'outE',
+                    args: labels
+                };
+                if(tracing) {
+                    iter = this.pipeline;
+                    pipes = [];
+                } else {
+                    this.traversed = {
+                    };
+                    iter = this.endPipe;
+                }
+                Utils.each(iter, function (next) {
+                    if(tracing) {
+                        vertex = slice.call(next, -1)[0];
+                    } else {
+                        vertex = next;
+                        if(this.traversed.hasOwnProperty(vertex.obj[this.graph.meta.id])) {
+                            if(!!this.traversed[vertex.obj[this.graph.meta.id]].length) {
+                                endPipeArray.push.apply(endPipeArray, this.traversed[vertex.obj[this.graph.meta.id]]);
+                            }
+                            return;
+                        } else {
+                            this.traversed[vertex.obj[this.graph.meta.id]] = [];
+                        }
+                    }
+                    value = hasArgs ? Utils.pick(vertex.outE, labels) : vertex.outE;
+                    Utils.each(Utils.flatten(Utils.values(value)), function (edge) {
+                        endPipeArray.push(edge);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(edge);
+                            pipes.push(pipe);
+                        } else {
+                            push.call(this.traversed[vertex.obj[this.graph.meta.id]], edge);
+                        }
+                    }, this);
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                } else {
+                    this.traversed = undefined;
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.inE = function () {
+                var labels = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    labels[_i] = arguments[_i + 0];
+                }
+                var value, vertex, iter = [], endPipeArray = [], hasArgs = !!labels.length, tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe;
+                if(!!this.endPipe.length && this.endPipe[0].Type !== 'Vertex') {
+                    throw new TypeError('Only accepts incoming ' + this.endPipe[0].Type + 's');
+                }
+                this.steps[++this.steps.currentStep] = {
+                    func: 'inE',
+                    args: labels
+                };
+                if(tracing) {
+                    iter = this.pipeline;
+                    pipes = [];
+                } else {
+                    this.traversed = {
+                    };
+                    iter = this.endPipe;
+                }
+                Utils.each(iter, function (next) {
+                    if(tracing) {
+                        vertex = slice.call(next, -1)[0];
+                    } else {
+                        vertex = next;
+                        if(this.traversed.hasOwnProperty(vertex.obj[this.graph.meta.id])) {
+                            if(!!this.traversed[vertex.obj[this.graph.meta.id]].length) {
+                                endPipeArray.push.apply(endPipeArray, this.traversed[vertex.obj[this.graph.meta.id]]);
+                            }
+                            return;
+                        } else {
+                            this.traversed[vertex.obj[this.graph.meta.id]] = [];
+                        }
+                    }
+                    value = hasArgs ? Utils.pick(vertex.inE, labels) : vertex.inE;
+                    Utils.each(Utils.flatten(Utils.values(value)), function (edge) {
+                        endPipeArray.push(edge);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(edge);
+                            pipes.push(pipe);
+                        } else {
+                            push.call(this.traversed[vertex.obj[this.graph.meta.id]], edge);
+                        }
+                    }, this);
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                } else {
+                    this.traversed = undefined;
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.both = function () {
+                var labels = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    labels[_i] = arguments[_i + 0];
+                }
+                var value, vertex, iter = [], endPipeArray = [], hasArgs = !!labels.length, tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe;
+                this.steps[++this.steps.currentStep] = {
+                    func: 'both',
+                    args: labels
+                };
+                if(!!this.endPipe.length && this.endPipe[0].Type !== 'Vertex') {
+                    throw new TypeError('Only accepts incoming ' + this.endPipe[0].Type + 's');
+                }
+                if(tracing) {
+                    iter = this.pipeline;
+                    pipes = [];
+                } else {
+                    this.traversed = {
+                    };
+                    iter = this.endPipe;
+                }
+                Utils.each(iter, function (next) {
+                    if(tracing) {
+                        vertex = slice.call(next, -1)[0];
+                    } else {
+                        vertex = next;
+                        if(this.traversed.hasOwnProperty(vertex.obj[this.graph.meta.id])) {
+                            if(!!this.traversed[vertex.obj[this.graph.meta.id]].length) {
+                                endPipeArray.push.apply(endPipeArray, this.traversed[vertex.obj[this.graph.meta.id]]);
+                            }
+                            return;
+                        } else {
+                            this.traversed[vertex.obj[this.graph.meta.id]] = [];
+                        }
+                    }
+                    value = hasArgs ? Utils.pick(vertex.outE, labels) : vertex.outE;
+                    Utils.each(Utils.flatten(Utils.values(value)), function (edge) {
+                        endPipeArray.push(edge.inV);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(edge.inV);
+                            pipes.push(pipe);
+                        } else {
+                            push.call(this.traversed[vertex.obj[this.graph.meta.id]], edge.inV);
+                        }
+                    }, this);
+                    value = hasArgs ? Utils.pick(vertex.inE, labels) : vertex.inE;
+                    Utils.each(Utils.flatten(Utils.values(value)), function (edge) {
+                        endPipeArray.push(edge.outV);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(edge.outV);
+                            pipes.push(pipe);
+                        } else {
+                            push.call(this.traversed[vertex.obj[this.graph.meta.id]], edge.outV);
+                        }
+                    }, this);
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                } else {
+                    this.traversed = undefined;
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.bothV = function () {
+                var edge, iter = [], endPipeArray = [], tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe;
+                ;
+                this.steps[++this.steps.currentStep] = {
+                    func: 'bothV'
+                };
+                if(!!this.endPipe.length && this.endPipe[0].Type !== 'Edge') {
+                    throw new TypeError('Only accepts incoming ' + this.endPipe[0].Type + 's');
+                }
+                iter = tracing ? this.pipeline : this.endPipe;
+                Utils.each(iter, function (next) {
+                    edge = tracing ? slice.call(next, -1)[0] : next;
+                    endPipeArray.push.apply(endPipeArray, [
+                        edge.outV, 
+                        edge.inV
+                    ]);
+                    if(tracing) {
+                        pipe = [];
+                        pipe.push.apply(pipe, next);
+                        pipe.push(edge.outV);
+                        pipes.push(pipe);
+                        pipe = [];
+                        pipe.push.apply(pipe, next);
+                        pipe.push(edge.inV);
+                        pipes.push(pipe);
+                    }
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.bothE = function () {
+                var labels = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    labels[_i] = arguments[_i + 0];
+                }
+                var value, vertex, iter = [], endPipeArray = [], hasArgs = !!labels.length, tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe;
+                this.steps[++this.steps.currentStep] = {
+                    func: 'bothE',
+                    args: labels
+                };
+                if(!!this.endPipe.length && this.endPipe[0].Type !== 'Vertex') {
+                    throw new TypeError('Only accepts incoming ' + this.endPipe[0].Type + 's');
+                }
+                if(tracing) {
+                    iter = this.pipeline;
+                    pipes = [];
+                } else {
+                    this.traversed = {
+                    };
+                    iter = this.endPipe;
+                }
+                Utils.each(iter, function (next) {
+                    if(tracing) {
+                        vertex = slice.call(next, -1)[0];
+                    } else {
+                        vertex = next;
+                        if(this.traversed.hasOwnProperty(vertex.obj[this.graph.meta.id])) {
+                            if(!!this.traversed[vertex.obj[this.graph.meta.id]].length) {
+                                push.apply(endPipeArray, this.traversed[vertex.obj[this.graph.meta.id]]);
+                            }
+                            return;
+                        } else {
+                            this.traversed[vertex.obj[this.graph.meta.id]] = [];
+                        }
+                    }
+                    value = hasArgs ? Utils.pick(vertex.outE, labels) : vertex.outE;
+                    Utils.each(Utils.flatten(Utils.values(value)), function (edge) {
+                        endPipeArray.push(edge);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(edge);
+                            pipes.push(pipe);
+                        } else {
+                            push.call(this.traversed[vertex.obj[this.graph.meta.id]], edge);
+                        }
+                    }, this);
+                    value = hasArgs ? Utils.pick(vertex.inE, labels) : vertex.inE;
+                    Utils.each(Utils.flatten(Utils.values(value)), function (edge) {
+                        endPipeArray.push(edge);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(edge);
+                            pipes.push(pipe);
+                        } else {
+                            push.call(this.traversed[vertex.obj[this.graph.meta.id]], edge);
+                        }
+                    }, this);
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                } else {
+                    this.traversed = undefined;
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.property = function (prop) {
+                var element, iter = [], endPipeArray = [], tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe, array = [], tempObj, tempProp, isEmbedded = prop.indexOf(".") > -1;
+                tempProp = isEmbedded ? prop.split(".").slice(-1)[0] : prop;
+                this.steps[++this.steps.currentStep] = {
+                    func: 'property',
+                    args: prop
+                };
+                iter = tracing ? this.pipeline : this.endPipe;
+                Utils.each(iter, function (next) {
+                    element = tracing ? slice.call(next, -1)[0] : next;
+                    tempObj = isEmbedded ? Utils.embeddedObject(element.obj, prop) : element.obj;
+                    if(!Utils.isObject(tempObj[tempProp]) && tempObj.hasOwnProperty(tempProp)) {
+                        array.push(tempObj[tempProp]);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(tempObj[tempProp]);
+                            pipes.push(pipe);
+                        }
+                    }
+                });
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                this.endPipe = array;
+                return this;
+            };
+            Pipeline.prototype.order = function () {
+                var prop = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    prop[_i] = arguments[_i + 0];
+                }
+                this.steps[++this.steps.currentStep] = {
+                    func: 'order',
+                    args: prop,
+                    'exclFromPath': true
+                };
+                if(!!this.graph.traceEnabled) {
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                if(!prop.length) {
+                    if(!!this.endPipe.length && Utils.isElement(this.endPipe[0])) {
+                        this.endPipe.sort(Utils.dynamicSortMultiple([
+                            this.graph.meta.id
+                        ]));
+                    } else {
+                        this.endPipe.sort(Utils.defaultSort);
+                    }
+                } else if(prop.length == 1 && prop[0] === '-') {
+                    if(!!this.endPipe.length && Utils.isElement(this.endPipe[0])) {
+                        this.endPipe.sort(Utils.dynamicSortMultiple([
+                            '-' + this.graph.meta.id
+                        ]));
+                    } else {
+                        this.endPipe.sort(Utils.defaultSort).reverse();
+                    }
+                } else {
+                    this.endPipe.sort(Utils.dynamicSortMultiple(Utils.flatten(prop)));
+                }
+                return this;
+            };
+            Pipeline.prototype.range = function (start, end) {
+                this.endPipe = !!end ? this.endPipe.slice(start, end + 1) : this.endPipe.slice(start);
+                return this;
+            };
+            Pipeline.prototype.index = function () {
+                var indices = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    indices[_i] = arguments[_i + 0];
+                }
+                var endPipeArray = [], idx = Utils.flatten(indices);
+                for(var i = 0, l = idx.length; i < l; i++) {
+                    if(idx[i] > -1 && idx[i] < this.endPipe.length) {
+                        endPipeArray.push(this.endPipe[idx[i]]);
+                    }
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.dedup = function () {
+                this.endPipe = Utils.uniqueElement(this.endPipe);
+                return this;
+            };
+            Pipeline.prototype.except = function (any) {
+                var exclIds, ids, endPipeIds;
+                if(!!any.length) {
+                    ids = Utils.pluck(this.endPipe, this.graph.meta.id);
+                    exclIds = Utils.isObject(any[0]) ? Utils.pluck(Utils.flatten(any), this.graph.meta.id) : any;
+                    endPipeIds = Utils.difference(ids, exclIds);
+                    this.endPipe = Utils.materializeElementArray(endPipeIds, this.graph, this.endPipe[0].Type);
+                } else {
+                    this.endPipe = [];
+                }
+                return this;
+            };
+            Pipeline.prototype.retain = function (any) {
+                var intersectIds, ids, endPipeIds;
+                if(!!any.length) {
+                    ids = Utils.pluck(this.endPipe, this.graph.meta.id);
+                    intersectIds = Utils.isObject(any[0]) ? Utils.pluck(Utils.flatten(any), this.graph.meta.id) : any;
+                    endPipeIds = Utils.intersection(ids, intersectIds);
+                    this.endPipe = Utils.materializeElementArray(endPipeIds, this.graph, this.endPipe[0].Type);
+                } else {
+                    this.endPipe = [];
+                }
+                return this;
+            };
+            Pipeline.prototype.where = function () {
+                var args = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    args[_i] = arguments[_i + 0];
+                }
+                var element, iter = [], l, nextIter = [], comparables = [], endPipeArray = [],
+                    tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, funcObj,
+                    tempObj, compObj, tempProp, propVals = [], isIn, norArray = [], origArray = [];
+                this.steps[++this.steps.currentStep] = {
+                    func: 'where',
+                    args: args,
+                    'exclFromPath': true
+                };
+                iter = tracing ? this.pipeline : this.endPipe;
+                comparables = Utils.flatten(args);
+                l = comparables.length;
+                for(var i = 0; i < l; i++) {
+                    compObj = comparables[i];
+                    if('$nor' in compObj) {
+                        norArray.push.apply(norArray, this.endPipe);
+                        origArray.push.apply(origArray, this.endPipe);
+                        for(var x = 0, xl = compObj['$nor'].length; x < xl; x++) {
+                            this.where.call(this, compObj['$nor'][x]);
+                            norArray.push.apply(norArray, this.endPipe);
+                            this.endPipe = origArray;
+                        }
+                        endPipeArray = Utils.findInstances(norArray, 1);
+                        continue;
+                    }
+                    Utils.each(iter, function (next) {
+                        element = tracing ? slice.call(next, -1)[0] : next;
+                        for(var prop in compObj) {
+                            isIn = false;
+                            if(compObj.hasOwnProperty(prop)) {
+                                if(prop.charAt(0) === "$") {
+                                    propVals = compObj[prop];
+                                    if(!Compare[prop].call(null, element.obj, propVals)) {
+                                        if(i < l) {
+                                            nextIter.push(next);
+                                        }
+                                        return;
+                                    }
+                                } else {
+                                    tempObj = element.obj;
+                                    tempProp = prop;
+                                    if(tempProp.indexOf(".") > -1) {
+                                        tempObj = Utils.embeddedObject(tempObj, tempProp);
+                                        tempProp = tempProp.split(".").slice(-1)[0];
+                                    }
+                                    if(Utils.isObject(tempObj[tempProp]) || !tempObj.hasOwnProperty(tempProp)) {
+                                        if(i < l) {
+                                            nextIter.push(next);
+                                        }
+                                        return;
+                                    }
+                                    funcObj = compObj[prop];
+                                    for(var func in funcObj) {
+                                        if(funcObj.hasOwnProperty(func)) {
+                                            if(Compare[func].call(null, tempObj[tempProp], funcObj[func])) {
+                                                if(!isIn) {
+                                                    isIn = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if(!isIn) {
+                                        if(i < l) {
+                                            nextIter.push(next);
+                                        }
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        endPipeArray.push(element);
+                        if(tracing) {
+                            push.call(next, element);
+                            pipes.push(next);
+                        }
+                    }, this);
+                    iter = nextIter;
+                    nextIter = [];
+                }
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.filter = function (closure) {
+                var element, iter = [], endPipeArray = [], tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe, customClosure = new Function("it", Utils.funcBody(closure));
+                this.steps[++this.steps.currentStep] = {
+                    func: 'filter',
+                    args: [],
+                    'exclFromPath': true
+                };
+                iter = tracing ? this.pipeline : this.endPipe;
+                Utils.each(iter, function (next) {
+                    element = tracing ? slice.call(next, -1)[0] : next;
+                    if(customClosure.call(element.obj, element.obj)) {
+                        endPipeArray.push(element);
+                        if(tracing) {
+                            pipe = [];
+                            pipe.push.apply(pipe, next);
+                            pipe.push(element);
+                            pipes.push(pipe);
+                        }
+                    }
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.ifThenElse = function (ifClosure, thenClosure, elseClosure) {
+                var element, iter = [], endPipeArray = [], tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe, itObj, closureOut, ifC = new Function("it", Utils.funcBody(ifClosure)), thenC = new Function("it", Utils.funcBody(thenClosure)), elseC = new Function("it", Utils.funcBody(elseClosure));
+                this.steps[++this.steps.currentStep] = {
+                    func: 'ifThenElse',
+                    args: []
+                };
+                iter = tracing ? this.pipeline : this.endPipe;
+                Utils.each(iter, function (next) {
+                    element = tracing ? slice.call(next, -1)[0] : next;
+                    itObj = Utils.isElement(element) ? element.obj : element;
+                    if(ifC.call(itObj, itObj)) {
+                        closureOut = thenC.call(itObj, itObj);
+                    } else {
+                        closureOut = elseC.call(itObj, itObj);
+                    }
+                    endPipeArray.push(closureOut);
+                    if(tracing) {
+                        pipe = [];
+                        pipe.push.apply(pipe, next);
+                        pipe.push(closureOut);
+                        pipes.push(pipe);
+                    }
+                }, this);
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.as = function (name) {
+                this.asHash = this.asHash || {
+                };
+                if(!this.asHash[name]) {
+                    this.asHash[name] = {
+                    };
+                }
+                this.asHash[name].step = this.steps.currentStep;
+                return this;
+            };
+            Pipeline.prototype.back = function (x) {
+                var backTo, i = 0, l = 0, endPipeArray = [];
+                if(!this.graph.traceEnabled) {
+                    throw Error('Tracing is off');
+                    return;
+                }
+                ;
+                if(!x) {
+                    throw Error('Paramater is required');
+                    return;
+                }
+                if(Utils.isString(x)) {
+                    if(x in this.asHash) {
+                        backTo = this.asHash[x].step;
+                    } else {
+                        throw Error('Unknown named position');
+                    }
+                } else {
+                    x = this.steps.looped ? x + this.steps.looped : x;
+                    backTo = this.steps.currentStep - x;
+                }
+                this.pipeline = Utils.uniqueRow(this.pipeline, backTo);
+                l = this.pipeline.length;
+                for(i = 0; i < l; i++) {
+                    push.call(endPipeArray, this.pipeline[i][backTo - 1]);
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.optional = function (x) {
+                var backTo, i = 0, l = 0, endPipeArray = [];
+                if(!this.graph.traceEnabled) {
+                    throw Error('Tracing is off');
+                    return;
+                }
+                ;
+                if(!x) {
+                    throw Error('Paramater is required');
+                    return;
+                }
+                if(Utils.isString(x)) {
+                    if(x in this.asHash) {
+                        backTo = this.asHash[x].step;
+                    } else {
+                        throw Error('Unknown named position');
+                    }
+                } else {
+                    backTo = this.steps.currentStep - x;
+                }
+                this.pipeline = this.steps[backTo].elements;
+                l = this.pipeline.length;
+                for(i = 0; i < l; i++) {
+                    push.call(endPipeArray, this.pipeline[i][backTo - 1]);
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.select = function (list) {
+                var closure = [];
+                for (var _i = 0; _i < (arguments.length - 1); _i++) {
+                    closure[_i] = arguments[_i + 1];
+                }
+                var backTo, i, l = this.pipeline.length, k, endPipeHash = {
+                }, tempEndPipeArray, endPipeArray = [], closureArray = [], closureOut, pos = 0;
+                if(!this.graph.traceEnabled) {
+                    throw Error('Tracing is off');
+                    return;
+                }
+                ;
+                if(!list) {
+                    for(i = 0; i < l; i++) {
+                        tempEndPipeArray = [];
+                        for(k in this.asHash) {
+                            if(this.asHash.hasOwnProperty(k)) {
+                                endPipeHash = {
+                                };
+                                backTo = this.asHash[k].step;
+                                endPipeHash[k] = this.pipeline[i][backTo - 1].obj;
+                                push.call(tempEndPipeArray, endPipeHash);
+                            }
+                        }
+                        push.call(endPipeArray, tempEndPipeArray);
+                    }
+                } else {
+                    if(!Utils.isArray(list)) {
+                        closure.unshift(list);
+                        list = undefined;
+                    }
+                    for(var j = 0, funcsLen = closure.length; j < funcsLen; j++) {
+                        closureArray.push(new Function("it", Utils.funcBody(closure[j])));
+                    }
+                    if(list && Utils.isArray(list)) {
+                        for(i = 0; i < l; i++) {
+                            tempEndPipeArray = [];
+                            for(var x = 0, len = list.length; x < len; x++) {
+                                endPipeHash = {
+                                };
+                                if(list[x] in this.asHash) {
+                                    backTo = this.asHash[list[x]].step;
+                                    if(!!closureArray.length) {
+                                        endPipeHash[list[x]] = closureArray[pos % funcsLen].call(this.pipeline[i][backTo - 1].obj, this.pipeline[i][backTo - 1].obj);
+                                        ++pos;
+                                    } else {
+                                        endPipeHash[list[x]] = this.pipeline[i][backTo - 1].obj;
+                                    }
+                                    push.call(tempEndPipeArray, endPipeHash);
+                                } else {
+                                    throw Error('Unknown named position');
+                                }
+                            }
+                            push.call(endPipeArray, tempEndPipeArray);
+                        }
+                    } else {
+                        for(i = 0; i < l; i++) {
+                            tempEndPipeArray = [];
+                            for(k in this.asHash) {
+                                if(this.asHash.hasOwnProperty(k)) {
+                                    endPipeHash = {
+                                    };
+                                    backTo = this.asHash[k].step;
+                                    endPipeHash[k] = closureArray[pos % funcsLen].call(this.pipeline[i][backTo - 1].obj, this.pipeline[i][backTo - 1].obj);
+                                    push.call(tempEndPipeArray, endPipeHash);
+                                }
+                                pos++;
+                            }
+                            push.call(endPipeArray, tempEndPipeArray);
+                        }
+                    }
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.path = function () {
+                var props = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    props[_i] = arguments[_i + 0];
+                }
+                var tempObjArray = [], tempArr = [], tempObj = {
+                }, outputArray = [], i = 0, len = 0, j = 0, l = 0, isClosure, closureArray = [], propsLen = props.length;
+                if(!this.graph.traceEnabled) {
+                    throw Error('Tracing is off');
+                    return;
+                }
+                len = this.pipeline.length;
+                if(!!propsLen) {
+                    isClosure = /^\s*it(?=\.[A-Za-z_])/.exec(props[0]) ? true : false;
+                    if(isClosure) {
+                        for(var c = 0, funcsLen = propsLen; c < funcsLen; c++) {
+                            closureArray.push(new Function("it", Utils.funcBody(props[c])));
+                        }
+                        for(i = 0; i < len; i++) {
+                            tempObjArray = Utils.toPathArray(this.pipeline[i], this.steps);
+                            l = tempObjArray.length;
+                            for(j = 0; j < l; j++) {
+                                push.call(tempArr, closureArray[j % propsLen].call(tempObjArray[j], tempObjArray[j]));
+                            }
+                            push.call(outputArray, tempArr);
+                            tempObjArray = [];
+                            tempArr = [];
+                        }
+                    } else {
+                        for(i = 0; i < len; i++) {
+                            tempObjArray = Utils.toPathArray(this.pipeline[i], this.steps);
+                            l = tempObjArray.length;
+                            for(j = 0; j < l; j++) {
+                                push.call(tempArr, Utils.pick(tempObjArray[j], props));
+                            }
+                            push.call(outputArray, tempArr);
+                            tempObjArray = [];
+                            tempArr = [];
+                        }
+                    }
+                } else {
+                    for(i = 0; i < len; i++) {
+                        push.call(outputArray, Utils.toPathArray(this.pipeline[i], this.steps));
+                    }
+                }
+                this.endPipe = outputArray;
+                return this;
+            };
+            Pipeline.prototype.count = function () {
+                var cnt = this.endPipe.length;
+                this.endPipe = cnt;
+                return this;
+            };
+            Pipeline.prototype.group = function (args) {
+                var tracing = !!this.graph.traceEnabled, props = [], tempObj, tempProp, groupObj = {
+                }, o = {
+                }, outputObj = {
+                }, element;
+                args = Utils.flatten(args);
+                Utils.each(this.endPipe, function (next) {
+                    element = tracing ? slice.call(next, -1)[0].obj : next.obj;
+                    o = {
+                    };
+                    o[element[this.graph.meta.id]] = element;
+                    for(var j = args.length - 1, propsLen = 0; j >= propsLen; j--) {
+                        tempObj = element;
+                        tempProp = args[j];
+                        if(tempProp.indexOf(".") > -1) {
+                            tempObj = Utils.embeddedObject(tempObj, tempProp);
+                            tempProp = tempProp.split(".").slice(-1)[0];
+                        }
+                        if(!(Utils.isObject(tempObj[tempProp])) && tempObj.hasOwnProperty(tempProp)) {
+                            props = Utils.isArray(tempObj[tempProp]) ? tempObj[tempProp] : [
+                                tempObj[tempProp]
+                            ];
+                            for(var f = 0, flen = props.length; f < flen; f++) {
+                                groupObj[props[f]] = o;
+                            }
+                        } else {
+                            groupObj['_no_' + args[j]] = o;
+                        }
+                        o = groupObj;
+                        groupObj = {
+                        };
+                    }
+                    outputObj = Utils.merge(o, outputObj);
+                });
+                this.endPipe = [];
+                return outputObj;
+            };
+            Pipeline.prototype.sum = function (args) {
+                var tracing = !!this.graph.traceEnabled, props = [], tempObj, tempProp, outputObj, o = {
+                }, isEmbedded = false;
+                function createChildren(val) {
+                    var properties = [];
+                    for (var _i = 0; _i < (arguments.length - 1); _i++) {
+                        properties[_i] = arguments[_i + 1];
+                    }
+                    var i = properties.length, retObj = {
+                    }, groupObj = {
+                        value: val
+                    };
+                    retObj = groupObj;
+                    while(!!i) {
+                        groupObj = {
+                        };
+                        groupObj[properties[--i]] = retObj;
+                        retObj = groupObj;
+                    }
+                    return retObj;
+                }
+                args = Utils.flatten(args);
+                for(var i = 0, propsLen = args.length; i < propsLen; i++) {
+                    tempProp = args[i];
+                    o[tempProp] = 0;
+                    isEmbedded = false;
+                    if(args[i].indexOf(".") > -1) {
+                        tempProp = args[i].split(".").slice(-1)[0];
+                        isEmbedded = true;
+                    }
+                    Utils.each(this.endPipe, function (next) {
+                        tempObj = tracing ? slice.call(next, -1)[0].obj : next.obj;
+                        if(isEmbedded) {
+                            tempObj = Utils.embeddedObject(tempObj, args[i]);
+                        }
+                        if(!(Utils.isObject(tempObj[tempProp])) && tempObj.hasOwnProperty(tempProp)) {
+                            props = Utils.isArray(tempObj[tempProp]) ? tempObj[tempProp] : [
+                                tempObj[tempProp]
+                            ];
+                            for(var j = 0, len = props.length; j < len; j++) {
+                                o[args[i]] = o[args[i]] + Utils.parseNumber([
+                                    props[j]
+                                ]);
+                            }
+                        }
+                    });
+                }
+                props = [];
+                var o2, o3 = {
+                };
+                for(var k in o) {
+                    if(o.hasOwnProperty(k)) {
+                        if(k.indexOf(".") > -1) {
+                            props.push(o[k]);
+                            props.push.apply(props, k.split("."));
+                            o2 = createChildren.apply(null, props);
+                        } else {
+                            o2 = {
+                            };
+                            o2[k] = {
+                            };
+                            o2[k].value = o[k];
+                        }
+                        o3 = Utils.merge(o2, o3);
+                    }
+                }
+                outputObj.summed = o3;
+                outputObj.results = this.endPipe;
+                this.endPipe = [];
+                return outputObj;
+            };
+            Pipeline.prototype.transform = function (closure) {
+                var element, iter = [], endPipeArray = [], tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe, itObj, customClosure = new Function("it", Utils.funcBody(closure)), closureOut;
+                this.steps[++this.steps.currentStep] = {
+                    func: 'transform',
+                    args: closure
+                };
+                iter = tracing ? this.pipeline : this.endPipe;
+                Utils.each(iter, function (next) {
+                    element = tracing ? slice.call(next, -1)[0] : next;
+                    itObj = Utils.isElement(element) ? element.obj : element;
+                    closureOut = customClosure.call(itObj, itObj);
+                    endPipeArray.push(closureOut);
+                    if(tracing) {
+                        pipe = [];
+                        pipe.push.apply(pipe, next);
+                        pipe.push(closureOut);
+                        pipes.push(pipe);
+                    }
+                });
+                if(tracing) {
+                    this.pipeline = pipes;
+                    this.steps[this.steps.currentStep].elements = [];
+                    push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                }
+                this.endPipe = endPipeArray;
+                return this;
+            };
+            Pipeline.prototype.loop = function (stepBack, iterations, closure) {
+                var element, iter = [], endPipeArray = [], tracing = !!this.graph.traceEnabled, pipes = tracing ? [] : undefined, pipe, tempPipeline = [], backTo, currentStep = this.steps.currentStep, loopFor = iterations - 1, step, i, j, l, customClosure = closure ? new Function("it", Utils.funcBody(closure)) : undefined;
+                this.steps.looped = this.steps.looped + (iterations - 1) || iterations - 1;
+                if(Utils.isString(stepBack)) {
+                    if(stepBack in this.asHash) {
+                        backTo = this.asHash[stepBack].step;
+                    } else {
+                        throw Error('Unknown named position');
+                    }
+                } else {
+                    backTo = this.steps.currentStep - (stepBack - 1);
+                }
+                if(closure) {
+                    iter = tracing ? this.pipeline : this.endPipe;
+                    Utils.each(iter, function (next) {
+                        element = tracing ? slice.call(next, -1)[0] : next;
+                        if(customClosure.call(element.obj, element.obj)) {
+                            endPipeArray.push(element);
+                            if(tracing) {
+                                pipe = [];
+                                pipe.push.apply(pipe, next);
+                                pipes.push(pipe);
+                            }
+                        }
+                    });
+                }
+                while(loopFor) {
+                    --loopFor;
+                    for(i = backTo; i < currentStep + 1; i++) {
+                        step = this.steps[i];
+                        this[step.func].apply(this, step.args);
+                        if(closure) {
+                            iter = tracing ? this.pipeline : this.endPipe;
+                            Utils.each(iter, function (next) {
+                                element = tracing ? slice.call(next, -1)[0] : next;
+                                if(customClosure.call(element.obj, element.obj)) {
+                                    endPipeArray.push(element);
+                                    if(tracing) {
+                                        pipe = [];
+                                        pipe.push.apply(pipe, next);
+                                        pipes.push(pipe);
+                                    }
+                                }
+                            });
+                            if(tracing) {
+                                this.pipeline = pipes;
+                                this.steps[this.steps.currentStep].elements = [];
+                                push.apply(this.steps[this.steps.currentStep].elements, this.pipeline);
+                            }
+                        }
+                    }
+                }
+                if(closure) {
+                    this.endPipe = endPipeArray;
+                }
+                return this;
+            };
+            Pipeline.prototype.emit = function () {
+                var result = undefined;
+                if(!!this.endPipe.length) {
+                    if(!this.endPipe[0] || !Utils.isElement(this.endPipe[0])) {
+                        result = this.endPipe;
+                    } else {
+                        result = Utils.toObjArray(this.endPipe);
+                    }
+                } else {
+                    result = this.endPipe;
+                }
+                this.traversed = undefined;
+                this.asHash = undefined;
+                this.endPipe = undefined;
+                this.pipeline = undefined;
+                this.steps = {
+                    currentStep: 0
+                };
+                return result;
+            };
+            Pipeline.prototype.stringify = function () {
+                this.endPipe = JSON.stringify(Utils.toObjArray(this.endPipe));
+                return this;
+            };
+            Pipeline.prototype.hash = function () {
+                this.endPipe = Utils.toHash(this.endPipe);
+                return this;
+            };
+            Pipeline.prototype.map = function () {
+                var props = [];
+                for (var _i = 0; _i < (arguments.length - 0); _i++) {
+                    props[_i] = arguments[_i + 0];
+                }
+                var tempObjArray = [], outputArray = [];
+                if(!!props.length) {
+                    tempObjArray = Utils.toObjArray(this.endPipe);
+                    for(var j = 0, l = tempObjArray.length; j < l; j++) {
+                        push.call(outputArray, Utils.pick(tempObjArray[j], props));
+                    }
+                    tempObjArray = [];
+                } else {
+                    outputArray = Utils.toObjArray(this.endPipe);
+                }
+                this.endPipe = outputArray;
+                return this;
+            };
+            return Pipeline;
+        })();
+        Mogwai.Pipeline = Pipeline;        
+        var Compare = (function () {
+            function Compare() { }
+            Compare.$eq = function $eq(objVal, val) {
+                var objValIsArray = Utils.isArray(objVal), index;
+                objVal = objValIsArray ? Utils.unique(objVal) : [
+                    objVal
+                ];
+                index = objVal.length;
+                while(index) {
+                    --index;
+                    if(((Utils.isDate(val) && Utils.isDate(objVal[index])) || (Utils.isBoolean(val) && Utils.isBoolean(objVal[index])) || (!(Utils.isDate(objVal[index]) || Utils.isBoolean(objVal[index])))) && (Utils.parseValue(objVal[index]) === Utils.parseValue(val))) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            Compare.$neq = function $neq(objVal, val) {
+                return !Compare.$eq(objVal, val);
+            };
+            Compare.$lt = function $lt(objVal, val) {
+                var objValIsArray = Utils.isArray(objVal), index;
+                objVal = objValIsArray ? Utils.unique(objVal) : [
+                    objVal
+                ];
+                index = objVal.length;
+                while(index) {
+                    --index;
+                    if(((Utils.isDate(val) && Utils.isDate(objVal[index])) || (Utils.isBoolean(val) && Utils.isBoolean(objVal[index])) || (!(Utils.isDate(objVal[index]) || Utils.isBoolean(objVal[index])))) && (Utils.parseValue(objVal[index]) < Utils.parseValue(val))) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            Compare.$lte = function $lte(objVal, val) {
+                var objValIsArray = Utils.isArray(objVal), index;
+                objVal = objValIsArray ? Utils.unique(objVal) : [
+                    objVal
+                ];
+                index = objVal.length;
+                while(index) {
+                    --index;
+                    if(((Utils.isDate(val) && Utils.isDate(objVal[index])) || (Utils.isBoolean(val) && Utils.isBoolean(objVal[index])) || (!(Utils.isDate(objVal[index]) || Utils.isBoolean(objVal[index])))) && (Utils.parseValue(objVal[index]) <= Utils.parseValue(val))) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            Compare.$gt = function $gt(objVal, val) {
+                return !Compare.$lte(objVal, val);
+            };
+            Compare.$gte = function $gte(objVal, val) {
+                return !Compare.$lt(objVal, val);
+            };
+            Compare.$btw = function $btw(objVal, val) {
+                return Compare.$gte(objVal, val[0]) && Compare.$lte(objVal, val[1]);
+            };
+            Compare.$len = function $len(objVal, val) {
+                var len = objVal.length;
+                if(Utils.isNumber(Utils.parseNumber(val))) {
+                    return len == val;
+                }
+                return eval(len + /^\s*(?:<|>)\=*\s*\d+|^\s*(?:!|=)\={1,2}\s*\d/.exec(val)[0]);
+            };
+            Compare.$in = function $in(objVal, val) {
+                var objValIsArray = Utils.isArray(objVal), index, i = 0, valLen;
+                objVal = objValIsArray ? Utils.unique(objVal) : [
+                    objVal
+                ];
+                val = Utils.flatten([
+                    val
+                ]);
+                valLen = val.length;
+                index = objVal.length;
+                while(index) {
+                    --index;
+                    i = valLen;
+                    while(!!i) {
+                        --i;
+                        if(((Utils.isDate(val[i]) && Utils.isDate(objVal[index])) || (Utils.isBoolean(val[i]) && Utils.isBoolean(objVal[index])) || (!(Utils.isDate(objVal[index]) || Utils.isBoolean(objVal[index])))) && (Utils.parseValue(objVal[index]) === Utils.parseValue(val[i]))) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            };
+            Compare.$ex = function $ex(objVal, val) {
+                return !Compare.$in(objVal, val);
+            };
+            Compare.$like = function $like(objVal, val) {
+                var objValIsArray = Utils.isArray(objVal), index, i = 0, valLen;
+                objVal = objValIsArray ? Utils.unique(objVal) : [
+                    objVal
+                ];
+                val = Utils.flatten([
+                    val
+                ]);
+                valLen = val.length;
+                index = objVal.length;
+                while(index) {
+                    --index;
+                    i = valLen;
+                    while(!!i) {
+                        --i;
+                        if(Utils.isString(objVal[index]) && !(objVal[index].search(val[i]) === -1)) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            };
+            Compare.$startsWith = function $startsWith(objVal, val) {
+                var objValIsArray = Utils.isArray(objVal), index;
+                objVal = objValIsArray ? Utils.unique(objVal) : [
+                    objVal
+                ];
+                index = objVal.length;
+                while(index) {
+                    --index;
+                    if(Utils.isString(objVal[index]) && !(objVal[index].search('^' + val) === -1)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            Compare.$endsWith = function $endsWith(objVal, val) {
+                var objValIsArray = Utils.isArray(objVal), index;
+                objVal = objValIsArray ? Utils.unique(objVal) : [
+                    objVal
+                ];
+                index = objVal.length;
+                while(index) {
+                    --index;
+                    if(Utils.isString(objVal[index]) && !(objVal[index].search(val + '$') === -1)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            Compare.$all = function $all(objVal, val) {
+                var matchCnt = 0, index = 0, i = 0, valLen = 0;
+                val = Utils.unique(val);
+                objVal = Utils.unique(objVal);
+                valLen = val.length;
+                index = objVal.length;
+                if(valLen <= index) {
+                    while(index) {
+                        --index;
+                        i = valLen;
+                        while(!!i) {
+                            --i;
+                            if(((Utils.isDate(val[i]) && Utils.isDate(objVal[index])) || (Utils.isBoolean(val[i]) && Utils.isBoolean(objVal[index])) || (!(Utils.isDate(objVal[index]) || Utils.isBoolean(objVal[index])))) && (Utils.parseValue(objVal[index]) === Utils.parseValue(val[i]))) {
+                                matchCnt++;
+                            }
+                        }
+                    }
+                }
+                return matchCnt == valLen;
+            };
+            Compare.$match = function $match(objVal, val) {
+                var matchCnt = 0, index = 0, i = 0, valLen = 0;
+                val = Utils.unique(val);
+                objVal = Utils.unique(objVal);
+                valLen = val.length;
+                index = objVal.length;
+                if(valLen == index) {
+                    while(index) {
+                        --index;
+                        i = valLen;
+                        while(!!i) {
+                            --i;
+                            if(((Utils.isDate(val[i]) && Utils.isDate(objVal[index])) || (Utils.isBoolean(val[i]) && Utils.isBoolean(objVal[index])) || (!(Utils.isDate(objVal[index]) || Utils.isBoolean(objVal[index])))) && (Utils.parseValue(objVal[index]) === Utils.parseValue(val[i]))) {
+                                matchCnt++;
+                            }
+                        }
+                    }
+                }
+                return matchCnt == valLen;
+            };
+            Compare.$has = function $has(obj, val) {
+                var i = 0, tempObj, tempProp;
+                val = Utils.flatten([
+                    val
+                ]);
+                i = val.length;
+                while(!!i) {
+                    --i;
+                    tempObj = obj;
+                    tempProp = val[i];
+                    if(tempProp.indexOf(".") > -1) {
+                        tempObj = Utils.embeddedObject(tempObj, tempProp);
+                        tempProp = tempProp.split(".").slice(-1)[0];
+                    }
+                    if(tempObj.hasOwnProperty(tempProp)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            Compare.$hasNot = function $hasNot(obj, val) {
+                return !Compare.$has(obj, val);
+            };
+            return Compare;
+        })();
+        Mogwai.Compare = Compare;        
+    })(Helios.Mogwai || (Helios.Mogwai = {}));
+    var Mogwai = Helios.Mogwai;
+    var Utils = (function () {
+        function Utils() { }
+        Utils.validNumeric = /^\$?\-?([1-9]{1}[0-9]{0,2}(\,\d{3})*(\.\d{0,2})?|[1-9]{1}\d{0,}(?:\.\d{0,2})?|0(?:\.\d{0,2})?|(?:\.\d{1,2}))$|^\-?\$?(?:[1-9]{1}\d{0,2}(?:\,\d{3})*(?:\.\d{0,2})?|[1-9]{1}\d{0,}(?:\.\d{0,2})?|0(?:\.\d{0,2})?|(?:\.\d{1,2}))$|^\(\$?(?:[1-9]{1}\d{0,2}(?:\,\d{3})*(?:\.\d{0,2})?|[1-9]{1}\d{0,}(?:\.\d{0,2})?|0(?:\.\d{0,2})?|(?:\.\d{1,2}))\)$/;
+        Utils.toArray = function toArray(o) {
+            var k, r = [];
+            for(k in o) {
+                if(o.hasOwnProperty(k)) {
+                    r.push(o[k]);
+                }
+            }
+            return r;
+        };
+        Utils.each = function each(array, func, context) {
+            var i, len, val;
+            if(Utils.isArray(array)) {
+                len = array.length;
+                for(i = 0; i < len; i += 1) {
+                    val = array[i];
+                    func.call(context, val);
+                }
+            } else {
+                for(i in array) {
+                    if(array.hasOwnProperty(i)) {
+                        val = array[i];
+                        func.call(context, val);
+                    }
+                }
+            }
+        };
+        Utils.intersection = function intersection(arr1, arr2) {
+            var r = [], o = {
+            }, i, comp;
+            for(i = 0; i < arr2.length; i += 1) {
+                o[arr2[i]] = true;
+            }
+            for(i = 0; i < arr1.length; i += 1) {
+                comp = arr1[i];
+                if(!!o[comp]) {
+                    r.push(arr1[i]);
+                }
+            }
+            return r;
+        };
+        Utils.intersectElement = function intersectElement(elements) {
+            var o, outputObj = {
+            }, compObj;
+            elements = Utils.flatten(elements);
+            compObj = elements[0];
+            for(var i = 1, l = elements.length; i < l; i++) {
+                o = {
+                };
+                for(var k in elements[i]) {
+                    if(elements[i].hasOwnProperty(k)) {
+                        o[k] = true;
+                    }
+                }
+                for(var h in compObj) {
+                    if(!!o[h]) {
+                        outputObj[h] = compObj[h];
+                    }
+                }
+                if(Utils.isEmpty(outputObj)) {
+                    return {
+                    };
+                }
+                compObj = outputObj;
+            }
+            return outputObj;
+        };
+        Utils.difference = function difference(arr1, arr2) {
+            var r = [], o = {
+            }, i, comp;
+            for(i = 0; i < arr2.length; i += 1) {
+                o[arr2[i]] = true;
+            }
+            for(i = 0; i < arr1.length; i += 1) {
+                comp = arr1[i];
+                if(!o[comp]) {
+                    r.push(arr1[i]);
+                }
+            }
+            return r;
+        };
+        Utils.diffElement = function diffElement(arr1, arr2) {
+            var r = [], o = {
+            }, i, comp;
+            for(i = 0; i < arr2.length; i += 1) {
+                o[arr2[i].obj[arr2[i].graph.meta.id]] = true;
+            }
+            for(i = 0; i < arr1.length; i += 1) {
+                comp = arr1[i].obj[arr1[i].graph.meta.id];
+                if(!o[comp]) {
+                    r.push(arr1[i]);
+                }
+            }
+            return r;
+        };
+        Utils.unique = function unique(array) {
+            var o = {
+            }, i, k, l = array.length, r = [];
+            for(i = 0; i < l; i += 1) {
+                o[array[i]] = array[i];
+            }
+            for(k in o) {
+                if(o.hasOwnProperty(k)) {
+                    r.push(o[k]);
+                }
+            }
+            return r;
+        };
+        Utils.uniqueRow = function uniqueRow(arrays, step) {
+            var o = {
+            }, i, j, k, l = arrays.length, r = [];
+            var prop;
+            for(i = 0; i < l; i++) {
+                prop = "";
+                for(j = 0; j < step; j++) {
+                    prop += arrays[i][j].obj[arrays[i][j].graph.meta.id] + ",";
+                }
+                o[prop] = arrays[i].slice(0, step);
+            }
+            for(k in o) {
+                if(o.hasOwnProperty(k)) {
+                    r.push(o[k]);
+                }
+            }
+            return r;
+        };
+        Utils.uniqueElement = function uniqueElement(array) {
+            var o = {
+            }, i, l = array.length, r = [];
+            for(i = 0; i < l; i += 1) {
+                o[array[i].obj[array[i].graph.meta.id]] = array[i];
+            }
+            for(i in o) {
+                if(o.hasOwnProperty(i)) {
+                    r.push(o[i]);
+                }
+            }
+            return r;
+        };
+        Utils.findInstances = function findInstances(array, instances) {
+            var o = {
+            }, id, i, l = array.length, r = [];
+            for(i = 0; i < l; i += 1) {
+                id = array[i].obj[array[i].graph.meta.id];
+                o[id] = array[i];
+                ('count' in o[id]) ? o[id].count++ : o[id].count = 1;
+            }
+            for(i in o) {
+                if(o.hasOwnProperty(i)) {
+                    if(o[i].count == instances) {
+                        r.push(o[i]);
+                    }
+                    delete o[i].count;
+                }
+            }
+            return r;
+        };
+        Utils.include = function include(array, i) {
+            return indexOf.call(array, i) === -1 ? false : true;
+        };
+        Utils.keys = function keys(o) {
+            var k, r = [];
+            for(k in o) {
+                if(o.hasOwnProperty(k)) {
+                    r.push(k);
+                }
+            }
+            return r;
+        };
+        Utils.values = function values(o) {
+            return Utils.toArray(o);
+        };
+        Utils.funcBody = function funcBody(closure) {
+            return "it = " + closure + "; return it;";
+        };
+        Utils.pick = function pick(o, props) {
+            var props = Utils.flatten(props), i = props.length, result = {
+            }, tempObj, tempProp;
+            while(i) {
+                i -= 1;
+                tempProp = props[i];
+                tempObj = o;
+                if(tempProp.indexOf(".") > -1) {
+                    tempObj = Utils.embeddedObject(o, tempProp);
+                    tempProp = tempProp.split(".").slice(-1)[0];
+                }
+                if(tempObj.hasOwnProperty(tempProp)) {
+                    result[tempProp] = tempObj[tempProp];
+                }
+            }
+            return result;
+        };
+        Utils.pluck = function pluck(objs, prop) {
+            var o, i = objs.length, tempObj, tempProp = prop, result = [], isElement = false, isEmbedded = false;
+            if(!!i) {
+                isElement = !!objs[0].obj;
+            }
+            if(prop.indexOf(".") > -1) {
+                isEmbedded = true;
+                tempProp = prop.split(".").slice(-1)[0];
+            }
+            while(i) {
+                i -= 1;
+                o = isElement ? objs[i].obj : objs[i];
+                tempObj = isEmbedded ? Utils.embeddedObject(o, prop) : o;
+                if(tempObj.hasOwnProperty(tempProp)) {
+                    push.call(result, tempObj[tempProp]);
+                }
+            }
+            return result;
+        };
+        Utils.toHash = function toHash(array) {
+            var id, i, len = array.length, result = {
+            }, o = {
+            };
+            if(!!len) {
+                id = array[0].graph.meta.id;
+                for(i = 0; i < len; i += 1) {
+                    o = array[i].obj;
+                    result[o[id]] = o;
+                }
+            }
+            return result;
+        };
+        Utils.toObjArray = function toObjArray(array) {
+            var i, l = array.length, result = [];
+            for(i = 0; i < l; i += 1) {
+                result.push(array[i].obj);
+            }
+            return result;
+        };
+        Utils.toPathArray = function toPathArray(array, steps) {
+            var i, l = array.length, result = [];
+            for(i = 0; i < l; i += 1) {
+                if(!steps[i + 1].exclFromPath) {
+                    result.push(Utils.isElement(array[i]) ? array[i].obj : array[i]);
+                }
+            }
+            return result;
+        };
+        Utils.materializeElementArray = function materializeElementArray(array, db, type) {
+            var i, l = array.length, result = [], elements = type == "Vertex" ? db.vertices : db.edges, isObjArray = false;
+            if(!!l) {
+                isObjArray = Utils.isObject(array[0]);
+            }
+            for(i = 0; i < l; i += 1) {
+                result.push(isObjArray ? elements[array[i][db.meta.id]] : elements[array[i]]);
+            }
+            return result;
+        };
+        Utils.flatten = function flatten(array, shallow) {
+            if (typeof shallow === "undefined") { shallow = false; }
+            var result = [], value, index = -1, length;
+            if(!array) {
+                return result;
+            }
+            length = array.length;
+            while((index += 1) < length) {
+                value = array[index];
+                if(Utils.isArray(value)) {
+                    push.apply(result, shallow ? value : Utils.flatten(value));
+                } else {
+                    result.push(value);
+                }
+            }
+            return result;
+        };
+        Utils.embeddedObject = function embeddedObject(o, prop) {
+            var props = prop.indexOf(".") > -1 ? prop.split(".") : [
+                prop
+            ], l = props.length, lastProp = props[l - 1], currentProp;
+            for(var i = 0; i < l; i++) {
+                if(o.hasOwnProperty(props[i])) {
+                    currentProp = props[i];
+                    if(!Utils.isObject(o[currentProp])) {
+                        break;
+                    }
+                    o = o[currentProp];
+                }
+            }
+            if(currentProp != lastProp) {
+                o = {
+                };
+            }
+            return o;
+        };
+        Utils.merge = function merge(obj1, obj2) {
+            for(var p in obj2) {
+                try  {
+                    if(obj1.hasOwnProperty(p)) {
+                        obj1[p] = Utils.merge(obj1[p], obj2[p]);
+                    } else {
+                        obj1[p] = obj2[p];
+                    }
+                } catch (e) {
+                    obj1[p] = obj2[p];
+                }
+            }
+            return obj1;
+        };
+        Utils.isArray = function isArray(o) {
+            return toString.call(o) === '[object Array]';
+        };
+        Utils.isString = function isString(o) {
+            return toString.call(o) === '[object String]';
+        };
+        Utils.isNumber = function isNumber(o) {
+            return toString.call(o) === '[object Number]';
+        };
+        Utils.isBoolean = function isBoolean(o) {
+            return toString.call(Utils.parseBoolean(o)) === '[object Boolean]';
+        };
+        Utils.isObject = function isObject(o) {
+            return toString.call(o) === '[object Object]';
+        };
+        Utils.isEmpty = function isEmpty(o) {
+            var key;
+            if(!o) {
+                return true;
+            }
+            for(key in o) {
+                if(o.hasOwnProperty(key)) {
+                    return !o[key];
+                }
+            }
+            return true;
+        };
+        Utils.isFunction = function isFunction(o) {
+            return toString.call(o) === '[object Function]';
+        };
+        Utils.isNull = function isNull(o) {
+            return toString.call(o) === '[object Null]';
+        };
+        Utils.isUndefined = function isUndefined(o) {
+            return toString.call(o) === '[object Undefined]';
+        };
+        Utils.isElement = function isElement(o) {
+            return o.hasOwnProperty('obj');
+        };
+        Utils.isDate = function isDate(o) {
+            return Utils.isString(o) && !(new Date(o).toString() === 'Invalid Date');
+        };
+        Utils.isMoney = function isMoney(val) {
+            if(Utils.validNumeric.exec(val) != null) {
+                return Utils.validNumeric.exec(val)[0].length === Utils.validNumeric.exec(val)[1].length;
+            }
+            return false;
+        };
+        Utils.parseNumber = function parseNumber(val) {
+            var numResult = Utils.validNumeric.exec(val);
+            if(numResult != null) {
+                return parseFloat(numResult[1]);
+            }
+            return val;
+        };
+        Utils.parseBoolean = function parseBoolean(val) {
+            if(Utils.isString(val)) {
+                if(val.toLowerCase() === 'true') {
+                    return true;
+                }
+                if(val.toLowerCase() === 'false') {
+                    return false;
+                }
+            }
+            return val;
+        };
+        Utils.parseValue = function parseValue(val) {
+            var numResult = Utils.validNumeric.exec(val);
+            if(numResult != null) {
+                if(!!numResult[2]) {
+                    return parseFloat(numResult[1].replace(numResult[2].charAt(0), ''));
+                }
+                return parseFloat(numResult[1]);
+            }
+            if(Utils.isBoolean(val)) {
+                return Utils.parseBoolean(val);
+            }
+            if(Utils.isDate(val)) {
+                return Date.parse(val);
+            }
+            return val;
+        };
+        Utils.dynamicSort = function dynamicSort(property, modifier) {
+            if (typeof modifier === "undefined") { modifier = 'default'; }
+            var sortOrder = 1, tempProp, isEmbedded = property.indexOf(".") > -1, modifier;
+            if(property[0] === "-") {
+                sortOrder = -1;
+                property = property.slice(1);
+            }
+            tempProp = isEmbedded ? property.split(".").slice(-1)[0] : property;
+            return function (a, b) {
+                var result, tempObjA, tempObjB, objA, objB, isAElement = Utils.isElement(a), isAObject = Utils.isObject(a), isBElement = Utils.isElement(b), isBObject = Utils.isObject(b);
+                objA = isAElement ? a.obj : a;
+                objB = isBElement ? b.obj : b;
+                tempObjA = isEmbedded ? Utils.embeddedObject(objA, property) : objA;
+                tempObjB = isEmbedded ? Utils.embeddedObject(objB, property) : objB;
+                if((isAElement && isBElement) || (isAObject && isBObject)) {
+                    if(!(tempProp in tempObjA)) {
+                        if(!(tempProp in tempObjB)) {
+                            return 0;
+                        }
+                        return 1 * sortOrder;
+                    }
+                    if(!(tempProp in tempObjB)) {
+                        return -1 * sortOrder;
+                    }
+                }
+                switch(modifier) {
+                    case 'case-i':
+                        result = (tempObjA[tempProp].toUpperCase() < tempObjB[tempProp].toUpperCase()) ? -1 : (tempObjA[tempProp].toUpperCase() > tempObjB[tempProp].toUpperCase()) ? 1 : 0;
+                        break;
+                    case 'case-s':
+                        result = (tempObjA[tempProp] < tempObjB[tempProp]) ? -1 : (tempObjA[tempProp] > tempObjB[tempProp]) ? 1 : 0;
+                        break;
+                    default:
+                        result = (Utils.parseValue(tempObjA[tempProp]) < Utils.parseValue(tempObjB[tempProp])) ? -1 : (Utils.parseValue(tempObjA[tempProp]) > Utils.parseValue(tempObjB[tempProp])) ? 1 : 0;
+                }
+                return result * sortOrder;
+            };
+        };
+        Utils.dynamicSortMultiple = function dynamicSortMultiple(props) {
+            return function (obj1, obj2) {
+                var i = 0, result = 0, numberOfProperties = props.length, prop, modifier;
+                while(result === 0 && i < numberOfProperties) {
+                    if(Utils.isObject(props[i])) {
+                        prop = Utils.keys(props[i])[0];
+                        modifier = props[i][prop];
+                        result = Utils.dynamicSort(prop, modifier)(obj1, obj2);
+                    } else {
+                        result = Utils.dynamicSort(props[i])(obj1, obj2);
+                    }
+                    i++;
+                }
+                return result;
+            };
+        };
+        Utils.defaultSort = function defaultSort(obj1, obj2) {
+            return (Utils.parseValue(obj1) < Utils.parseValue(obj2)) ? -1 : (Utils.parseValue(obj1) > Utils.parseValue(obj2)) ? 1 : 0;
+        };
+        return Utils;
+    })();    
+})(Helios || (Helios = {}));
+try  {
+    importScripts('sax.js', 'q.min.js', 'uuid.js', 'q-comm.js');
+    var i, l, g, r;
+    Q_COMM.Connection(this, {
+        // init: function (params) {
+        //     g = !!params ? new Helios.GraphDatabase(params) : new Helios.GraphDatabase();
+        //     return 'Database created';
+        // },
+        dbCommand: function (params) {
+            r = g = g || new Helios.GraphDatabase();
+            for(i = 0 , l = params.length; i < l; i++) {
+                r = r[params[i].method].apply(r, params[i].parameters);
+            }
+            return r;
+        },
+        run: function (params) {
+            r = g;
+            params.push({
+                method: 'emit',
+                parameters: []
+            });
+            for(i = 0 , l = params.length; i < l; i++) {
+                r = r[params[i].method].apply(r, params[i].parameters);
+            }
+            g.startTrace(false);
+            return r;
+        },
+        startTrace: function (param) {
+            g.startTrace(param);
+        }
+    });
+} catch (exception) {
+    console.log(exception.message);
+}
+
+'use strict';
+
+var assert = require('assert');
+var grunt = require('grunt');
+
+describe('grunt', function () {
+	describe('jekyll', function () {
+		it('should compile', function () {
+
+			var actual = grunt.file.read('./test/actual/index.html');
+			var expected = grunt.file.read('./test/expected/index.html');
+
+			assert.equal(actual, expected);
+		});
+	});
+});
+
+var _ = require('lodash'),
+  chalk = require('chalk'),
+  CrappyStream = require('./crappy-stream'),
+  http = require('http'),
+  proxy = require('monkey-proxy'),
+  Throttle = require('throttle');
+
+function Crapify (opts) {
+  // set default options if none are specified.
+  _.extend(this, {
+    port: 5000,
+    speed: 5000,
+    concurrency: 10,
+    dropFrequency: 0,
+    sleep: 0,
+    close: false
+  }, opts)
+}
+
+Crapify.prototype.start = function () {
+  var _this = this;
+
+  this.server = proxy(http.createServer(), {
+    transformRequest: [crappyStreamFactory, throttleFactory],
+    transformResponse: [crappyStreamFactory, throttleFactory],
+    sleep: this.sleep,
+    concurrency: this.concurrency,
+    close: this.close
+  });
+
+  this.server.listen(this.port, function () {
+    console.log(chalk.yellow('proxy serving on :' + _this.port + ' at ' + _this.speed + ' bytes/sec, max concurrency = ' + _this.concurrency + ', dropped bytes frequency = ' + _this.dropFrequency));
+  });
+
+  this.server.on('connection', function (socket) {
+    _this.socket = socket;
+  });
+
+  function crappyStreamFactory () {
+    return new CrappyStream({
+      dropFrequency: _this.dropFrequency
+    });
+  }
+
+  function throttleFactory () {
+    return new Throttle(_this.speed);
+  }
+};
+
+Crapify.prototype.stop = function (cb) {
+  var _this = this;
+
+  this.server.close(function () {
+    _this.socket.destroy();
+    return cb();
+  });
+};
+
+module.exports = Crapify;
+
+/*
+ PicturePolyfill
+ Responsive Images that work today (and mimic the proposed Picture element with span elements)
+ Author: Andrea Verlicchi
+ License: MIT/GPLv2
+ Please "/dist/picturePolyfill.min.js" for production purposes
+ */
+
+var picturePolyfill = (function (w) {
+
+	"use strict";
+
+	var cacheArray,
+		cacheLatestIndex,
+		resizeTimer,
+		timeAfterResize = 100,
+		areListenersActive = false;
+
+	return {
+
+		/**
+		 * Get all the "attributes" from an "element" and returns them as a hash
+		 * @param element
+		 * @param attributes
+		 * @returns {{}}
+		 * @private
+		 */
+		_getAttrs: function (element, attributes) {
+			var ret = {}, attributeName, attributeValue;
+			for (var i = 0, len = attributes.length; i < len; i += 1) {
+				attributeName = attributes[i];
+				attributeValue = element.getAttribute(attributeName);
+				if (attributeValue) {
+					ret[attributeName] = attributeValue;
+				}
+			}
+			return ret;
+		},
+
+		/**
+		 * Gets the attributes list from an "element"
+		 * @param element
+		 * @returns {Array}
+		 * @private
+		 */
+		_getAttrsList: function (element) {
+			var arr = [];
+			for (var i = 0, attributes = element.attributes, l = attributes.length; i < l; i++) {
+				arr.push(attributes.item(i).nodeName);
+			}
+			return arr;
+		},
+
+		/**
+		 * Returns a sorted array of object representing the elements of a srcset attribute,
+		 * where pxr is the pixel ratio and src is the source for that ratio
+		 * @param srcset
+		 * @returns {Array}
+		 * @private
+		 */
+		_getSrcsetArray: function (srcset) {
+			var srcSetElement,
+				source,
+				density,
+				ret = [],
+				srcSetElements;
+
+			if (srcset === null || srcset === '' || typeof srcset === 'undefined') {
+				return ret;
+			}
+
+			srcSetElements = srcset.split(',');
+
+			for (var i = 0, len = srcSetElements.length; i < len; i += 1) {
+				srcSetElement = srcSetElements[i].trim().split(' ');
+				if (srcSetElement.length === 1) {
+					density = 1;
+				}
+				else {
+					density = parseFloat(srcSetElement[srcSetElement.length - 1], 10);
+				}
+				source = srcSetElement[0];
+				ret.push({pxr: density, src: source});
+			}
+
+			return ret.sort(function (hash1, hash2) {
+				var pxr1 = hash1.pxr, pxr2 = hash2.pxr;
+				if (pxr1 < pxr2) {
+					return -1;
+				}
+				if (pxr1 > pxr2) {
+					return  1;
+				}
+				return 0;
+			});
+		},
+
+		/**
+		 * Returns the proper src from the given srcset
+		 * Get the first valid element from passed position to the left
+		 * @param srcset
+		 * @param pixelRatio
+		 * @returns string || null
+		 * @private
+		 */
+		_getSrcFromSrcset: function (srcset, pixelRatio) {
+			var i = 0,
+				array,
+				len,
+				breakPoint = -1;
+
+			if (srcset === null || srcset === '' || typeof srcset === 'undefined') {
+				return "";
+			}
+
+			array = this._getSrcsetArray(srcset);
+			len = array.length;
+
+			do {
+				if (array[i].pxr >= pixelRatio || i === len - 1) {
+					breakPoint = i;
+				}
+				i += 1;
+			} while (!(breakPoint > -1 || i >= len));
+
+			return array[breakPoint].src;
+		},
+
+		/**
+		 * Loop through every element of the sourcesData array, check if the media query applies and,
+		 * if so, get the matching srcset attribute, if any
+		 * @param sourcesData
+		 * @returns string
+		 * @private
+		 */
+		_getSrcsetFromData: function (sourcesData) {
+			var sourceData,
+				media,
+				src,
+				srcset;
+
+			for (var i = 0, len = sourcesData.length; i < len; i += 1) {
+				sourceData = sourcesData[i];
+				media = sourceData.media;
+				srcset = sourceData.srcset;
+				src = sourceData.src;
+				if (!media || w.matchMedia(media).matches) {
+					if (!!srcset) {
+						return srcset;
+					}
+					if (!!src) {
+						return src;
+					}
+					return "";
+				}
+			}
+			return "";
+		},
+
+		/**
+		 * Get the img tag inside picture, even in IE9 and IE8
+		 * @param pictureElement
+		 * @returns Array
+		 * @private
+		 */
+		_getImgTagsInPicture: function (pictureElement) {
+			var currentElement = pictureElement,
+				imgTags;
+			imgTags = pictureElement.getElementsByTagName('img');
+			if (imgTags.length > 0) {
+				return imgTags;
+			}
+			// Didn't find anything?
+			// IE8 reads the img tag AFTER the picture tag...
+			// So keep searching in next siblings, and when found it push it in imgTags
+			do {
+				currentElement = currentElement.nextSibling;
+				if (currentElement === null) {
+					return [];
+				}
+			} while (currentElement.tagName !== 'IMG');
+			// Found, return currentElement in a 1 element array
+			return [currentElement];
+		},
+
+		/**
+		 * Set the src attribute of the first image element inside passed pictureElement
+		 * please not that the img is required in the markup, as stated in the specs
+		 * @param pictureElement {Node}
+		 * @param attributes
+		 */
+		_setImgAttributes: function (pictureElement, attributes) {
+			var imageElements = this._getImgTagsInPicture(pictureElement),
+				imgEl, givenSrcAttribute, givenSrcsetAttribute,
+				srcToSet, srcsetToSet;
+
+			function _setAttributeIfDifferent(element, attribute, value) {
+				if (element.getAttribute(attribute) !== value) {
+					element.setAttribute(attribute, value);
+				}
+			}
+
+			if (imageElements.length === 0) {
+				return false;
+			}
+
+			// Set original img tag's src and srcset in a data attribute
+			imgEl = imageElements[0];
+			if (!imgEl.getAttribute('data-original-src')) {
+				_setAttributeIfDifferent(imgEl, 'data-original-src', imgEl.getAttribute('src'));
+				_setAttributeIfDifferent(imgEl, 'data-original-srcset', imgEl.getAttribute('srcset'));
+			}
+
+			// Set srcToSet and srcsetToSet depending on the given src/srcset attributes
+			// If none are given, use original ones
+			// If both ore one are given, use them (even if one is null)
+			givenSrcAttribute = attributes.src;
+			givenSrcsetAttribute = attributes.srcset;
+			if (!givenSrcAttribute && !givenSrcsetAttribute) {
+				srcToSet = imgEl.getAttribute('data-original-src');
+				srcsetToSet = imgEl.getAttribute('data-original-srcset');
+			} else {
+				srcToSet = givenSrcAttribute;
+				srcsetToSet = givenSrcsetAttribute;
+			}
+			_setAttributeIfDifferent(imgEl, 'src', srcToSet);
+			_setAttributeIfDifferent(imgEl, 'srcset', srcsetToSet);
+
+		},
+
+		/**
+		 * Parses the picture element looking for sources elements, then
+		 * generate the array or string for the SrcSetArray
+		 * @param {Array} pictureElement the starting element to parse DOM into. If not passed, it parses the whole document.
+		 */
+		_getSourcesData: function (pictureElement) {
+			var sourcesData = [],
+				sourceElement,
+				sourceData,
+				foundSources = pictureElement.getElementsByTagName('source');
+
+			for (var i = 0, len = foundSources.length; i < len; i += 1) {
+				sourceElement = foundSources[i];
+				sourceData = this._getAttrs(sourceElement, this._getAttrsList(sourceElement));
+				sourcesData.push(sourceData);
+			}
+			return sourcesData;
+		},
+
+		/**
+		 * Adds listeners to load and resize event
+		 * @private
+		 */
+		_addListeners: function () {
+
+			if (!this.isUseful || areListenersActive) {
+				return false;
+			}
+
+			function parseDocument() {
+				picturePolyfill.parse(document);
+			}
+
+			// Manage resize event only if they've passed 100 milliseconds between a resize event and another
+			// to avoid the script to slow down browsers that animate resize or when browser edge is being manually dragged
+			function parseDocumentAfterTimeout() {
+				clearTimeout(resizeTimer);
+				resizeTimer = setTimeout(parseDocument, timeAfterResize);
+			}
+
+			if (w.addEventListener) {
+				w.addEventListener('resize', parseDocumentAfterTimeout);
+				w.addEventListener('DOMContentLoaded', function () {
+					parseDocument();
+					w.removeEventListener('load', parseDocument);
+				});
+				w.addEventListener('load', parseDocument);
+			}
+			else if (w.attachEvent) {
+				w.attachEvent('onload', parseDocument);
+				w.attachEvent('onresize', parseDocumentAfterTimeout);
+			}
+
+			areListenersActive = true;
+		},
+
+		/**
+		 * Initialize  and resize event handlers
+		 */
+		initialize: function () {
+
+			/**
+			 * The device pixel ratio. 1 for standard displays, 2+ for HD displays
+			 * @type {number}
+			 * @private
+			 */
+			this._pxRatio = w.devicePixelRatio || 1;
+
+			/**
+			 * Detect if browser has media queries support
+			 * @type {boolean}
+			 * @private
+			 */
+			this._mqSupport = !!w.matchMedia && w.matchMedia("only all") !== null && w.matchMedia("only all").matches;
+
+			/**
+			 * Detect if polyfill is necessary
+			 * @type {boolean}
+			 */
+			this.isUseful = !w.HTMLPictureElement;
+
+			/**
+			 * Cache array, where all sources data is stored
+			 * @type {Array}
+			 * @private
+			 */
+			cacheArray = [];
+
+			/**
+			 * Cache index, incremental
+			 * @type {number}
+			 * @private
+			 */
+			cacheLatestIndex = 0;
+
+			// Add listeners (listeners are added once)
+			this._addListeners();
+		},
+
+		/**
+		 * Parses the DOM looking for elements containing the "data-picture" attribute, then
+		 * generate the images or updates their src attribute.
+		 * @param {Node} element (the starting element to parse DOM into. REQUIRED)
+		 */
+		parse: function (element, readFromCache) {
+			var sourcesData,
+				pictureElement,
+				pictureElements,
+				srcAttribute,
+				srcsetAttribute,
+				mqSupport,
+				cacheIndex;
+
+			// Do nothing if picture is supported
+			if (!this.isUseful) {
+				return 0;
+			}
+
+			// Default readFromCache parameter value
+			if (typeof readFromCache === 'undefined') {
+				readFromCache = true;
+			}
+
+			pictureElements = (element || document).getElementsByTagName('picture');
+			mqSupport = this._mqSupport;
+
+			for (var i = 0, len = pictureElements.length; i < len; i += 1) {
+				sourcesData = null;
+				pictureElement = pictureElements[i];
+				// Try to read sources data from cache
+				if (readFromCache) {
+					cacheIndex = pictureElement.getAttribute('data-cache-index');
+					if (cacheIndex !== null) {
+						sourcesData = cacheArray[cacheIndex];
+					}
+				}
+				// If no sources are found in cache, try to read sources data from the picture element, then cache them
+				if (!sourcesData) {
+					sourcesData = this._getSourcesData(pictureElement);
+					// Write in cache
+					cacheArray[cacheLatestIndex] = sourcesData;
+					pictureElement.setAttribute('data-cache-index', cacheLatestIndex);
+					cacheLatestIndex += 1;
+				}
+				// If no sourcesData retrieved or media queries are not supported, read from the default src
+				if (!mqSupport || sourcesData.length === 0) {
+					srcAttribute = pictureElement.getAttribute('data-default-src');
+					srcsetAttribute = pictureElement.getAttribute('data-default-srcset');
+				}
+				else {
+					srcsetAttribute = this._getSrcsetFromData(sourcesData);
+					srcAttribute = this._getSrcFromSrcset(srcsetAttribute, this._pxRatio);
+				}
+				// Set the img source
+				this._setImgAttributes(pictureElement, {
+					src: srcAttribute,
+					srcset: srcsetAttribute,
+					alt: pictureElement.getAttribute('data-alt')
+				});
+			}
+
+			return i;
+		}
+	};
+
+}(window));
+
+picturePolyfill.initialize();
+picturePolyfill.parse();

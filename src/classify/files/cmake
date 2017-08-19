@@ -1,0 +1,617 @@
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8.7 FATAL_ERROR)
+
+INCLUDE(FindPackageHandleStandardArgs)
+
+FIND_LIBRARY(FOLLY_LIBRARY folly)
+FIND_PATH(FOLLY_INCLUDE_DIR "folly/String.h")
+
+SET(FOLLY_LIBRARIES ${FOLLY_LIBRARY})
+
+FIND_PACKAGE_HANDLE_STANDARD_ARGS(Folly
+  REQUIRED_ARGS FOLLY_INCLUDE_DIR FOLLY_LIBRARIES)
+
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8.7 FATAL_ERROR)
+
+INCLUDE(FindPackageHandleStandardArgs)
+
+FIND_LIBRARY(THPP_LIBRARY thpp)
+FIND_PATH(THPP_INCLUDE_DIR "thpp/Tensor.h")
+
+SET(THPP_LIBRARIES ${THPP_LIBRARY})
+
+FIND_PACKAGE_HANDLE_STANDARD_ARGS(Folly
+  REQUIRED_ARGS THPP_INCLUDE_DIR THPP_LIBRARIES)
+
+  if (NOT easy_install)
+
+
+if (NOT BUILDEM_DIR)
+    message (FATAL_ERROR "ERROR: FlyEM build directory (for all downloads & builds) should be specified via -DBUILDEM_DIR=<path> on cmake command line.")
+endif ()
+
+macro (easy_install PKG_NAME)
+
+    include (python)
+    include (setuptools)
+
+    if (NOT python-${PKG_NAME})
+
+        set (python-${PKG_NAME} TRUE)
+        add_custom_target (${PKG_NAME} ALL 
+            DEPENDS ${python_NAME} ${setuptools_NAME}
+            COMMAND ${BUILDEM_ENV_STRING}  easy_install ${PKG_NAME}
+            COMMENT "Installing ${PKG_NAME} via easy_install")
+
+    endif ()
+
+endmacro (easy_install)
+
+
+endif (NOT easy_install)
+
+if(WIN32)
+  execute_process(COMMAND cmd /C set CPLEX_STUDIO_DIR OUTPUT_VARIABLE CPLEX_STUDIO_DIR_VAR ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+  
+  if(NOT CPLEX_STUDIO_DIR_VAR)
+    MESSAGE(FATAL_ERROR "Unable to find CPLEX: environment variable CPLEX_STUDIO_DIR<VERSION> not set.")
+  endif()
+  
+  STRING(REGEX REPLACE "^CPLEX_STUDIO_DIR" "" CPLEX_STUDIO_DIR_VAR ${CPLEX_STUDIO_DIR_VAR})
+  STRING(REGEX MATCH "^[0-9]+" CPLEX_WIN_VERSION ${CPLEX_STUDIO_DIR_VAR})
+  STRING(REGEX REPLACE "^[0-9]+=" "" CPLEX_STUDIO_DIR_VAR ${CPLEX_STUDIO_DIR_VAR})
+  file(TO_CMAKE_PATH "${CPLEX_STUDIO_DIR_VAR}" CPLEX_ROOT_DIR_GUESS) 
+  
+  set(CPLEX_WIN_VERSION ${CPLEX_WIN_VERSION} CACHE STRING "CPLEX version to be used.")
+  set(CPLEX_ROOT_DIR "${CPLEX_ROOT_DIR_GUESS}" CACHE PATH "CPLEX root directory.")
+  
+  MESSAGE(STATUS "Found CLPEX version ${CPLEX_WIN_VERSION} at '${CPLEX_ROOT_DIR}'")
+  
+  STRING(REGEX REPLACE "/VC/bin/.*" "" VISUAL_STUDIO_PATH ${CMAKE_C_COMPILER})
+  STRING(REGEX MATCH "Studio [0-9]+" CPLEX_WIN_VS_VERSION ${VISUAL_STUDIO_PATH})
+  STRING(REGEX REPLACE "Studio " "" CPLEX_WIN_VS_VERSION ${CPLEX_WIN_VS_VERSION})
+  
+  if(${CPLEX_WIN_VS_VERSION} STREQUAL "9")
+    set(CPLEX_WIN_VS_VERSION 2008)
+  elseif(${CPLEX_WIN_VS_VERSION} STREQUAL "10")
+    set(CPLEX_WIN_VS_VERSION 2010)
+  elseif(${CPLEX_WIN_VS_VERSION} STREQUAL "11")
+    set(CPLEX_WIN_VS_VERSION 2012)
+  else()
+    MESSAGE(FATAL_ERROR "CPLEX: unknown Visual Studio version at '${VISUAL_STUDIO_PATH}'.")
+  endif()
+  
+  set(CPLEX_WIN_VS_VERSION ${CPLEX_WIN_VS_VERSION} CACHE STRING "Visual Studio Version")
+  
+  if("${CMAKE_C_COMPILER}" MATCHES "amd64")
+    set(CPLEX_WIN_BITNESS x64)
+  else()
+    set(CPLEX_WIN_BITNESS x86)
+  endif()
+  
+  set(CPLEX_WIN_BITNESS ${CPLEX_WIN_BITNESS} CACHE STRING "On Windows: x86 or x64 (32bit resp. 64bit)")
+
+  MESSAGE(STATUS "CPLEX: using Visual Studio ${CPLEX_WIN_VS_VERSION} ${CPLEX_WIN_BITNESS} at '${VISUAL_STUDIO_PATH}'")
+
+  if(NOT CPLEX_WIN_LINKAGE)
+    set(CPLEX_WIN_LINKAGE mda CACHE STRING "CPLEX linkage variant on Windows. One of these: mda (dll, release), mdd (dll, debug), mta (static, release), mtd (static, debug)")
+  endif(NOT CPLEX_WIN_LINKAGE)
+
+  # now, generate platform string
+  set(CPLEX_WIN_PLATFORM "${CPLEX_WIN_BITNESS}_windows_vs${CPLEX_WIN_VS_VERSION}/stat_${CPLEX_WIN_LINKAGE}")
+
+else()
+
+  set(CPLEX_ROOT_DIR "" CACHE PATH "CPLEX root directory.")
+  set(CPLEX_WIN_PLATFORM "")
+  
+endif()
+
+
+FIND_PATH(CPLEX_INCLUDE_DIR
+  ilcplex/cplex.h
+  HINTS ${CPLEX_ROOT_DIR}/cplex/include
+        ${CPLEX_ROOT_DIR}/include
+  PATHS ENV C_INCLUDE_PATH
+        ENV C_PLUS_INCLUDE_PATH
+        ENV INCLUDE_PATH
+  )
+
+FIND_PATH(CPLEX_CONCERT_INCLUDE_DIR
+  ilconcert/iloenv.h 
+  HINTS ${CPLEX_ROOT_DIR}/concert/include
+        ${CPLEX_ROOT_DIR}/include
+  PATHS ENV C_INCLUDE_PATH
+        ENV C_PLUS_INCLUDE_PATH
+        ENV INCLUDE_PATH
+  )
+
+FIND_LIBRARY(CPLEX_LIBRARY
+  NAMES cplex${CPLEX_WIN_VERSION} cplex
+  HINTS ${CPLEX_ROOT_DIR}/cplex/lib/${CPLEX_WIN_PLATFORM} #windows
+        ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_debian4.0_4.1/static_pic #unix
+        ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_sles10_4.1/static_pic #unix 
+        ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_osx/static_pic #osx 
+        ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_darwin/static_pic #osx 
+  PATHS ENV LIBRARY_PATH #unix
+        ENV LD_LIBRARY_PATH #unix
+  )
+message(STATUS "CPLEX Library: ${CPLEX_LIBRARY}")
+
+FIND_LIBRARY(CPLEX_ILOCPLEX_LIBRARY
+  ilocplex
+  HINTS ${CPLEX_ROOT_DIR}/cplex/lib/${CPLEX_WIN_PLATFORM} #windows 
+        ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_debian4.0_4.1/static_pic #unix 
+        ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_sles10_4.1/static_pic #unix 
+        ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_osx/static_pic #osx 
+        ${CPLEX_ROOT_DIR}/cplex/lib/x86-64_darwin/static_pic #osx 
+  PATHS ENV LIBRARY_PATH
+        ENV LD_LIBRARY_PATH
+  )
+message(STATUS "ILOCPLEX Library: ${CPLEX_ILOCPLEX_LIBRARY}")
+
+FIND_LIBRARY(CPLEX_CONCERT_LIBRARY
+  concert
+  HINTS ${CPLEX_ROOT_DIR}/concert/lib/${CPLEX_WIN_PLATFORM} #windows 
+        ${CPLEX_ROOT_DIR}/concert/lib/x86-64_debian4.0_4.1/static_pic #unix 
+        ${CPLEX_ROOT_DIR}/concert/lib/x86-64_sles10_4.1/static_pic #unix 
+        ${CPLEX_ROOT_DIR}/concert/lib/x86-64_osx/static_pic #osx 
+        ${CPLEX_ROOT_DIR}/concert/lib/x86-64_darwin/static_pic #osx 
+  PATHS ENV LIBRARY_PATH
+        ENV LD_LIBRARY_PATH
+  )
+message(STATUS "CONCERT Library: ${CPLEX_CONCERT_LIBRARY}")
+
+if(WIN32)
+	FIND_PATH(CPLEX_BIN_DIR
+	  cplex${CPLEX_WIN_VERSION}.dll
+          HINTS ${CPLEX_ROOT_DIR}/cplex/bin/${CPLEX_WIN_PLATFORM} #windows
+	  )
+else()
+	FIND_PATH(CPLEX_BIN_DIR
+	  cplex 
+          HINTS ${CPLEX_ROOT_DIR}/cplex/bin/x86-64_sles10_4.1 #unix 
+                ${CPLEX_ROOT_DIR}/cplex/bin/x86-64_debian4.0_4.1 #unix 
+                ${CPLEX_ROOT_DIR}/cplex/bin/x86-64_osx #osx 
+        	${CPLEX_ROOT_DIR}/cplex/bin/x86-64_darwin #osx 
+	  ENV LIBRARY_PATH
+          ENV LD_LIBRARY_PATH
+	  )
+endif()
+message(STATUS "CPLEX Bin Dir: ${CPLEX_BIN_DIR}")
+
+INCLUDE(FindPackageHandleStandardArgs)
+FIND_PACKAGE_HANDLE_STANDARD_ARGS(CPLEX DEFAULT_MSG 
+ CPLEX_LIBRARY CPLEX_INCLUDE_DIR CPLEX_ILOCPLEX_LIBRARY CPLEX_CONCERT_LIBRARY CPLEX_CONCERT_INCLUDE_DIR)
+
+IF(CPLEX_FOUND)
+  SET(CPLEX_INCLUDE_DIRS ${CPLEX_INCLUDE_DIR} ${CPLEX_CONCERT_INCLUDE_DIR})
+  SET(CPLEX_LIBRARIES ${CPLEX_CONCERT_LIBRARY} ${CPLEX_ILOCPLEX_LIBRARY} ${CPLEX_LIBRARY} )
+  IF(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    SET(CPLEX_LIBRARIES "${CPLEX_LIBRARIES};m;pthread")
+  ENDIF(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+ENDIF(CPLEX_FOUND)
+
+MARK_AS_ADVANCED(CPLEX_LIBRARY CPLEX_INCLUDE_DIR CPLEX_ILOCPLEX_LIBRARY CPLEX_CONCERT_INCLUDE_DIR CPLEX_CONCERT_LIBRARY)
+
+
+if (NOT boost_NAME)
+
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+
+include (ExternalProject)
+include (BuildSupport)
+include (ExternalSource)
+
+include (python)
+include (zlib)
+
+set (boost_INCLUDE_DIR  ${BUILDEM_INCLUDE_DIR}/boost)
+include_directories (${boost_INCLUDE_DIR})
+
+external_source (boost
+    1_55_0
+    boost_1_55_0.tar.gz
+    93780777cfbf999a600f62883bd54b17 
+    http://sourceforge.net/projects/boost/files/boost/1.55.0/)
+
+set (boost_LIBS ${BUILDEM_LIB_DIR}/libboost_thread.${BUILDEM_PLATFORM_DYLIB_EXTENSION} 
+                ${BUILDEM_LIB_DIR}/libboost_system.${BUILDEM_PLATFORM_DYLIB_EXTENSION}
+                ${BUILDEM_LIB_DIR}/libboost_program_options.${BUILDEM_PLATFORM_DYLIB_EXTENSION}
+                ${BUILDEM_LIB_DIR}/libboost_python.${BUILDEM_PLATFORM_DYLIB_EXTENSION}
+                ${BUILDEM_LIB_DIR}/libboost_unit_test_framework.${BUILDEM_PLATFORM_DYLIB_EXTENSION}
+                ${BUILDEM_LIB_DIR}/libboost_filesystem.${BUILDEM_PLATFORM_DYLIB_EXTENSION}
+                ${BUILDEM_LIB_DIR}/libboost_chrono.${BUILDEM_PLATFORM_DYLIB_EXTENSION}
+                ${BUILDEM_LIB_DIR}/libboost_atomic.${BUILDEM_PLATFORM_DYLIB_EXTENSION} )
+
+
+message ("Installing ${boost_NAME} into FlyEM build area: ${BUILDEM_DIR} ...")
+ExternalProject_Add(${boost_NAME}
+    DEPENDS             ${python_NAME} ${zlib_NAME}
+    PREFIX              ${BUILDEM_DIR}
+    URL                 ${boost_URL}
+    URL_MD5             ${boost_MD5}
+    UPDATE_COMMAND      ""
+    PATCH_COMMAND       ""
+    CONFIGURE_COMMAND   ${BUILDEM_ENV_STRING} ./bootstrap.sh 
+        --with-libraries=date_time,filesystem,python,regex,serialization,system,test,thread,program_options,chrono,atomic
+        --with-python=${PYTHON_EXE} 
+        --prefix=${BUILDEM_DIR}
+        LDFLAGS=${BUILDEM_LDFLAGS}
+        CPPFLAGS=-I${BUILDEM_DIR}/include
+    BUILD_COMMAND       ${BUILDEM_ENV_STRING} ./b2 
+        --layout=tagged
+        -sNO_BZIP2=1 
+        -sZLIB_INCLUDE=${BUILDEM_DIR}/include 
+        -sZLIB_SOURCE=${zlib_SRC_DIR} install
+    BUILD_IN_SOURCE     1
+    INSTALL_COMMAND     ${BUILDEM_ENV_STRING} ./b2 
+        -sNO_BZIP2=1 
+        -sZLIB_INCLUDE=${BUILDEM_DIR}/include 
+        -sZLIB_SOURCE=${zlib_SRC_DIR} install
+)
+
+set_target_properties(${boost_NAME} PROPERTIES EXCLUDE_FROM_ALL ON)
+
+endif (NOT boost_NAME)
+
+if (NOT doxygen_NAME)
+
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+
+include (ExternalProject)
+include (ExternalSource)
+include (BuildSupport)
+
+external_source (doxygen
+    1.8.2
+    doxygen-1.8.2.src.tar.gz
+    6fa7baf995fa3f71cfc09e264ba88a83
+    http://ftp.stack.nl/pub/users/dimitri)
+
+message ("Installing ${doxygen_NAME} into FlyEM build area: ${BUILDEM_DIR} ...")
+ExternalProject_Add(${doxygen_NAME}
+    PREFIX              ${BUILDEM_DIR}
+    URL                 ${doxygen_URL}
+    URL_MD5             ${doxygen_MD5}
+    UPDATE_COMMAND      ""
+    PATCH_COMMAND       ""
+    CONFIGURE_COMMAND   ${BUILDEM_ENV_STRING} ./configure 
+        --prefix ${BUILDEM_DIR}
+    BUILD_COMMAND       ${BUILDEM_ENV_STRING} $(MAKE)
+    BUILD_IN_SOURCE     1
+    INSTALL_COMMAND     ${BUILDEM_ENV_STRING} $(MAKE) install
+)
+
+set_target_properties(${doxygen_NAME} PROPERTIES EXCLUDE_FROM_ALL ON)
+
+endif (NOT doxygen_NAME)
+
+if (NOT gmp_NAME)
+
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+
+include (ExternalProject)
+include (ExternalSource)
+include (BuildSupport)
+
+external_source (gmp
+    5.0.5
+    gmp-5.0.5.tar.bz2
+    041487d25e9c230b0c42b106361055fe
+    ftp://ftp.gnu.org/gnu/gmp)
+
+message ("Installing ${gmp_NAME} into FlyEM build area: ${BUILDEM_DIR} ...")
+ExternalProject_Add(${gmp_NAME}
+    PREFIX              ${BUILDEM_DIR}
+    URL                 ${gmp_URL}
+    URL_MD5             ${gmp_MD5}
+    UPDATE_COMMAND      ""
+    PATCH_COMMAND       ""
+    CONFIGURE_COMMAND   ${BUILDEM_ENV_STRING} ${gmp_SRC_DIR}/configure
+        --prefix=${BUILDEM_DIR}
+        LDFLAGS=${BUILDEM_LDFLAGS}
+        CPPFLAGS=-I${BUILDEM_DIR}/include
+    BUILD_COMMAND       ${BUILDEM_ENV_STRING} $(MAKE)
+    BUILD_IN_SOURCE     1
+    TEST_COMMAND        ${BUILDEM_ENV_STRING} $(MAKE) check
+    INSTALL_COMMAND     ${BUILDEM_ENV_STRING} $(MAKE) install
+)
+
+set_target_properties(${gmp_NAME} PROPERTIES EXCLUDE_FROM_ALL ON)
+
+endif (NOT gmp_NAME)
+
+if (NOT iiboost_NAME)
+
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+
+include (ExternalProject)
+include (ExternalSource)
+include (BuildSupport)
+
+include (itk)
+include (python)
+include (numpy)
+
+set(IIBOOST_UPDATE_COMMAND git checkout master && git pull) 
+
+external_git_repo (iiboost
+    HEAD
+    https://github.com/stuarteberg/iiboost)
+
+message ("Installing ${iiboost_NAME} into FlyEM build area: ${BUILDEM_DIR} ...")
+ExternalProject_Add(${iiboost_NAME}
+    DEPENDS             ${itk_NAME} ${python_NAME} ${numpy_NAME}
+    PREFIX              ${BUILDEM_DIR}
+    GIT_REPOSITORY      ${iiboost_URL}
+    GIT_TAG             ${iiboost_TAG}
+    UPDATE_COMMAND      ${IIBOOST_UPDATE_COMMAND}
+    CONFIGURE_COMMAND   ${BUILDEM_ENV_STRING} ${CMAKE_COMMAND}
+    	-DCMAKE_BUILD_TYPE=Release
+    	-DCMAKE_INSTALL_PREFIX=${BUILDEM_DIR}
+        -DCMAKE_PREFIX_PATH=${BUILDEM_DIR}
+	-DBUILD_PYTHON_WRAPPER=1
+        -DPYTHON_BASE_PATH=${PYTHON_PREFIX}
+	-DITK_DIR=${itk_CONFIG_DIR}
+    	${iiboost_SRC_DIR}
+    	
+    BUILD_COMMAND       ${BUILDEM_ENV_STRING} $(MAKE)
+    INSTALL_COMMAND     ${BUILDEM_ENV_STRING} $(MAKE) install
+)
+
+endif (NOT iiboost_NAME)
+
+
+if (NOT openexr_NAME)
+
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+
+include (ExternalProject)
+include (ExternalSource)
+include (PkgConfig)
+include (BuildSupport)
+include (PatchSupport)
+
+include (ilmbase)
+include (zlib)
+
+external_source (openexr
+    1.6.1
+    openexr-1.6.1.tar.gz
+    11951f164f9c872b183df75e66de145a
+    http://download.savannah.nongnu.org/releases/openexr)
+
+set (openexr_LIBRARIES_FLAGS "-lHalf -lIex -lIlmImf -lIlmThread -lImath")
+set (openexr_INCLUDE_DIR ${BUILDEM_INCLUDE_DIR}/OpenEXR)
+
+include_directories (${openexr_INCLUDE_DIR})
+
+if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set(openexr_PATCH_COMMAND ${BUILDEM_ENV_STRING} ${PATCH_EXE}
+        ${openexr_SRC_DIR}/exrmaketiled/main.cpp ${PATCH_DIR}/openexr-exrmaketiled.patch
+        ${openexr_SRC_DIR}/exrenvmap/main.cpp ${PATCH_DIR}/openexr-exrenvmap.patch
+        # Add extra patch for clang compatibility
+        ${openexr_SRC_DIR}/configure ${PATCH_DIR}/openexr-clang.patch )
+else()
+    set(openexr_PATCH_COMMAND ${BUILDEM_ENV_STRING} ${PATCH_EXE}
+        ${openexr_SRC_DIR}/exrmaketiled/main.cpp ${PATCH_DIR}/openexr-exrmaketiled.patch
+        ${openexr_SRC_DIR}/exrenvmap/main.cpp ${PATCH_DIR}/openexr-exrenvmap.patch )
+endif()
+
+message ("Installing ${openexr_NAME} into FlyEM build area: ${BUILDEM_DIR} ...")
+ExternalProject_Add(${openexr_NAME}
+    DEPENDS             ${ilmbase_NAME} ${zlib_NAME}
+    PREFIX              ${BUILDEM_DIR}
+    URL                 ${openexr_URL}
+    URL_MD5             ${openexr_MD5}
+    UPDATE_COMMAND      ""
+    PATCH_COMMAND       ${openexr_PATCH_COMMAND}
+    CONFIGURE_COMMAND   ${BUILDEM_ENV_STRING} ${openexr_SRC_DIR}/configure
+        --prefix=${BUILDEM_DIR}
+        --disable-ilmbasetest
+        PKG_CONFIG_PATH=${BUILDEM_PKGCONFIG_DIR}
+        LDFLAGS=${BUILDEM_LDFLAGS}
+        CPPFLAGS=-I${BUILDEM_DIR}/include
+    BUILD_COMMAND       ${BUILDEM_ENV_STRING} $(MAKE)
+    INSTALL_COMMAND     ${BUILDEM_ENV_STRING} $(MAKE) install
+)
+
+set_target_properties(${openexr_NAME} PROPERTIES EXCLUDE_FROM_ALL ON)
+
+endif (NOT openexr_NAME)
+
+f (NOT py2app_NAME)
+
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+
+include (ExternalProject)
+include (ExternalSource)
+include (BuildSupport)
+
+include (python)
+include (setuptools)
+
+external_source (py2app
+    0.7.3
+    py2app-0.7.3.tar.gz
+    fad705e63d335c570fde3bee48129730
+    http://pypi.python.org/packages/source/p/py2app/)
+
+message ("Installing ${py2app_NAME} into FlyEM build area: ${BUILDEM_DIR} ...")
+ExternalProject_Add(${py2app_NAME}
+    DEPENDS             ${python_NAME} ${setuptools_NAME}
+    PREFIX              ${BUILDEM_DIR}
+    URL                 ${py2app_URL}
+    URL_MD5             ${py2app_MD5}
+    UPDATE_COMMAND      ""
+    PATCH_COMMAND       ""
+    CONFIGURE_COMMAND   ""
+    BUILD_COMMAND       ${BUILDEM_ENV_STRING} ${PYTHON_EXE} setup.py install
+    BUILD_IN_SOURCE     1
+    TEST_COMMAND        ""
+    INSTALL_COMMAND     ""
+)
+
+set_target_properties(${py2app_NAME} PROPERTIES EXCLUDE_FROM_ALL ON)
+
+endif (NOT py2app_NAME)
+
+FIND_PACKAGE(PackageHandleStandardArgs)
+
+SET (OPENCL_VERSION_STRING "0.1.0")
+SET (OPENCL_VERSION_MAJOR 0)
+SET (OPENCL_VERSION_MINOR 1)
+SET (OPENCL_VERSION_PATCH 0)
+
+IF (APPLE)
+
+	# IF OpenCL_LIBPATH is given use it and don't use default path
+	IF (DEFINED ENV{OpenCL_LIBPATH})
+		FIND_LIBRARY(OPENCL_LIBRARIES OpenCL PATHS ENV OpenCL_LIBPATH NO_DEFAULT_PATH)
+	ELSE ()
+		FIND_LIBRARY(OPENCL_LIBRARIES OpenCL DOC "OpenCL lib for OSX")
+	ENDIF ()
+
+	# IF OpenCL_INCPATH is given use it and find for CL/cl.h and OpenCL/cl.h do not try to find default paths
+	IF (DEFINED ENV{OpenCL_INCPATH})
+		FIND_PATH(OPENCL_INCLUDE_DIRS CL/cl.h OpenCL/cl.h PATHS ENV OpenCL_INCPATH NO_DEFAULT_PATH)
+		FIND_PATH(_OPENCL_CPP_INCLUDE_DIRS CL/cl.hpp OpenCL/cl.hpp PATHS ${OPENCL_INCLUDE_DIRS} NO_DEFAULT_PATH)
+	ELSE ()
+		FIND_PATH(OPENCL_INCLUDE_DIRS OpenCL/cl.h DOC "Include for OpenCL on OSX")
+		FIND_PATH(_OPENCL_CPP_INCLUDE_DIRS OpenCL/cl.hpp DOC "Include for OpenCL CPP bindings on OSX")
+	ENDIF ()
+
+ELSE (APPLE)
+
+	IF (WIN32)
+
+		# Find OpenCL includes and libraries from environment variables provided by vendor
+		SET(OPENCL_INCLUDE_SEARCH_PATHS)
+		SET(OPENCL_LIBRARY_SEARCH_PATHS)
+		SET(OPENCL_LIBRARY_64_SEARCH_PATHS)
+
+		# Nvidia
+		IF (DEFINED ENV{CUDA_INC_PATH})
+			SET(OPENCL_INCLUDE_SEARCH_PATHS ${OPENCL_INCLUDE_SEARCH_PATHS} $ENV{CUDA_INC_PATH})
+			SET(OPENCL_LIBRARY_64_SEARCH_PATHS ${OPENCL_LIBRARY_64_SEARCH_PATHS} $ENV{CUDA_LIB_PATH}/../lib64)
+			SET(OPENCL_LIBRARY_SEARCH_PATHS ${OPENCL_LIBRARY_SEARCH_PATHS} $ENV{CUDA_LIB_PATH}/../lib)
+		ENDIF()
+		IF (DEFINED ENV{CUDA_PATH})
+			SET(OPENCL_INCLUDE_SEARCH_PATHS ${OPENCL_INCLUDE_SEARCH_PATHS} $ENV{CUDA_INC_PATH})
+			SET(OPENCL_LIBRARY_64_SEARCH_PATHS ${OPENCL_LIBRARY_64_SEARCH_PATHS} $ENV{CUDA_PATH}/lib/x64/)
+			SET(OPENCL_LIBRARY_SEARCH_PATHS ${OPENCL_LIBRARY_SEARCH_PATHS} $ENV{CUDA_PATH}/lib/Win32/)
+		ENDIF()
+
+		# Intel SDK
+		IF (DEFINED ENV{INTELOCSDKROOT})
+			SET(OPENCL_INCLUDE_SEARCH_PATHS ${OPENCL_INCLUDE_SEARCH_PATHS} $ENV{INTELOCSDKROOT}/include)
+			SET(OPENCL_LIBRARY_64_SEARCH_PATHS ${OPENCL_LIBRARY_64_SEARCH_PATHS} $ENV{INTELOCSDKROOT}/lib/x64)
+			SET(OPENCL_LIBRARY_SEARCH_PATHS ${OPENCL_LIBRARY_SEARCH_PATHS} $ENV{INTELOCSDKROOT}/lib/x86)
+		ENDIF()
+
+		# AMD SDK
+		IF (DEFINED ENV{AMDAPPSDKROOT})
+			SET(OPENCL_INCLUDE_SEARCH_PATHS ${OPENCL_INCLUDE_SEARCH_PATHS} $ENV{AMDAPPSDKROOT}/include)
+			SET(OPENCL_LIBRARY_64_SEARCH_PATHS ${OPENCL_LIBRARY_64_SEARCH_PATHS} $ENV{AMDAPPSDKROOT}/lib/x86_64)
+			SET(OPENCL_LIBRARY_SEARCH_PATHS ${OPENCL_LIBRARY_SEARCH_PATHS} $ENV{AMDAPPSDKROOT}/lib/x86)
+		ENDIF()
+
+		# Override search paths with OpenCL_INCPATH env variable
+		IF (DEFINED ENV{OpenCL_INCPATH})
+			SET(OPENCL_INCLUDE_SEARCH_PATHS $ENV{OpenCL_INCPATH})
+		ENDIF ()
+
+		# Override search paths with OpenCL_LIBPATH env variable
+		IF (DEFINED ENV{OpenCL_LIBPATH})
+			SET(OPENCL_LIBRARY_SEARCH_PATHS $ENV{OpenCL_LIBPATH})
+			SET(OPENCL_LIBRARY_64_SEARCH_PATHS $ENV{OpenCL_LIBPATH})
+		ENDIF ()
+
+		FIND_PATH(OPENCL_INCLUDE_DIRS CL/cl.h PATHS ${OPENCL_INCLUDE_SEARCH_PATHS})
+		FIND_PATH(_OPENCL_CPP_INCLUDE_DIRS CL/cl.hpp PATHS ${OPENCL_INCLUDE_SEARCH_PATHS})
+		
+		FIND_LIBRARY(_OPENCL_32_LIBRARIES OpenCL.lib HINTS ${OPENCL_LIBRARY_SEARCH_PATHS} PATHS ${OPENCL_LIB_DIR} ENV PATH)
+		FIND_LIBRARY(_OPENCL_64_LIBRARIES OpenCL.lib HINTS ${OPENCL_LIBRARY_64_SEARCH_PATHS} PATHS ${OPENCL_LIB_DIR} ENV PATH)
+
+		# Check if 64bit or 32bit versions links fine
+		SET (_OPENCL_VERSION_SOURCE "${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/openclversion.c")
+		#SET (_OPENCL_VERSION_SOURCE "${CMAKE_BINARY_DIR}/test.c")
+		FILE (WRITE "${_OPENCL_VERSION_SOURCE}"
+			"
+			#if __APPLE__
+			#include <OpenCL/cl.h>
+			#else /* !__APPLE__ */
+			#include <CL/cl.h>
+			#endif /* __APPLE__ */
+			int main()
+			{	
+			    cl_int result;
+			    cl_platform_id id;
+			    result = clGetPlatformIDs(1, &id, NULL);
+			    return result != CL_SUCCESS;
+			}
+			")
+
+		TRY_COMPILE(_OPENCL_64_COMPILE_SUCCESS ${CMAKE_BINARY_DIR} "${_OPENCL_VERSION_SOURCE}"
+			CMAKE_FLAGS
+			"-DINCLUDE_DIRECTORIES:STRING=${OPENCL_INCLUDE_DIRS}"
+			CMAKE_FLAGS
+			"-DLINK_LIBRARIES:STRING=${_OPENCL_64_LIBRARIES}"
+		)
+
+		IF(_OPENCL_64_COMPILE_SUCCESS)
+			message(STATUS "OpenCL 64bit lib found.")
+			SET(OPENCL_LIBRARIES ${_OPENCL_64_LIBRARIES})
+		ELSE()
+	  		TRY_COMPILE(_OPENCL_32_COMPILE_SUCCESS ${CMAKE_BINARY_DIR} "${_OPENCL_VERSION_SOURCE}"
+				CMAKE_FLAGS
+				"-DINCLUDE_DIRECTORIES:STRING=${OPENCL_INCLUDE_DIRS}"
+				CMAKE_FLAGS
+				"-DLINK_LIBRARIES:STRING=${_OPENCL_32_LIBRARIES}"
+	  		)
+			IF(_OPENCL_32_COMPILE_SUCCESS)
+				message(STATUS "OpenCL 32bit lib found.")
+				SET(OPENCL_LIBRARIES ${_OPENCL_32_LIBRARIES})
+			ELSE()
+				message(STATUS "Couldn't link opencl..")
+			ENDIF()
+		ENDIF()
+
+
+	ELSE (WIN32)
+
+		IF (CYGWIN)
+			SET (CMAKE_FIND_LIBRARY_SUFFIXES .lib)
+			SET (OCL_LIB_SUFFIX .lib)
+		ENDIF (CYGWIN)
+
+		# Unix style platforms
+		FIND_LIBRARY(OPENCL_LIBRARIES OpenCL${OCL_LIB_SUFFIX}
+			PATHS ENV LD_LIBRARY_PATH ENV OpenCL_LIBPATH
+		)
+
+		GET_FILENAME_COMPONENT(OPENCL_LIB_DIR ${OPENCL_LIBRARIES} PATH)
+		GET_FILENAME_COMPONENT(_OPENCL_INC_CAND ${OPENCL_LIB_DIR}/../../include ABSOLUTE)
+
+		# The AMD SDK currently does not place its headers
+		# in /usr/include, therefore also search relative
+		# to the library
+		FIND_PATH(OPENCL_INCLUDE_DIRS CL/cl.h PATHS ${_OPENCL_INC_CAND} "/usr/local/cuda/include" "/opt/AMDAPP/include" ENV OpenCL_INCPATH)
+		FIND_PATH(_OPENCL_CPP_INCLUDE_DIRS CL/cl.hpp PATHS ${_OPENCL_INC_CAND} "/usr/local/cuda/include" "/opt/AMDAPP/include" ENV OpenCL_INCPATH)
+
+	ENDIF (WIN32)
+
+ENDIF (APPLE)
+
+FIND_PACKAGE_HANDLE_STANDARD_ARGS(OpenCL DEFAULT_MSG OPENCL_LIBRARIES OPENCL_INCLUDE_DIRS)
+
+IF(_OPENCL_CPP_INCLUDE_DIRS)
+	SET( OPENCL_HAS_CPP_BINDINGS TRUE )
+	LIST( APPEND OPENCL_INCLUDE_DIRS ${_OPENCL_CPP_INCLUDE_DIRS} )
+	# This is often the same, so clean up
+	LIST( REMOVE_DUPLICATES OPENCL_INCLUDE_DIRS )
+ENDIF(_OPENCL_CPP_INCLUDE_DIRS)
+
+MARK_AS_ADVANCED(
+  OPENCL_INCLUDE_DIRS
+)

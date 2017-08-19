@@ -1,0 +1,37 @@
+MATCH (node:Label) RETURN node.property
+
+MATCH (node1:Label1)-->(node2:Label2)
+WHERE node1.propertyA = {value}
+RETURN node2.propertyA, node2.propertyB
+
+MATCH (n1:Label1)-[rel:TYPE]->(n2:Label2)
+WHERE rel.property > {value}
+RETURN rel.property, type(rel)
+
+CREATE (you:Person {name:"You"})
+RETURN you
+
+MATCH  (you:Person {name:"You"})
+CREATE (you)-[like:LIKE]->(neo:Database {name:"Neo4j" })
+RETURN you,like,neo
+
+MATCH (you:Person {name:"You"})
+FOREACH (name in ["Johan","Rajesh","Anna","Julia","Andrew"] |
+  CREATE (you)-[:FRIEND]->(:Person {name:name}))
+
+  MATCH (neo:Database {name:"Neo4j"})
+MATCH (anna:Person {name:"Anna"})
+CREATE (anna)-[:FRIEND]->(:Person:Expert {name:"Amanda"})-[:WORKED_WITH]->(neo)
+
+MATCH (user:User)
+RETURN user
+
+OPTIONAL MATCH (user:User)-[FRIENDS_WITH]-(friend:User)
+WHERE user.Id = 1234
+RETURN user, collect(friend) AS NumberOfFriends
+
+MATCH (user:User)
+WHERE user.Id = 1234
+WITH user, size((user)-[:IS_FRIENDS_WITH]->(:Friend)) as numberOfFriends
+CALL apoc.map.setKey(user, 'numberOfFriends', numberOfFriends) YIELD value AS userWithFriends
+RETURN userWithFriends

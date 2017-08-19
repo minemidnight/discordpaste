@@ -1,0 +1,1742 @@
+from copy_state_db import CopyStateDB
+from faster_ordered_dict import FasterOrderedDict
+import gevent
+import gevent.monkey
+from gevent.pool import Pool
+from pymongo.errors import DuplicateKeyError
+from pymongo.read_preferences import ReadPreference
+import time
+import utils
+from utils import auto_retry, log_exceptions, squelch_keyboard_interrupt
+
+log = utils.get_logger(__name__)
+
+INSERT_SIZE = 250
+INSERT_POOL_SIZE = 40
+
+#
+# Copy collection
+#
+
+class Stats(object):
+    def __init__(self):
+        self.start_time = self.adj_start_time = time.time()
+        self.inserted = 0
+        self.total_docs = None
+        self.duplicates = 0 # not a true count of duplicates; just an exception count
+        self.exceptions = 0
+        self.retries = 0
+
+    def log(self, adjusted=False):
+        start_time = self.adj_start_time if adjusted else self.start_time
+        qps = int(float(self.inserted) / (time.time() - start_time))
+        pct = int(float(self.inserted)/self.total_docs*100.0)
+        log.info("%d%% | %d / %d copied | %d/sec | %d dupes | %d exceptions | %d retries" % 
+                 (pct, self.inserted, self.total_docs, qps, self.duplicates,
+                  self.exceptions, self.retries))
+
+
+@auto_retry
+def _find_and_insert_batch_worker(source_collection, dest_collection, ids, stats):
+    """
+    greenlet responsible for copying a set of documents
+    """
+
+    # read documents from source
+    cursor = source_collection.find({'_id': {'$in': ids}})
+    cursor.batch_size(len(ids))
+    docs = [doc for doc in cursor]
+
+    # perform copy as a single batch
+    ids_inserted = []
+    try:
+        ids_inserted = dest_collection.insert(docs, continue_on_error=True)
+    except DuplicateKeyError:
+        # this isn't an exact count, but it's more work than it's worth to get an exact
+        # count of duplicate _id's
+        stats.duplicates += 1
+    stats.inserted += len(ids_inserted)
+
+
+def _copy_stats_worker(stats):
+    """
+    Periodically print stats relating to the initial copy.
+    """
+    while True:
+        stats.log()
+        gevent.sleep(1)
+
+
+@log_exceptions
+@squelch_keyboard_interrupt
+def copy_collection(source, dest, state_path, percent):
+    """
+    Copies all documents from source to destination collection. Inserts documents in
+    batches using insert workers, which are each run in their own greenlet. Ensures that
+    the destination is empty before starting the copy.
+
+    Does no safety checks -- this is up to the caller.
+
+    @param source      dict of (host, port, db, collection) for the source
+    @param dest        dict of (host, port, db, collection) for the destination
+    @param state_path  path of state database
+    @param percent     percentage of documents to copy
+    """
+    gevent.monkey.patch_socket()
+
+    # open state database
+    state_db = CopyStateDB(state_path)
+
+    # connect to mongo
+    source_client = utils.mongo_connect(source['host'], source['port'],
+                                        ensure_direct=True,
+                                        max_pool_size=30,
+                                        read_preference=ReadPreference.SECONDARY,
+                                        document_class=FasterOrderedDict)
+
+    source_collection = source_client[source['db']][source['collection']]
+    if source_client.is_mongos:
+        raise Exception("for performance reasons, sources must be mongod instances; %s:%d is not",
+                        source['host'], source['port'])
+
+    dest_client = utils.mongo_connect(dest['host'], dest['port'],
+                                      max_pool_size=30,
+                                      document_class=FasterOrderedDict)
+    dest_collection = dest_client[dest['db']][dest['collection']]
+
+    # record timestamp of last oplog entry, so that we know where to start applying ops
+    # later
+    oplog_ts = utils.get_last_oplog_entry(source_client)['ts']
+    state_db.update_oplog_ts(source, dest, oplog_ts)
+
+    # for testing copying of indices quickly
+    if percent == 0:
+        log.info("skipping copy because of --percent 0 parameters")
+        state_db.update_state(source, dest, CopyStateDB.STATE_WAITING_FOR_INDICES)
+        return
+
+    stats = Stats()
+    stats.total_docs = int(source_collection.count())
+    if percent:
+        # hack-ish but good enough for a testing-only feature
+        stats.total_docs = int(stats.total_docs * (float(percent)/100.0))
+
+    # get all _ids, which works around a mongo bug/feature that causes massive slowdowns
+    # of long-running, large reads over time
+    ids = []
+    cursor = source_collection.find(fields=["_id"], snapshot=True, timeout=False)
+    cursor.batch_size(5000)
+    insert_pool = Pool(INSERT_POOL_SIZE)
+    stats_greenlet = gevent.spawn(_copy_stats_worker, stats)
+    for doc in cursor:
+        _id = doc['_id']
+
+        if percent is not None and not utils.id_in_subset(_id, percent):
+            continue
+
+        # when we've gathered enough _ids, spawn a worker greenlet to batch copy the
+        # documents corresponding to them
+        ids.append(_id)
+        if len(ids) % INSERT_SIZE == 0:
+            outgoing_ids = ids
+            ids = []
+            insert_pool.spawn(_find_and_insert_batch_worker,
+                              source_collection=source_collection,
+                              dest_collection=dest_collection,
+                              ids=outgoing_ids,
+                              stats=stats)
+        gevent.sleep()
+
+    # insert last batch of documents
+    if len(ids) > 0:        
+        _find_and_insert_batch_worker(source_collection=source_collection,
+                                      dest_collection=dest_collection,
+                                      ids=ids,
+                                      stats=stats)
+        stats.log()
+
+    # wait until all other outstanding inserts have finished
+    insert_pool.join()
+    stats_greenlet.kill()
+    log.info("done with initial copy")
+
+    state_db.update_state(source, dest, CopyStateDB.STATE_WAITING_FOR_INDICES)
+
+    # yeah, we potentially leak connections here, but that shouldn't be a big deal
+
+
+def copy_indexes(source, dest):
+    """
+    Copies all indexes from source to destination, preserving options such as unique
+    and sparse.
+    """
+    # connect to mongo instances
+    source_client = utils.mongo_connect(source['host'], source['port'],
+                                        ensure_direct=True,
+                                        max_pool_size=1,
+                                        read_preference=ReadPreference.SECONDARY)
+    source_collection = source_client[source['db']][source['collection']]
+
+    dest_client = utils.mongo_connect(dest['host'], dest['port'], max_pool_size=1)
+    dest_collection = dest_client[dest['db']][dest['collection']] 
+
+    # copy indices
+    for name, index in source_collection.index_information().items():
+        kwargs = { 'name': name }
+        index_key = None
+        for k, v in index.items():
+            if k in ['unique', 'sparse']:
+                kwargs[k] = v
+            elif k == 'v':
+                continue
+            elif k == 'key':
+                # sometimes, pymongo will give us floating point numbers, so let's make sure
+                # they're ints instead
+                index_key = [(field, int(direction)) for (field, direction) in v]
+            else:
+                raise NotImplementedError("don't know how to handle index info key %s" % k)
+            # TODO: there are other index options that probably aren't handled here
+
+        assert index_key is not None
+        log.info("ensuring index on %s (options = %s)", index_key, kwargs)
+        dest_collection.ensure_index(index_key, **kwargs)
+
+		import functools
+import gc
+import gevent
+import logging
+import pymongo
+from pymongo.errors import AutoReconnect, ConnectionFailure, OperationFailure, TimeoutError
+import signal
+import sys
+
+loggers = {}
+def get_logger(name):
+    """
+    get a logger object with reasonable defaults for formatting
+
+    @param name used to identify the logger (though not currently useful for anything)
+    """
+    global loggers
+    if name in loggers:
+        return loggers[name]
+
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.DEBUG)
+    sh = logging.StreamHandler()
+    sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s:%(processName)s] %(message)s",
+                                      "%m-%d %H:%M:%S"))
+    logger.addHandler(sh)
+
+    loggers[name] = logger
+    return logger
+
+log = get_logger("utils")
+
+
+def mongo_connect(host, port, ensure_direct=False, secondary_only=False, max_pool_size=1,
+                  socketTimeoutMS=None, w=0, read_preference=None, document_class=dict,
+                  replicaSet=None, slave_okay=None):
+    """
+    Same as MongoClient.connect, except that we are paranoid and ensure that cursors
+    # point to what we intended to point them to. Also sets reasonable defaults for our
+    needs.
+
+    @param host            host to connect to
+    @param port            port to connect to
+    @param ensure_direct   do safety checks to ensure we are connected to specified mongo instance
+
+    most other keyword arguments mirror those for pymongo.MongoClient
+    """
+    options = dict(
+        host=host,
+        port=port,
+        socketTimeoutMS=socketTimeoutMS,
+        use_greenlets=True,
+        max_pool_size=max_pool_size,
+        w=1,
+        document_class=document_class)
+    if replicaSet is not None:
+        options['replicaSet'] = replicaSet
+    if read_preference is not None:
+        options['read_preference'] = read_preference
+    if slave_okay is not None:
+        options['slave_okay'] = slave_okay
+    client = pymongo.MongoClient(**options)
+
+    if ensure_direct:
+        # make sure we are connected to mongod/mongos that was specified; mongodb drivers
+        # have the tendency of doing "magical" things in terms of connecting to other boxes
+        test_collection = client['local']['test']
+        test_cursor = test_collection.find(slave_okay=True, limit=1)
+        connection = test_cursor.collection.database.connection
+        if connection.host != host or connection.port != port:
+            raise ValueError("connected to %s:%d (expected %s:%d)" %
+                             (connection.host, connection.port, host, port))
+
+    return client
+
+
+def parse_mongo_url(url):
+    """
+    Takes in pseudo-URL of form
+
+    host[:port]/db/collection (e.g. localhost/prod_maestro/emails)
+
+    and returns a dictionary containing elements 'host', 'port', 'db', 'collection'
+    """
+    try:
+        host, db, collection = url.split('/')
+    except ValueError:
+        raise ValueError("urls be of format: host[:port]/db/collection")
+
+    host_tokens = host.split(':')
+    if len(host_tokens) == 2:
+        host = host_tokens[0]
+        port = int(host_tokens[1])
+    elif len(host_tokens) == 1:
+        port = 27017
+    elif len(host_tokens) > 2:
+        raise ValueError("urls be of format: host[:port]/db/collection")
+
+    return dict(host=host, port=port, db=db, collection=collection)
+
+
+def _source_file_syntax():
+    print "--source files must be of the following format:"
+    print "database_name.collection_name"
+    print "mongo-shard-1.foo.com"
+    print "mongo-shard-2.foo.com:27019"
+    print "..."
+    sys.exit(1)
+
+
+def parse_source_file(filename):
+    """
+    parses an input file passed to the --source parameter as a list of dicts that contain
+    these fields:
+
+    host
+    port
+    db: database name
+    collection
+    """
+    sources = []
+
+    with open(filename, "r") as source_file:
+        fullname = source_file.readline().strip()
+        try:
+            db, collection = fullname.split('.')
+        except ValueError:
+            _source_file_syntax()
+
+        for source in [line.strip() for line in source_file]:
+            tokens = source.split(':')
+            if len(tokens) == 1:
+                host = tokens[0]
+                port = 27017
+            elif len(tokens) == 2:
+                host, port = tokens
+                port = int(port)
+            else:
+                raise ValueError("%s is not a valid source", source)
+
+            sources.append(dict(host=host, port=port, db=db, collection=collection))
+
+    return sources
+
+
+def get_last_oplog_entry(client):
+    """
+    gets most recent oplog entry from the given pymongo.MongoClient
+    """
+    oplog = client['local']['oplog.rs']
+    cursor = oplog.find().sort('$natural', pymongo.DESCENDING).limit(1)
+    docs = [doc for doc in cursor]
+    if not docs:
+        raise ValueError("oplog has no entries!")
+    return docs[0]
+
+
+def tune_gc():
+    """
+    normally, GC is too aggressive; use kmod's suggestion for tuning it
+    """
+    gc.set_threshold(25000, 25, 10)
+
+
+def id_in_subset(_id, pct):
+    """
+    Returns True if _id fits in our definition of a "subset" of documents.
+    Used for testing only.
+    """
+    return (hash(_id) % 100) < pct
+
+
+def trim(s, prefixes, suffixes):
+    """
+    naive function that trims off prefixes and suffixes
+    """
+    for prefix in prefixes:
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+
+    for suffix in suffixes:
+        if s.endswith(suffix):
+            s = s[:-len(suffix)]
+
+    return s
+
+
+def log_exceptions(func):
+    """
+    logs exceptions using logger, which includes host:port info
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if 'stats' in kwargs:
+            # stats could be a keyword arg
+            stats = kwargs['stats']
+        elif len(args) > 0:
+            # or the last positional arg
+            stats = args[-1]
+            if not hasattr(stats, 'exceptions'):
+                stats = None
+        else:
+            # or not...
+            stats = None
+
+        try:
+            return func(*args, **kwargs)
+        except SystemExit:
+            # just exit, don't log / catch when we're trying to exit()
+            raise
+        except:
+            log.exception("uncaught exception")
+            # increment exception counter if one is available to us
+            if stats:
+                stats.exceptions += 1
+    return wrapper
+
+
+def squelch_keyboard_interrupt(func):
+    """
+    suppresses KeyboardInterrupts, to avoid stack trace explosion when pressing Control-C
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except KeyboardInterrupt:
+            sys.exit(1)
+    return wrapper
+
+
+def wait_for_processes(processes):
+    try:
+        [process.join() for process in processes]
+    except KeyboardInterrupt:
+        # prevent a frustrated user from interrupting our cleanup
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        # if a user presses Control-C, we still need to terminate child processes and join()
+        # them, to avoid zombie processes
+        for process in processes:
+            process.terminate()
+            process.join()
+        log.error("exiting...")
+        sys.exit(1)
+
+
+def auto_retry(func):
+    """
+    decorator that automatically retries a MongoDB operation if we get an AutoReconnect
+    exception
+
+    do not combine with @log_exceptions!!
+    """
+    MAX_RETRIES = 20  # yes, this is sometimes needed
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        # try to keep track of # of retries we've had to do
+        if 'stats' in kwargs:
+            # stats could be a keyword arg
+            stats = kwargs['stats']
+        elif len(args) > 0:
+            # or the last positional arg
+            stats = args[-1]
+            if not hasattr(stats, 'retries'):
+                stats = None
+                log.warning("couldn't find stats")
+        else:
+            # or not...
+            stats = None
+            log.warning("couldn't find stats")
+
+        failures = 0
+        while True:
+            try:
+                return func(*args, **kwargs)
+            except (AutoReconnect, ConnectionFailure, OperationFailure, TimeoutError):
+                failures += 1
+                if stats:
+                    stats.retries += 1
+                if failures >= MAX_RETRIES:
+                    log.exception("FAILED after %d retries", MAX_RETRIES)
+                    if stats:
+                        stats.exceptions += 1
+                    raise
+                gevent.sleep(2 * failures)
+                log.exception("retry %d after exception", failures)
+    return wrapper
+
+	#!/usr/bin/env python
+
+"""
+A simple OAuth implementation for authenticating users with third party
+websites.
+
+A typical use case inside an AppEngine controller would be:
+
+1) Create the OAuth client. In this case we'll use the Twitter client,
+  but you could write other clients to connect to different services.
+
+  import oauth
+
+  consumer_key = "LKlkj83kaio2fjiudjd9...etc"
+  consumer_secret = "58kdujslkfojkjsjsdk...etc"
+  callback_url = "http://www.myurl.com/callback/twitter"
+
+  client = oauth.TwitterClient(consumer_key, consumer_secret, callback_url)
+
+2) Send the user to Twitter in order to login:
+
+  self.redirect(client.get_authorization_url())
+
+3) Once the user has arrived back at your callback URL, you'll want to
+  get the authenticated user information.
+
+  auth_token = self.request.get("oauth_token")
+  auth_verifier = self.request.get("oauth_verifier")
+  user_info = client.get_user_info(auth_token, auth_verifier=auth_verifier)
+
+  The "user_info" variable should then contain a dictionary of various
+  user information (id, picture url, etc). What you do with that data is up
+  to you.
+
+  That's it!
+
+4) If you need to, you can also call other other API URLs using
+  client.make_request() as long as you supply a valid API URL and an access
+  token and secret. Note, you may need to set method=urlfetch.POST.
+
+@author: Mike Knapp
+@copyright: Unrestricted. Feel free to use modify however you see fit. Please
+note however this software is unsupported. Please don't email me about it. :)
+"""
+
+from google.appengine.api import memcache
+from google.appengine.api import urlfetch
+from google.appengine.ext import db
+
+from cgi import parse_qs
+#ImportError: No module named django.utils
+#from django.utils import simplejson as json
+import json
+from hashlib import sha1
+from hmac import new as hmac
+from random import getrandbits
+from time import time
+from urllib import urlencode
+from urllib import quote as urlquote
+from urllib import unquote as urlunquote
+
+import logging
+
+
+TWITTER = "twitter"
+YAHOO = "yahoo"
+MYSPACE = "myspace"
+DROPBOX = "dropbox"
+LINKEDIN = "linkedin"
+YAMMER = "yammer"
+
+
+class OAuthException(Exception):
+  pass
+
+
+def get_oauth_client(service, key, secret, callback_url):
+  """Get OAuth Client.
+
+  A factory that will return the appropriate OAuth client.
+  """
+
+  if service == TWITTER:
+    return TwitterClient(key, secret, callback_url)
+  elif service == YAHOO:
+    return YahooClient(key, secret, callback_url)
+  elif service == MYSPACE:
+    return MySpaceClient(key, secret, callback_url)
+  elif service == DROPBOX:
+    return DropboxClient(key, secret, callback_url)
+  elif service == LINKEDIN:
+    return LinkedInClient(key, secret, callback_url)
+  elif service == YAMMER:
+    return YammerClient(key, secret, callback_url)
+  else:
+    raise Exception, "Unknown OAuth service %s" % service
+
+
+class AuthToken(db.Model):
+  """Auth Token.
+
+  A temporary auth token that we will use to authenticate a user with a
+  third party website. (We need to store the data while the user visits
+  the third party website to authenticate themselves.)
+
+  TODO: Implement a cron to clean out old tokens periodically.
+  """
+
+  service = db.StringProperty(required=True)
+  token = db.StringProperty(required=True)
+  secret = db.StringProperty(required=True)
+  created = db.DateTimeProperty(auto_now_add=True)
+
+
+class OAuthClient():
+
+  def __init__(self, service_name, consumer_key, consumer_secret, request_url,
+               access_url, callback_url=None):
+    """ Constructor."""
+
+    self.service_name = service_name
+    self.consumer_key = consumer_key
+    self.consumer_secret = consumer_secret
+    self.request_url = request_url
+    self.access_url = access_url
+    self.callback_url = callback_url
+
+  def prepare_request(self, url, token="", secret="", additional_params=None,
+                      method=urlfetch.GET, t=None, nonce=None):
+    """Prepare Request.
+
+    Prepares an authenticated request to any OAuth protected resource.
+
+    Returns the payload of the request.
+    """
+
+    def encode(text):
+      return urlquote(str(text), "~")
+
+    params = {
+      "oauth_consumer_key": self.consumer_key,
+      "oauth_signature_method": "HMAC-SHA1",
+      "oauth_timestamp": t if t else str(int(time())),
+      "oauth_nonce": nonce if nonce else str(getrandbits(64)),
+      "oauth_version": "1.0"
+    }
+
+    if token:
+      params["oauth_token"] = token
+    elif self.callback_url:
+      params["oauth_callback"] = self.callback_url
+
+    if additional_params:
+        params.update(additional_params)
+
+    for k,v in params.items():
+        if isinstance(v, unicode):
+            params[k] = v.encode('utf8')
+
+    # Join all of the params together.
+    params_str = "&".join(["%s=%s" % (encode(k), encode(params[k]))
+                           for k in sorted(params)])
+
+    # Join the entire message together per the OAuth specification.
+    message = "&".join(["GET" if method == urlfetch.GET else "POST",
+                       encode(url), encode(params_str)])
+
+    # Create a HMAC-SHA1 signature of the message.
+    key = "%s&%s" % (self.consumer_secret, secret) # Note compulsory "&".
+    signature = hmac(key, message, sha1)
+    digest_base64 = signature.digest().encode("base64").strip()
+    params["oauth_signature"] = digest_base64
+
+    # Construct the request payload and return it
+    return urlencode(params)
+
+  def make_async_request(self, url, token="", secret="", additional_params=None,
+                         protected=False, method=urlfetch.GET, headers={}):
+    """Make Request.
+
+    Make an authenticated request to any OAuth protected resource.
+
+    If protected is equal to True, the Authorization: OAuth header will be set.
+
+    A urlfetch response object is returned.
+    """
+
+    payload = self.prepare_request(url, token, secret, additional_params,
+                                   method)
+
+    if method == urlfetch.GET:
+      url = "%s?%s" % (url, payload)
+      payload = None
+
+    if protected:
+      headers["Authorization"] = "OAuth"
+
+    rpc = urlfetch.create_rpc(deadline=10.0)
+    urlfetch.make_fetch_call(rpc, url, method=method, headers=headers,
+                             payload=payload)
+    return rpc
+
+  def make_request(self, url, token="", secret="", additional_params=None,
+                   protected=False, method=urlfetch.GET, headers={}):
+
+    return self.make_async_request(url, token, secret, additional_params,
+                                   protected, method, headers).get_result()
+
+  def get_authorization_url(self):
+    """Get Authorization URL.
+
+    Returns a service specific URL which contains an auth token. The user
+    should be redirected to this URL so that they can give consent to be
+    logged in.
+    """
+
+    raise NotImplementedError, "Must be implemented by a subclass"
+
+  def get_user_info(self, auth_token, auth_verifier=""):
+    """Get User Info.
+
+    Exchanges the auth token for an access token and returns a dictionary
+    of information about the authenticated user.
+    """
+
+    auth_token = urlunquote(auth_token)
+    auth_verifier = urlunquote(auth_verifier)
+
+    auth_secret = memcache.get(self._get_memcache_auth_key(auth_token))
+
+    if not auth_secret:
+      result = AuthToken.gql("""
+        WHERE
+          service = :1 AND
+          token = :2
+        LIMIT
+          1
+      """, self.service_name, auth_token).get()
+
+      if not result:
+        logging.error("The auth token %s was not found in our db" % auth_token)
+        raise Exception, "Could not find Auth Token in database"
+      else:
+        auth_secret = result.secret
+
+    response = self.make_request(self.access_url,
+                                 token=auth_token,
+                                 secret=auth_secret,
+                                 additional_params={"oauth_verifier":
+                                                     auth_verifier})
+
+    # Extract the access token/secret from the response.
+    result = self._extract_credentials(response)
+
+    # Try to collect some information about this user from the service.
+    user_info = self._lookup_user_info(result["token"], result["secret"])
+    user_info.update(result)
+
+    return user_info
+
+  def _get_auth_token(self):
+    """Get Authorization Token.
+
+    Actually gets the authorization token and secret from the service. The
+    token and secret are stored in our database, and the auth token is
+    returned.
+    """
+
+    response = self.make_request(self.request_url)
+    result = self._extract_credentials(response)
+
+    auth_token = result["token"]
+    auth_secret = result["secret"]
+
+    # Save the auth token and secret in our database.
+    auth = AuthToken(service=self.service_name,
+                     token=auth_token,
+                     secret=auth_secret)
+    auth.put()
+
+    # Add the secret to memcache as well.
+    memcache.set(self._get_memcache_auth_key(auth_token), auth_secret,
+                 time=20*60)
+
+    return auth_token
+
+  def _get_memcache_auth_key(self, auth_token):
+
+    return "oauth_%s_%s" % (self.service_name, auth_token)
+
+  def _extract_credentials(self, result):
+    """Extract Credentials.
+
+    Returns an dictionary containing the token and secret (if present).
+    Throws an Exception otherwise.
+    """
+
+    token = None
+    secret = None
+    parsed_results = parse_qs(result.content)
+
+    if "oauth_token" in parsed_results:
+      token = parsed_results["oauth_token"][0]
+
+    if "oauth_token_secret" in parsed_results:
+      secret = parsed_results["oauth_token_secret"][0]
+
+    if not (token and secret) or result.status_code != 200:
+      logging.error("Could not extract token/secret: %s" % result.content)
+      raise OAuthException("Problem talking to the service")
+
+    return {
+      "service": self.service_name,
+      "token": token,
+      "secret": secret
+    }
+
+  def _lookup_user_info(self, access_token, access_secret):
+    """Lookup User Info.
+
+    Complies a dictionary describing the user. The user should be
+    authenticated at this point. Each different client should override
+    this method.
+    """
+
+    raise NotImplementedError, "Must be implemented by a subclass"
+
+  def _get_default_user_info(self):
+    """Get Default User Info.
+
+    Returns a blank array that can be used to populate generalized user
+    information.
+    """
+
+    return {
+      "id": "",
+      "username": "",
+      "name": "",
+      "picture": ""
+    }
+
+
+class TwitterClient(OAuthClient):
+  """Twitter Client.
+
+  A client for talking to the Twitter API using OAuth as the
+  authentication model.
+  """
+
+  def __init__(self, consumer_key, consumer_secret, callback_url):
+    """Constructor."""
+
+    OAuthClient.__init__(self,
+        TWITTER,
+        consumer_key,
+        consumer_secret,
+        "https://api.twitter.com/oauth/request_token",
+        "https://api.twitter.com/oauth/access_token",
+        callback_url)
+
+  def get_authorization_url(self):
+    """Get Authorization URL."""
+
+    token = self._get_auth_token()
+    return "https://api.twitter.com/oauth/authorize?oauth_token=%s" % token
+
+  def get_authenticate_url(self):
+    """Get Authentication URL."""
+    token = self._get_auth_token()
+    return "https://api.twitter.com/oauth/authenticate?oauth_token=%s" % token
+
+  def _lookup_user_info(self, access_token, access_secret):
+    """Lookup User Info.
+
+    Lookup the user on Twitter.
+    """
+
+    response = self.make_request(
+        "https://api.twitter.com/1.1/account/verify_credentials.json",
+        token=access_token, secret=access_secret, protected=True)
+
+    data = json.loads(response.content)
+
+    user_info = self._get_default_user_info()
+    user_info["id"] = data["id"]
+    user_info["username"] = data["screen_name"]
+    user_info["name"] = data["name"]
+    user_info["picture"] = data["profile_image_url"]
+
+    return user_info
+
+
+class MySpaceClient(OAuthClient):
+  """MySpace Client.
+
+  A client for talking to the MySpace API using OAuth as the
+  authentication model.
+  """
+
+  def __init__(self, consumer_key, consumer_secret, callback_url):
+    """Constructor."""
+
+    OAuthClient.__init__(self,
+        MYSPACE,
+        consumer_key,
+        consumer_secret,
+        "http://api.myspace.com/request_token",
+        "http://api.myspace.com/access_token",
+        callback_url)
+
+  def get_authorization_url(self):
+    """Get Authorization URL."""
+
+    token = self._get_auth_token()
+    return ("http://api.myspace.com/authorize?oauth_token=%s"
+            "&oauth_callback=%s" % (token, urlquote(self.callback_url)))
+
+  def _lookup_user_info(self, access_token, access_secret):
+    """Lookup User Info.
+
+    Lookup the user on MySpace.
+    """
+
+    response = self.make_request("http://api.myspace.com/v1/user.json",
+        token=access_token, secret=access_secret, protected=True)
+
+    data = json.loads(response.content)
+
+    user_info = self._get_default_user_info()
+    user_info["id"] = data["userId"]
+    username = data["webUri"].replace("http://www.myspace.com/", "")
+    user_info["username"] = username
+    user_info["name"] = data["name"]
+    user_info["picture"] = data["image"]
+
+    return user_info
+
+
+class YahooClient(OAuthClient):
+  """Yahoo! Client.
+
+  A client for talking to the Yahoo! API using OAuth as the
+  authentication model.
+  """
+
+  def __init__(self, consumer_key, consumer_secret, callback_url):
+    """Constructor."""
+
+    OAuthClient.__init__(self,
+        YAHOO,
+        consumer_key,
+        consumer_secret,
+        "https://api.login.yahoo.com/oauth/v2/get_request_token",
+        "https://api.login.yahoo.com/oauth/v2/get_token",
+        callback_url)
+
+  def get_authorization_url(self):
+    """Get Authorization URL."""
+
+    token = self._get_auth_token()
+    return ("https://api.login.yahoo.com/oauth/v2/request_auth?oauth_token=%s"
+            % token)
+
+  def _lookup_user_info(self, access_token, access_secret):
+    """Lookup User Info.
+
+    Lookup the user on Yahoo!
+    """
+
+    user_info = self._get_default_user_info()
+
+    # 1) Obtain the user's GUID.
+    response = self.make_request(
+        "http://social.yahooapis.com/v1/me/guid", token=access_token,
+        secret=access_secret, additional_params={"format": "json"},
+        protected=True)
+
+    data = json.loads(response.content)["guid"]
+    guid = data["value"]
+
+    # 2) Inspect the user's profile.
+    response = self.make_request(
+        "http://social.yahooapis.com/v1/user/%s/profile/usercard" % guid,
+         token=access_token, secret=access_secret,
+         additional_params={"format": "json"}, protected=True)
+
+    data = json.loads(response.content)["profile"]
+
+    user_info["id"] = guid
+    user_info["username"] = data["nickname"].lower()
+    user_info["name"] = data["nickname"]
+    user_info["picture"] = data["image"]["imageUrl"]
+
+    return user_info
+
+
+class DropboxClient(OAuthClient):
+  """Dropbox Client.
+
+  A client for talking to the Dropbox API using OAuth as the authentication
+  model.
+  """
+
+  def __init__(self, consumer_key, consumer_secret, callback_url):
+    """Constructor."""
+
+    OAuthClient.__init__(self,
+        DROPBOX,
+        consumer_key,
+        consumer_secret,
+        "https://api.dropbox.com/0/oauth/request_token",
+        "https://api.dropbox.com/0/oauth/access_token",
+        callback_url)
+
+  def get_authorization_url(self):
+    """Get Authorization URL."""
+
+    token = self._get_auth_token()
+    return ("http://www.dropbox.com/0/oauth/authorize?"
+            "oauth_token=%s&oauth_callback=%s" % (token,
+                                                  urlquote(self.callback_url)))
+
+  def _lookup_user_info(self, access_token, access_secret):
+    """Lookup User Info.
+
+    Lookup the user on Dropbox.
+    """
+
+    response = self.make_request("http://api.dropbox.com/0/account/info",
+                                 token=access_token, secret=access_secret,
+                                 protected=True)
+
+    data = json.loads(response.content)
+    user_info = self._get_default_user_info()
+    user_info["id"] = data["uid"]
+    user_info["name"] = data["display_name"]
+    user_info["country"] = data["country"]
+
+    return user_info
+
+
+class LinkedInClient(OAuthClient):
+  """LinkedIn Client.
+
+  A client for talking to the LinkedIn API using OAuth as the
+  authentication model.
+  """
+
+  def __init__(self, consumer_key, consumer_secret, callback_url):
+    """Constructor."""
+
+    OAuthClient.__init__(self,
+        LINKEDIN,
+        consumer_key,
+        consumer_secret,
+        "https://api.linkedin.com/uas/oauth/requestToken",
+        "https://api.linkedin.com/uas/oauth/accessToken",
+        callback_url)
+
+  def get_authorization_url(self):
+    """Get Authorization URL."""
+
+    token = self._get_auth_token()
+    return ("https://www.linkedin.com/uas/oauth/authenticate?oauth_token=%s"
+            "&oauth_callback=%s" % (token, urlquote(self.callback_url)))
+
+  def _lookup_user_info(self, access_token, access_secret):
+    """Lookup User Info.
+
+    Lookup the user on LinkedIn
+    """
+
+    user_info = self._get_default_user_info()
+
+    # Grab the user's profile from LinkedIn.
+    response = self.make_request("http://api.linkedin.com/v1/people/~:"
+                                 "(picture-url,id,first-name,last-name)",
+                                 token=access_token,
+                                 secret=access_secret,
+                                 protected=False,
+                                 headers={"x-li-format":"json"})
+
+    data = json.loads(response.content)
+    user_info["id"] = data["id"]
+    user_info["picture"] = data["pictureUrl"]
+    user_info["name"] = data["firstName"] + " " + data["lastName"]
+    return user_info
+
+
+class YammerClient(OAuthClient):
+  """Yammer Client.
+
+  A client for talking to the Yammer API using OAuth as the
+  authentication model.
+  """
+
+  def __init__(self, consumer_key, consumer_secret, callback_url):
+    """Constructor."""
+
+    OAuthClient.__init__(self,
+        YAMMER,
+        consumer_key,
+        consumer_secret,
+        "https://www.yammer.com/oauth/request_token",
+        "https://www.yammer.com/oauth/access_token",
+        callback_url)
+
+  def get_authorization_url(self):
+    """Get Authorization URL."""
+
+    token = self._get_auth_token()
+    return ("https://www.yammer.com/oauth/authorize?oauth_token=%s"
+            "&oauth_callback=%s" % (token, urlquote(self.callback_url)))
+
+  def _lookup_user_info(self, access_token, access_secret):
+    """Lookup User Info.
+
+    Lookup the user on Yammer
+    """
+
+    user_info = self._get_default_user_info()
+
+    # Grab the user's profile from Yammer.
+    response = self.make_request("https://www.yammer.com/api/v1/users/current.json",
+                                 token=access_token,
+                                 secret=access_secret,
+                                 protected=False,
+                                 headers={"x-li-format":"json"})
+
+    data = json.loads(response.content)
+    user_info = self._get_default_user_info()
+    user_info["id"] = data["name"]
+    user_info["picture"] = data["mugshot_url"]
+    user_info["name"] = data["full_name"]
+    return user_info
+
+	"""
+Twitter OAuth Support for Google App Engine Apps.
+
+Using this in your app should be relatively straightforward:
+
+* Edit the configuration section below with the CONSUMER_KEY and CONSUMER_SECRET
+  from Twitter.
+
+* Modify to reflect your App's domain and set the callback URL on Twitter to:
+
+    http://your-app-name.appspot.com/oauth/twitter/callback
+
+* Use the demo in ``MainHandler`` as a starting guide to implementing your app.
+
+Note: You need to be running at least version 1.1.9 of the App Engine SDK.
+
+-- 
+I hope you find this useful, tav
+
+"""
+
+# Released into the Public Domain by tav@espians.com
+
+import sys
+
+from datetime import datetime, timedelta
+from hashlib import sha1
+from hmac import new as hmac
+from os.path import dirname, join as join_path
+from random import getrandbits
+from time import time
+from urllib import urlencode, quote as urlquote
+from uuid import uuid4
+from wsgiref.handlers import CGIHandler
+
+sys.path.insert(0, join_path(dirname(__file__), 'lib')) # extend sys.path
+
+from demjson import decode as decode_json
+
+from google.appengine.api.urlfetch import fetch as urlfetch, GET, POST
+from google.appengine.ext import db
+from google.appengine.ext.webapp import RequestHandler, WSGIApplication
+
+# ------------------------------------------------------------------------------
+# configuration -- SET THESE TO SUIT YOUR APP!!
+# ------------------------------------------------------------------------------
+
+OAUTH_APP_SETTINGS = {
+
+    'twitter': {
+
+        'consumer_key': '',
+        'consumer_secret': '',
+
+        'request_token_url': 'https://twitter.com/oauth/request_token',
+        'access_token_url': 'https://twitter.com/oauth/access_token',
+        'user_auth_url': 'http://twitter.com/oauth/authorize',
+
+        'default_api_prefix': 'http://twitter.com',
+        'default_api_suffix': '.json',
+
+        },
+
+    'google': {
+
+        'consumer_key': '',
+        'consumer_secret': '',
+
+        'request_token_url': 'https://www.google.com/accounts/OAuthGetRequestToken',
+        'access_token_url': 'https://www.google.com/accounts/OAuthGetAccessToken',
+        'user_auth_url': 'https://www.google.com/accounts/OAuthAuthorizeToken',
+
+        },
+
+    }
+
+CLEANUP_BATCH_SIZE = 100
+EXPIRATION_WINDOW = timedelta(seconds=60*60*1) # 1 hour
+
+try:
+    from config import OAUTH_APP_SETTINGS
+except:
+    pass
+
+STATIC_OAUTH_TIMESTAMP = 12345 # a workaround for clock skew/network lag
+
+# ------------------------------------------------------------------------------
+# utility functions
+# ------------------------------------------------------------------------------
+
+def get_service_key(service, cache={}):
+    if service in cache: return cache[service]
+    return cache.setdefault(
+        service, "%s&" % encode(OAUTH_APP_SETTINGS[service]['consumer_secret'])
+        )
+
+def create_uuid():
+    return 'id-%s' % uuid4()
+
+def encode(text):
+    return urlquote(str(text), '')
+
+def twitter_specifier_handler(client):
+    return client.get('/account/verify_credentials')['screen_name']
+
+OAUTH_APP_SETTINGS['twitter']['specifier_handler'] = twitter_specifier_handler
+
+# ------------------------------------------------------------------------------
+# db entities
+# ------------------------------------------------------------------------------
+
+class OAuthRequestToken(db.Model):
+    """OAuth Request Token."""
+
+    service = db.StringProperty()
+    oauth_token = db.StringProperty()
+    oauth_token_secret = db.StringProperty()
+    created = db.DateTimeProperty(auto_now_add=True)
+
+class OAuthAccessToken(db.Model):
+    """OAuth Access Token."""
+
+    service = db.StringProperty()
+    specifier = db.StringProperty()
+    oauth_token = db.StringProperty()
+    oauth_token_secret = db.StringProperty()
+    created = db.DateTimeProperty(auto_now_add=True)
+
+# ------------------------------------------------------------------------------
+# oauth client
+# ------------------------------------------------------------------------------
+
+class OAuthClient(object):
+
+    __public__ = ('callback', 'cleanup', 'login', 'logout')
+
+    def __init__(self, service, handler, oauth_callback=None, **request_params):
+        self.service = service
+        self.service_info = OAUTH_APP_SETTINGS[service]
+        self.service_key = None
+        self.handler = handler
+        self.request_params = request_params
+        self.oauth_callback = oauth_callback
+        self.token = None
+
+    # public methods
+
+    def get(self, api_method, http_method='GET', expected_status=(200,), **extra_params):
+
+        if not (api_method.startswith('http://') or api_method.startswith('https://')):
+            api_method = '%s%s%s' % (
+                self.service_info['default_api_prefix'], api_method,
+                self.service_info['default_api_suffix']
+                )
+
+        if self.token is None:
+            self.token = OAuthAccessToken.get_by_key_name(self.get_cookie())
+
+        fetch = urlfetch(self.get_signed_url(
+            api_method, self.token, http_method, **extra_params
+            ))
+
+        if fetch.status_code not in expected_status:
+            raise ValueError(
+                "Error calling... Got return status: %i [%r]" %
+                (fetch.status_code, fetch.content)
+                )
+
+        return decode_json(fetch.content)
+
+    def post(self, api_method, http_method='POST', expected_status=(200,), **extra_params):
+
+        if not (api_method.startswith('http://') or api_method.startswith('https://')):
+            api_method = '%s%s%s' % (
+                self.service_info['default_api_prefix'], api_method,
+                self.service_info['default_api_suffix']
+                )
+
+        if self.token is None:
+            self.token = OAuthAccessToken.get_by_key_name(self.get_cookie())
+
+        fetch = urlfetch(url=api_method, payload=self.get_signed_body(
+            api_method, self.token, http_method, **extra_params
+            ), method=http_method)
+
+        if fetch.status_code not in expected_status:
+            raise ValueError(
+                "Error calling... Got return status: %i [%r]" %
+                (fetch.status_code, fetch.content)
+                )
+
+        return decode_json(fetch.content)
+
+    def login(self):
+
+        proxy_id = self.get_cookie()
+
+        if proxy_id:
+            return "FOO%rFF" % proxy_id
+            self.expire_cookie()
+
+        return self.get_request_token()
+
+    def logout(self, return_to='/'):
+        self.expire_cookie()
+        self.handler.redirect(self.handler.request.get("return_to", return_to))
+
+    # oauth workflow
+
+    def get_request_token(self):
+
+        token_info = self.get_data_from_signed_url(
+            self.service_info['request_token_url'], **self.request_params
+            )
+
+        token = OAuthRequestToken(
+            service=self.service,
+            **dict(token.split('=') for token in token_info.split('&'))
+            )
+
+        token.put()
+
+        if self.oauth_callback:
+            oauth_callback = {'oauth_callback': self.oauth_callback}
+        else:
+            oauth_callback = {}
+
+        self.handler.redirect(self.get_signed_url(
+            self.service_info['user_auth_url'], token, **oauth_callback
+            ))
+
+    def callback(self, return_to='/'):
+
+        oauth_token = self.handler.request.get("oauth_token")
+
+        if not oauth_token:
+            return get_request_token()
+
+        oauth_token = OAuthRequestToken.all().filter(
+            'oauth_token =', oauth_token).filter(
+            'service =', self.service).fetch(1)[0]
+
+        token_info = self.get_data_from_signed_url(
+            self.service_info['access_token_url'], oauth_token
+            )
+
+        key_name = create_uuid()
+
+        self.token = OAuthAccessToken(
+            key_name=key_name, service=self.service,
+            **dict(token.split('=') for token in token_info.split('&'))
+            )
+
+        if 'specifier_handler' in self.service_info:
+            specifier = self.token.specifier = self.service_info['specifier_handler'](self)
+            old = OAuthAccessToken.all().filter(
+                'specifier =', specifier).filter(
+                'service =', self.service)
+            db.delete(old)
+
+        self.token.put()
+        self.set_cookie(key_name)
+        self.handler.redirect(return_to)
+
+    def cleanup(self):
+        query = OAuthRequestToken.all().filter(
+            'created <', datetime.now() - EXPIRATION_WINDOW
+            )
+        count = query.count(CLEANUP_BATCH_SIZE)
+        db.delete(query.fetch(CLEANUP_BATCH_SIZE))
+        return "Cleaned %i entries" % count
+
+    # request marshalling
+
+    def get_data_from_signed_url(self, __url, __token=None, __meth='GET', **extra_params):
+        return urlfetch(self.get_signed_url(
+            __url, __token, __meth, **extra_params
+            )).content
+
+    def get_signed_url(self, __url, __token=None, __meth='GET',**extra_params):
+        return '%s?%s'%(__url, self.get_signed_body(__url, __token, __meth, **extra_params))
+
+    def get_signed_body(self, __url, __token=None, __meth='GET',**extra_params):
+
+        service_info = self.service_info
+
+        kwargs = {
+            'oauth_consumer_key': service_info['consumer_key'],
+            'oauth_signature_method': 'HMAC-SHA1',
+            'oauth_version': '1.0',
+            'oauth_timestamp': int(time()),
+            'oauth_nonce': getrandbits(64),
+            }
+
+        kwargs.update(extra_params)
+
+        if self.service_key is None:
+            self.service_key = get_service_key(self.service)
+
+        if __token is not None:
+            kwargs['oauth_token'] = __token.oauth_token
+            key = self.service_key + encode(__token.oauth_token_secret)
+        else:
+            key = self.service_key
+
+        message = '&'.join(map(encode, [
+            __meth.upper(), __url, '&'.join(
+                '%s=%s' % (encode(k), encode(kwargs[k])) for k in sorted(kwargs)
+                )
+            ]))
+
+        kwargs['oauth_signature'] = hmac(
+            key, message, sha1
+            ).digest().encode('base64')[:-1]
+
+        return urlencode(kwargs)
+
+    # who stole the cookie from the cookie jar?
+
+    def get_cookie(self):
+        return self.handler.request.cookies.get(
+            'oauth.%s' % self.service, ''
+            )
+
+    def set_cookie(self, value, path='/'):
+        self.handler.response.headers.add_header(
+            'Set-Cookie', 
+            '%s=%s; path=%s; expires="Fri, 31-Dec-2021 23:59:59 GMT"' %
+            ('oauth.%s' % self.service, value, path)
+            )
+
+    def expire_cookie(self, path='/'):
+        self.handler.response.headers.add_header(
+            'Set-Cookie', 
+            '%s=; path=%s; expires="Fri, 31-Dec-1999 23:59:59 GMT"' %
+            ('oauth.%s' % self.service, path)
+            )
+
+# ------------------------------------------------------------------------------
+# oauth handler
+# ------------------------------------------------------------------------------
+
+class OAuthHandler(RequestHandler):
+
+    def get(self, service, action=''):
+
+        if service not in OAUTH_APP_SETTINGS:
+            return self.response.out.write(
+                "Unknown OAuth Service Provider: %r" % service
+                )
+
+        client = OAuthClient(service, self)
+
+        if action in client.__public__:
+            self.response.out.write(getattr(client, action)())
+        else:
+            self.response.out.write(client.login())
+
+# ------------------------------------------------------------------------------
+# modify this demo MainHandler to suit your needs
+# ------------------------------------------------------------------------------
+
+HEADER = """
+  <html><head><title>Twitter OAuth Demo</title>
+  </head><body>
+  <h1>Twitter OAuth Demo App</h1>
+  """
+
+FOOTER = "</body></html>"
+
+class MainHandler(RequestHandler):
+    """Demo Twitter App."""
+
+    def get(self):
+
+        client = OAuthClient('twitter', self)
+        gdata = OAuthClient('google', self, scope='http://www.google.com/calendar/feeds')
+
+        write = self.response.out.write; write(HEADER)
+
+        if not client.get_cookie():
+            write('<a href="/oauth/twitter/login">Login via Twitter</a>')
+            write(FOOTER)
+            return
+
+        write('<a href="/oauth/twitter/logout">Logout from Twitter</a><br /><br />')
+
+        info = client.get('/account/verify_credentials')
+
+        write("<strong>Screen Name:</strong> %s<br />" % info['screen_name'])
+        write("<strong>Location:</strong> %s<br />" % info['location'])
+
+        rate_info = client.get('/account/rate_limit_status')
+
+        write("<strong>API Rate Limit Status:</strong> %r" % rate_info)
+
+        write(FOOTER)
+
+# ------------------------------------------------------------------------------
+# self runner -- gae cached main() function
+# ------------------------------------------------------------------------------
+
+def main():
+
+    application = WSGIApplication([
+       ('/oauth/(.*)/(.*)', OAuthHandler),
+       ('/', MainHandler)
+       ], debug=True)
+
+    CGIHandler().run(application)
+
+if __name__ == '__main__':
+    main()
+
+	#!/usr/bin/env python
+
+import sys
+import ConfigParser
+from cells import Game
+
+config = ConfigParser.RawConfigParser()
+
+def get_mind(name):
+    full_name = 'minds.' + name
+    __import__(full_name)
+    mind = sys.modules[full_name]
+    mind.name = name
+    return mind
+
+bounds = None  # HACK
+symmetric = None
+mind_list = None
+
+def main():
+    global bounds, symmetric, mind_list
+    try:
+        config.read('tournament.cfg')
+        bounds = config.getint('terrain', 'bounds')
+        symmetric = config.getboolean('terrain', 'symmetric')
+        minds_str = str(config.get('minds', 'minds'))
+
+    except Exception as e:
+        print 'Got error: %s' % e
+        config.add_section('minds')
+        config.set('minds', 'minds', 'mind1,mind2')
+        config.add_section('terrain')
+        config.set('terrain', 'bounds', '300')
+        config.set('terrain', 'symmetric', 'true')
+
+        with open('tournament.cfg', 'wb') as configfile:
+            config.write(configfile)
+
+        config.read('tournament.cfg')
+        bounds = config.getint('terrain', 'bounds')
+        symmetric = config.getboolean('terrain', 'symmetric')
+        minds_str = str(config.get('minds', 'minds'))
+    mind_list = [(n, get_mind(n)) for n in minds_str.split(',')]
+
+    # accept command line arguments for the minds over those in the config
+    try:
+        if len(sys.argv)>2:
+            mind_list = [(n,get_mind(n)) for n in sys.argv[1:] ]
+    except (ImportError, IndexError):
+        pass
+
+
+if __name__ == "__main__":
+    main()
+    scores = [0 for x in mind_list]
+    tournament_list = [[mind_list[a], mind_list[b]] for a in range(len(mind_list)) for b in range (a)]
+    for n in range(4):
+        for pair in tournament_list:
+            game = Game(bounds, pair, symmetric, 5000, headless = True)
+            while game.winner == None:
+                game.tick()
+            if game.winner >= 0:
+                idx = mind_list.index(pair[game.winner])
+                scores[idx] += 3
+            if game.winner == -1:
+                idx = mind_list.index(pair[0])
+                scores[idx] += 1
+                idx = mind_list.index(pair[1])
+                scores[idx] += 1
+            print scores
+            print [m[0] for m in mind_list]
+    names = [m[0] for m in mind_list]
+    name_score = zip(names,scores)
+    f = open("scores.csv",'w')
+    srt = sorted(name_score,key=lambda ns: -ns[1])
+    for x in srt:
+        f.write("%s;%s\n" %(x[0],str(x[1])))
+    f.close()
+
+	##############################################################################
+#
+# Copyright (c) 2006 Zope Corporation and Contributors.
+# All Rights Reserved.
+#
+# This software is subject to the provisions of the Zope Public License,
+# Version 2.1 (ZPL).  A copy of the ZPL should accompany this distribution.
+# THIS SOFTWARE IS PROVIDED "AS IS" AND ANY AND ALL EXPRESS OR IMPLIED
+# WARRANTIES ARE DISCLAIMED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF TITLE, MERCHANTABILITY, AGAINST INFRINGEMENT, AND FITNESS
+# FOR A PARTICULAR PURPOSE.
+#
+##############################################################################
+"""Bootstrap a buildout-based project
+
+Simply run this script in a directory containing a buildout.cfg.
+The script accepts buildout command-line options, so you can
+use the -c option to specify an alternate configuration file.
+
+$Id$
+"""
+
+import os, shutil, sys, tempfile, urllib2
+from optparse import OptionParser
+
+tmpeggs = tempfile.mkdtemp()
+
+is_jython = sys.platform.startswith('java')
+
+# parsing arguments
+parser = OptionParser()
+parser.add_option("-v", "--version", dest="version",
+                          help="use a specific zc.buildout version")
+parser.add_option("-d", "--distribute",
+                   action="store_true", dest="distribute", default=False,
+                   help="Use Disribute rather than Setuptools.")
+
+parser.add_option("-c", None, action="store", dest="config_file",
+                   help=("Specify the path to the buildout configuration "
+                         "file to be used."))
+
+options, args = parser.parse_args()
+
+# if -c was provided, we push it back into args for buildout' main function
+if options.config_file is not None:
+    args += ['-c', options.config_file]
+
+if options.version is not None:
+    VERSION = '==%s' % options.version
+else:
+    VERSION = ''
+
+USE_DISTRIBUTE = options.distribute
+args = args + ['bootstrap']
+
+to_reload = False
+try:
+    import pkg_resources
+    if not hasattr(pkg_resources, '_distribute'):
+        to_reload = True
+        raise ImportError
+except ImportError:
+    ez = {}
+    if USE_DISTRIBUTE:
+        exec urllib2.urlopen('http://python-distribute.org/distribute_setup.py'
+                         ).read() in ez
+        ez['use_setuptools'](to_dir=tmpeggs, download_delay=0, no_fake=True)
+    else:
+        exec urllib2.urlopen('http://peak.telecommunity.com/dist/ez_setup.py'
+                             ).read() in ez
+        ez['use_setuptools'](to_dir=tmpeggs, download_delay=0)
+
+    if to_reload:
+        reload(pkg_resources)
+    else:
+        import pkg_resources
+
+if sys.platform == 'win32':
+    def quote(c):
+        if ' ' in c:
+            return '"%s"' % c # work around spawn lamosity on windows
+        else:
+            return c
+else:
+    def quote (c):
+        return c
+
+cmd = 'from setuptools.command.easy_install import main; main()'
+ws  = pkg_resources.working_set
+
+if USE_DISTRIBUTE:
+    requirement = 'distribute'
+else:
+    requirement = 'setuptools'
+
+if is_jython:
+    import subprocess
+
+    assert subprocess.Popen([sys.executable] + ['-c', quote(cmd), '-mqNxd',
+           quote(tmpeggs), 'zc.buildout' + VERSION],
+           env=dict(os.environ,
+               PYTHONPATH=
+               ws.find(pkg_resources.Requirement.parse(requirement)).location
+               ),
+           ).wait() == 0
+
+else:
+    assert os.spawnle(
+        os.P_WAIT, sys.executable, quote (sys.executable),
+        '-c', quote (cmd), '-mqNxd', quote (tmpeggs), 'zc.buildout' + VERSION,
+        dict(os.environ,
+            PYTHONPATH=
+            ws.find(pkg_resources.Requirement.parse(requirement)).location
+            ),
+        ) == 0
+
+ws.add_entry(tmpeggs)
+ws.require('zc.buildout' + VERSION)
+import zc.buildout.buildout
+zc.buildout.buildout.main(args)
+shutil.rmtree(tmpeggs)

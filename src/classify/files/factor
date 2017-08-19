@@ -1,0 +1,306 @@
+USING: accessors arrays assocs byte-arrays combinators math math.parser
+combinators.short-circuit io io.encodings io.streams.string
+kernel namespaces peg peg.ebnf rdf rdf.util sequences strings ;
+IN: rdf.ntriple
+
+SINGLETON: ntriple
+
+<PRIVATE
+
+: ?skip-whitespace ( -- char )
+    read1 dup whitespace?
+    [ drop ?skip-whitespace ] [  ] if ; inline recursive
+
+: read-literal ( -- literal )
+    "\"" cs-read-until drop >string
+    read1
+    {
+        { [ dup CHAR: @ = ] [ drop " ." cs-read-until drop >string <lang-literal> ] }
+        { [ dup CHAR: ^ = ] [ drop 2 read drop read-uriref <type-literal> ] }
+        [ drop <literal> ]
+    } cond ;
+
+: read-subject ( -- subject )
+    ?skip-whitespace
+    {
+        { [ dup CHAR: < = ] [ drop read-uriref ] }
+        { [ dup CHAR: _ = ] [ drop read-bnode ] }
+        [ drop f ]
+    } cond ;
+
+: read-predicate ( -- predicate )
+    ?skip-whitespace CHAR: < =
+    [ read-uriref ] [ f ] if ;
+
+: read-object ( -- object )
+    ?skip-whitespace
+    {
+        { [ dup CHAR: < = ] [ drop read-uriref ] }
+        { [ dup CHAR: _ = ] [ drop read-bnode ] }
+        { [ dup CHAR: " = ] [ drop read-literal ] }
+        [ drop f ]
+    } cond ;
+
+: (collect) ( acc value -- acc value )
+    [ [ over push ] keep ] [ f ] if* ; inline
+
+: read-ntriple ( line -- triple )
+    [
+        V{ } clone {
+            [ read-subject (collect) ]
+            [ read-predicate (collect) ]
+            [ read-object (collect) ]
+        } 0&&
+        [ >array ] [ drop f ] if
+    ] with-string-reader ; inline
+
+: read-ntriples ( -- seq )
+    V{ } clone [ read-ntriple [ over push ] when* ] each-line ;
+
+GENERIC: write-ntriple-part ( object -- )
+
+M: uriref write-ntriple-part ( object -- )
+    CHAR: < write1 cs-output
+    [ [ ns>> uri>> ] dip stream-write ]
+    [ [ id>> ] dip stream-write ] 2bi
+    B{ CHAR: > CHAR: space } write ;
+
+M: bnode write-ntriple-part ( object -- )
+    B{ CHAR: _ CHAR: : } write
+    id>> >byte-array write
+    CHAR: space write1 ;
+
+: write-lang ( lang -- )
+    CHAR: @ write1 >byte-array write ;
+
+: write-type ( uriref -- )
+    B{ CHAR: ^ CHAR: ^ } write write-ntriple-part ;
+
+: write-string ( string -- )
+    CHAR: " write1 cs-output stream-write CHAR: " write1 ; inline
+
+M: literal write-ntriple-part ( object -- )
+    [ value>> write-string ]
+    [
+        dup lang>>
+        [ nip write-lang ]
+        [ type>> [ write-type ] when* ] if*
+    ] bi
+    CHAR: space write1 ;
+
+M: number write-ntriple-part ( object -- )
+    number>string write-string CHAR: space write1 ;
+
+: write-triple ( object predicate subject -- )
+    [ write-ntriple-part ] tri@
+    B{ CHAR: space CHAR: . CHAR: \n } write ; inline 
+
+PRIVATE>
+
+M: ntriple import-triples ( string graph format -- graph )
+    drop swap [ read-ntriples ] with-string-reader
+    [ add-triple-seq ] each ;
+
+M: ntriple serialize-graph ( graph format -- )
+    drop spo>>
+    [ [ keys [ [ 2dup ] dip write-triple ] each drop ] assoc-each drop ] assoc-each ;
+
+M: ntriple serialize-triples ( seq format -- )
+    drop [ [ s>> ] [ p>> ] [ o>> ] tri write-triple ] each ;
+
+M: ntriple mime-type drop "text/plain" ;
+
+! Copyright (C) 2010 Kat Marchán
+! See http://factorcode.org/license.txt for BSD license.
+USING: arrays assocs compiler.units continuations eval io
+json.reader json.writer kernel namespaces sequences
+stack-checker words ;
+
+IN: facile
+
+SYMBOL: quots
+SYMBOL: config
+SYMBOL: map-results
+
+quots [ { } ] initialize
+
+!
+! utils
+!
+: split-kv ( keys-and-values -- values keys ) unzip swap keys ;
+
+: respond ( response -- ) >json print flush ;
+
+: true-respond ( response -- ) t swap 2array respond ;
+
+!
+! User-side commands
+!
+: emit ( x y -- ) 2array map-results swap [ suffix ] curry change ;
+
+: couch-log ( string -- ) "Factor View Server: " prepend "log" swap 2array respond ;
+
+!
+! CouchDB command implementations
+!
+: (add-quot) ( string -- ) eval( -- quot ) quots [ swap suffix ] change-global ;
+
+: call-map-quot ( doc quot -- result )
+    { } map-results [ call( doc -- ) map-results get ] with-variable ;
+
+: (map-doc) ( doc -- results ) quots get-global swap [ swap call-map-quot ] curry map
+    dup { { } } =
+    [ drop { { { } } } ]
+    [ ] if ;
+
+: (reduce-results) ( quot-strings keys-and-values -- reductions )
+    split-kv rot f swap
+    [ eval( -- quot ) call( values keys rereduce? -- reduction ) ]
+    with with with map ;
+
+: (rereduce) ( quot-strings values -- results )
+    { } rot t swap
+    [ eval( -- quot ) call( values keys rereduce? -- reduction ) ]
+    with with with map ;
+
+: (filter-docs) ( docs req user-context -- response ) 2drop ; ! todo
+
+!
+! Command processors
+!
+: add-quot ( args -- )
+    [ first (add-quot) t respond ] curry
+    [ drop
+      H{ { "error" "quote-addition-error" }
+         { "reason" "Something went wrong while adding a quotation." } }
+      respond
+    ] recover ;
+
+: reset ( args -- ) quots set t respond ;
+
+: map-doc ( args -- )
+    [ first (map-doc) respond ] curry
+    [ drop
+      H{ { "error" "map-call-error" }
+         { "reason" "Something went wrong while applying a map quotation" } }
+      respond
+    ] recover
+    ;
+
+: reduce-results ( args -- ) first2 (reduce-results) true-respond ;
+
+: rereduce ( args -- ) first2 (rereduce) true-respond ;
+
+: filter-docs ( args -- ) first3 (filter-docs) true-respond ;
+
+: validate ( args -- ) first4 2drop 2drop ; ! todo
+
+: show ( args -- ) first3 3drop ; ! todo
+
+: update ( args -- ) first3 3drop ; ! todo
+
+!
+! View server
+!
+SYMBOL: dispatch-table
+dispatch-table [
+    {
+        { "reset" [ reset ] }
+        { "add_fun" [ add-quot ] }
+        { "map_doc" [ map-doc ] }
+        { "reduce" [ reduce-results ] }
+        { "rereduce" [ rereduce ] }
+        { "filter" [ filter-docs ] }
+        { "validate" [ validate ] }
+        { "show" [ show ] }
+        { "update" [ update ] }
+        ! { "list" [ couch-list ] }
+    }
+] initialize
+
+: dispatch-command ( name -- quot ) dispatch-table get-global at ;
+
+: next-line ( -- args cmd-name )
+    readln dup empty?
+    [ drop next-line ]
+    [ json> [ rest ] [ first ] bi ]
+    if ;
+
+: run-server ( -- )
+    next-line dispatch-command call( args -- ) run-server ;
+
+MAIN: run-server
+
+USING: help.markup help.syntax math kernel arrays ;
+IN: intel
+
+ABOUT: "intel"
+
+ARTICLE: "intel" "Intel Utilities"
+"8051 contains Assembler and Emulator routines"
+{ $vocab-subsection "8051 MCU" "intel.8051" } 
+"hex is Intel HEX file reader and writer"
+{ $vocab-subsection "HEX File Reader and Writer" "intel.hex" } ;
+
+USING: kernel sequences images.http assocs combinators
+urls.encoding sets ;
+
+IN: qr-codes
+
+CONSTANT: chart-size "350x350"
+
+: gchart-base-url ( -- str )
+    "http://chart.apis.google.com/chart?cht=qr&chs=" chart-size "&chl="
+    3append ;
+
+: gchart-url ( str -- str ) 
+    url-encode gchart-base-url "&dummy=.png" surround ;
+
+: qr-image ( str -- image )
+    gchart-url load-http-image ;
+
+USING: kernel sequences mirrors strings
+calendar make assocs slots classes combinators sets ;
+
+IN: qr-codes.mecard
+
+TUPLE: mecard { name string } { reading string } { telephone string }
+    { videophone string } { email string } { memo string }
+    { birthday timestamp } { address string } { url string }
+    { nickname string } ;
+
+: mecard-phone ( str -- str )
+    [ "-+" in? not ] filter ;
+
+: mecode-fields ( -- assoc ) 
+    H{  { "name" "N" }
+        { "reading" "SOUND" }
+        { "telephone" "TEL" }
+        { "videophone" "TEL-AV" }
+        { "email" "EMAIL" }
+        { "memo" "NOTE" }
+        { "birthday" "BDAY" }
+        { "address" "ADR" }
+        { "url" "URL" }
+        { "nickname" "NICKNAME" } } ;
+
+: translate-value ( key value -- key value' )
+    over
+    {
+        { "TEL"    [ mecard-phone ] }
+        { "TEL-AV" [ mecard-phone ] }
+        [ drop ]
+    } case ;
+
+: mecard-translate ( key value -- key' value' )
+   [ mecode-fields at ] dip translate-value ;
+
+: translate-keys-to-mecard ( assoc -- assoc )
+    [ nip dup class initial-value = not ] assoc-filter
+    [ mecard-translate ] assoc-map ;
+
+: (mecard) ( assoc -- str )
+    [ "MECARD:" % [ ":" join % ";" % ] each ";" % ] "" make ;
+
+: >mecard ( obj -- str )
+    <mirror> translate-keys-to-mecard (mecard) ;

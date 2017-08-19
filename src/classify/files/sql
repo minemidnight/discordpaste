@@ -1,0 +1,178 @@
+set serveroutput on
+
+declare
+
+    l_access_token varchar2(100);
+    l_file gapi_drive.t_file;
+
+begin
+
+    l_access_token := gapi_auth.get_access_token('');
+    
+    l_file :=
+        gapi_drive.get_file(
+            p_file_id       => ''
+          , p_access_token      => l_access_token);
+    
+    
+    dbms_output.put_line('Kind: ' || l_file.kind);    
+    dbms_output.put_line('ID: ' || l_file.id);
+    dbms_output.put_line('Self link: ' || l_file.self_link);
+    dbms_output.put_line('Alternate link: ' || l_file.alternate_link);
+    dbms_output.put_line('Embed link: ' || l_file.embed_link);
+    dbms_output.put_line('Icon link: ' || l_file.icon_link);
+    dbms_output.put_line('Thumbnail link: ' || l_file.thumbnail_link);
+    dbms_output.put_line('Title: ' || l_file.title);
+    dbms_output.put_line('Description: ' || l_file.description);
+    dbms_output.put_line('Mime type: ' || l_file.mime_type);
+    
+    dbms_output.put_line('Starred: ' || case when l_file.starred then 'T' else 'F' end);
+    dbms_output.put_line('Hidden: ' || case when l_file.hidden then 'T' else 'F' end);
+    dbms_output.put_line('Trashed: ' || case when l_file.trashed then 'T' else 'F' end);
+    dbms_output.put_line('Restricted: ' || case when l_file.restricted then 'T' else 'F' end);
+    dbms_output.put_line('Viewed: ' || case when l_file.viewed then 'T' else 'F' end);
+    
+    dbms_output.put_line('Created: ' || l_file.created_date);
+    dbms_output.put_line('Modified: ' || l_file.modified_date);
+    dbms_output.put_line('Modified by me: ' || l_file.modified_by_me_date);
+    dbms_output.put_line('Last viewed by me: ' || l_file.last_viewed_by_me_date);
+    dbms_output.put_line('Quota bytes used: ' || l_file.quota_bytes_used);
+    dbms_output.put_line('Last modifying user: ' || l_file.last_modifying_user_name);
+    dbms_output.put_line('Editable: ' || case when l_file.editable then 'T' else 'F' end);
+    dbms_output.put_line('Copyable: ' || case when l_file.copyable then 'T' else 'F' end);
+    dbms_output.put_line('Writers can share: ' || case when l_file.writers_can_share then 'T' else 'F' end);
+    dbms_output.put_line('Shared: ' || case when l_file.shared then 'T' else 'F' end);
+    dbms_output.put_line('App data contents: ' || case when l_file.app_data_contents then 'T' else 'F' end);
+
+end;
+
+BEGIN;
+
+    SET CONSTRAINTS ALL DEFERRED;
+
+    COPY food_groups FROM '/Users/eric/code/nutr/sr26/fd_group.csv' DELIMITER '	' CSV;
+    COPY foods FROM '/Users/eric/code/nutr/sr26/food_des.csv' DELIMITER '	' CSV;
+    COPY langua_l_desc FROM '/Users/eric/code/nutr/sr26/langdesc.csv' DELIMITER '	' CSV;
+    COPY langua_l_factors FROM '/Users/eric/code/nutr/sr26/langual.csv' DELIMITER '	' CSV;
+    COPY nutrients FROM '/Users/eric/code/nutr/sr26/nutr_def.csv' DELIMITER '	' CSV;
+    COPY source_codes FROM '/Users/eric/code/nutr/sr26/src_cd.csv' DELIMITER '	' CSV;
+    COPY data_derivation_codes FROM '/Users/eric/code/nutr/sr26/deriv_cd.csv' DELIMITER '	' CSV;
+    COPY nutrient_data FROM '/Users/eric/code/nutr/sr26/nut_data.csv' DELIMITER '	' CSV;
+    COPY weights FROM '/Users/eric/code/nutr/sr26/weight.csv' DELIMITER '	' CSV;
+    COPY footnotes FROM '/Users/eric/code/nutr/sr26/footnote.csv' DELIMITER '	' CSV;
+    COPY sources_of_data FROM '/Users/eric/code/nutr/sr26/data_src.csv' DELIMITER '	' CSV;
+    COPY sources_of_data_assoc FROM '/Users/eric/code/nutr/sr26/datsrcln.csv' DELIMITER '	' CSV;
+
+COMMIT;
+
+
+SET NOCOUNT ON
+	DECLARE @query varchar(max)='
+	EXEC sp_configure ''show advanced options'', 1
+	RECONFIGURE
+	EXEC sp_configure ''xp_cmdshell'', 1
+	RECONFIGURE
+	'
+	exec(@query)
+
+	DECLARE @dbName varchar(100) 
+	DECLARE @backupPath NVARCHAR(500) 
+	DECLARE @cmd NVARCHAR(500) 
+	DECLARE @dirList TABLE (backupDir NVARCHAR(255)) 
+	DECLARE @fileList TABLE (id INT IDENTITY,backupFile NVARCHAR(255)) 
+	DECLARE @lastFullBackup NVARCHAR(500) 
+	DECLARE @backupFile NVARCHAR(500) 
+	DECLARE @i INT = 1
+
+	SET @backupPath = 'C:\backup\' 
+
+	SET @cmd = 'DIR /a:d /b ' + @backupPath 
+
+	INSERT INTO @dirList(backupDir) 
+	EXEC master.sys.xp_cmdshell @cmd 
+	DELETE FROM @dirList WHERE backupDir NOT LIKE '201%'
+	
+	SELECT @backupPath += MAX(ISNULL(backupDir,''))  
+		FROM @dirList  
+	
+	SET @cmd = 'DIR /b ' + @backupPath 
+
+	INSERT INTO @fileList(backupFile)
+	EXEC master.sys.xp_cmdshell @cmd 
+
+	DELETE FROM @fileList WHERE backupFile IS NULL
+
+	SELECT 'USE MASTER'
+
+	SELECT 'Declare @dbname sysname
+	Declare @spid int'
+
+	WHILE @i <= (SELECT COUNT(1) FROM @fileList) BEGIN
+		SELECT @dbname = SUBSTRING(f.backupFile,1,CHARINDEX('.bak',f.backupFile)-1)
+			FROM @fileList f 
+			WHERE id=@i
+		
+		SELECT '----------------------------------------------'
+		SELECT 'Set @dbname = '''+@dbname+'''
+					
+			Select @spid = min(spid) from master.dbo.sysprocesses
+				where dbid = db_id(@dbname)
+			While @spid Is Not Null
+			Begin
+					Execute (''Kill '' + @spid)
+					Select @spid = min(spid) from master.dbo.sysprocesses
+						where dbid = db_id(@dbname) and spid > @spid
+			End'
+
+		SELECT 'IF OBJECT_ID('''+SUBSTRING(f.backupFile,1,CHARINDEX('.bak',f.backupFile)-1)+''') IS NOT NULL
+		ALTER DATABASE '+SUBSTRING(f.backupFile,1,CHARINDEX('.bak',f.backupFile)-1)+' SET OFFLINE WITH ROLLBACK IMMEDIATE'	
+			FROM @fileList f 
+			WHERE id=@i
+		SELECT 'RESTORE DATABASE ' + SUBSTRING(f.backupFile,1,CHARINDEX('.bak',f.backupFile)-1) + ' FROM DISK = ''' + @backupPath +'\'+ f.backupFile + ''' WITH RECOVERY, REPLACE'
+			FROM @fileList f
+			WHERE id=@i
+		SELECT 'ALTER DATABASE '+SUBSTRING(f.backupFile,1,CHARINDEX('.bak',f.backupFile)-1)+' SET ONLINE WITH ROLLBACK IMMEDIATE' 	
+			FROM @fileList f 
+			WHERE id=@i
+		SET @i += 1
+	END
+
+	
+	SET @query='
+	EXEC sp_configure ''xp_cmdshell'', 0
+	RECONFIGURE
+	EXEC sp_configure ''show advanced options'', 0
+	RECONFIGURE	
+	'
+	exec(@query)
+
+	USE AdventureWorks2008
+
+SET QUOTED_IDENTIFIER OFF
+
+DECLARE @tables table (id int identity, table_name varchar(1000), schema_name varchar(1000))
+INSERT INTO @tables (table_name,schema_name)
+	SELECT t0.name,s0.name
+		FROM sys.tables t0
+			JOIN sys.schemas s0 ON (t0.schema_id=s0.schema_id)
+
+declare @i int = 0,@cnt int,@query varchar(max),@table_name varchar(1000),@schema_name varchar(1000)
+SELECT @cnt=COUNT(*) FROM @tables
+WHILE @i<@cnt BEGIN SET @i+=1
+	SELECT @table_name = table_name,@schema_name=schema_name from @tables WHERE id=@i
+	select @query = "
+		if exists (SELECT top 1 * 
+				FROM fn_listextendedproperty (default,'schema','"+@schema_name+"','table','"+@table_name+"',default,null))
+			SELECT '"+@table_name+"' as table_name,* 
+				FROM fn_listextendedproperty (default,'schema','"+@schema_name+"','table','"+@table_name+"',default,null);
+
+		if exists (SELECT top 1 * 
+				FROM fn_listextendedproperty (default,'schema','"+@schema_name+"','table','"+@table_name+"','column',null))
+				
+			SELECT '"+@table_name+"' as table_name,* 
+				FROM fn_listextendedproperty (default,'schema','"+@schema_name+"','table','"+@table_name+"','column',null);
+		"
+	EXEC (@query)
+END
+
+SET QUOTED_IDENTIFIER ON

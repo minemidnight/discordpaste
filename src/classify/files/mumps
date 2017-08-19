@@ -1,0 +1,495 @@
+//
+//  AppDelegate.m
+//  test
+//
+//  Created by Duncan Champney on 2/15/13.
+//  Copyright (c) 2013 WareTo. All rights reserved.
+//
+
+#import "AppDelegate.h"
+
+@implementation AppDelegate
+
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
+{
+    // Override point for customization after application launch.
+    return YES;
+}
+
+
+@end
+
+//
+//  ViewController.m
+//  test
+//
+//  Created by Duncan Champney on 2/15/13.
+//  Copyright (c) 2013 WareTo. All rights reserved.
+// test change
+
+#import "ViewController.h"
+#import "StringConstants.h"
+
+//-----------------------------------------------------------------------------------------------------------
+#pragma mark - Put "private" methods here.
+//-----------------------------------------------------------------------------------------------------------
+@interface ViewController ()
+
+@end
+
+@implementation ViewController
+
+//-----------------------------------------------------------------------------------------------------------
+#pragma mark - View controller life cycle methods
+//-----------------------------------------------------------------------------------------------------------
+
+- (void)viewDidLoad
+{
+  [super viewDidLoad];
+  
+  //Hide the "This button doesn't do anything useful" message to start.
+  self.messageLabel.alpha = 0.0;
+  
+	// Do any additional setup after loading the view, typically from a nib.
+}
+
+//-----------------------------------------------------------------------------------------------------------
+
+- (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender
+{
+  //NSLog(@"Entering %s for segue %@", __PRETTY_FUNCTION__, segue.identifier);
+  
+  //For the 2 "embed" segues, save pointers to the view controllers
+  
+  if ([segue.identifier isEqualToString: @"firstTable"])
+  {
+    self.firstTableViewController = segue.destinationViewController;
+    self.firstTableViewController.delegate =self;
+  }
+  
+  else if ([segue.identifier isEqualToString: @"secondTable"])
+  {
+    self.secondTableViewController = segue.destinationViewController;
+    self.secondTableViewController.delegate =self;
+ }
+}
+
+//-----------------------------------------------------------------------------------------------------------
+
+- (void)didReceiveMemoryWarning
+{
+    [super didReceiveMemoryWarning];
+    // Dispose of any resources that can be recreated.
+}
+
+//-----------------------------------------------------------------------------------------------------------
+#pragma mark - custom instance methods
+//-----------------------------------------------------------------------------------------------------------
+
+- (NSString *) firstOrSecondVCStringForVC: (UIViewController *)theVC;
+{
+  NSString *firstOrSecondVCString = @"";
+  
+  if (theVC == self.firstTableViewController)
+    firstOrSecondVCString = NSLocalizedString(@" first", @"The word ' first' with a preceding space");
+  else if (theVC == self.secondTableViewController)
+    firstOrSecondVCString = NSLocalizedString(@" second", @"The word ' second' with a preceding space");
+  return firstOrSecondVCString;
+}
+
+//-----------------------------------------------------------------------------------------------------------
+#pragma mark - IBAction methods
+//-----------------------------------------------------------------------------------------------------------
+
+- (IBAction)buttonAction: (UIButton *) sender;
+{
+  //Disable and dim the button until the animation is complete.
+  sender.enabled = FALSE;
+  sender.alpha =.5;
+  
+  //set the message label text to a localized form of "This button doesn't do anything useful"
+  self.messageLabel.text = NSLocalizedString(@"This button doesn't do anything useful",
+                                             @"Message that the button the user clicked doesn't do anything useful.");
+  
+  //Deselect the items in the 2 table views, if any were selected.
+  [self.firstTableViewController deselectItemsWithAnimation: NO];
+  [self.secondTableViewController deselectItemsWithAnimation: NO];
+  
+  //Animate in the "this button doesn't do anything useful" message
+  //onto the screen.
+  [UIView animateWithDuration: .2  //The first part of the animation will run over .2 seconds
+                   animations:
+   ^{
+     //Animate the label to full opacity
+     self.messageLabel.alpha  = 1.0;
+   }
+                   completion:
+   ^(BOOL finished){
+     //When the animation is finsished, queue up a second
+     //animation to fade the message away again .75 seconds later.
+     [UIView animateWithDuration: .2
+                           delay: .75
+                         options: 0
+                      animations:
+      ^{
+        self.messageLabel.alpha  = 0;
+      }
+                      completion:
+      ^(BOOL finished)
+      {
+        //Once both steps of the animation are complete, reenable and un-dim the button
+        sender.enabled = TRUE;
+        sender.alpha =1.0;
+      }
+      ];
+   }
+   ];
+}
+
+
+//-----------------------------------------------------------------------------------------------------------
+#pragma mark - StaticTableParentProtocol methods
+//-----------------------------------------------------------------------------------------------------------
+/*
+ Thsese are the methods that get called when the user selects a cell or taps a button in one of our child
+ UITableViewControllers.
+ */
+
+- (void) tableView: (UITableView *) tableView
+         didSelect: (BOOL) select
+   cellAtIndexPath: (NSIndexPath *)indexPath
+ inViewController : (UIViewController <StaticTableViewControllerProtocol> *) viewController;
+{
+  //----Build a localized word for " first" or " second" based on which table view the user clicked in.
+  NSString *clickedTableVCName = [self firstOrSecondVCStringForVC: viewController];
+
+  //Create a localized word "selected" or "deselected" in selectedStateString
+  NSString *selectedString = NSLocalizedString(@"selected", nil);
+  NSString *deselectedString = NSLocalizedString(@"deselected", nil);
+  NSString *selectedStateString = select ? selectedString : deselectedString;
+  
+  //Get a localized copy of the format string for the full sentence.
+  NSString *clickedFormatString = NSLocalizedString(@"You %@ cell %d in the%@ tableview", nil);
+  
+  //Build the fully localized string for display.
+  NSString *displayString = [NSString stringWithFormat: clickedFormatString, selectedStateString, indexPath.row+1, clickedTableVCName
+                             ];
+  
+  //Show the message
+  self.messageLabel.text = displayString;
+  self.messageLabel.alpha = 1.0;   //Make the message label visible.
+  
+  //Create an animation that begins after 1 second and fades away the message
+  [UIView animateWithDuration: .2
+                        delay: 1.0
+                      options: 0
+                   animations:
+   ^{
+     self.messageLabel.alpha = 0;
+   }
+                   completion:nil
+   ];
+}
+
+//-----------------------------------------------------------------------------------------------------------
+
+- (void) tableView: (UITableView *) tableView
+     clickedButton: (UIButton *) button
+       atIndexPath: (NSIndexPath *) buttonIndexPath
+  inViewController: (UITableViewController <StaticTableViewControllerProtocol>*) viewController;
+{
+  NSInteger oneBasedCellNumber = -1;
+  if (buttonIndexPath)
+    oneBasedCellNumber = buttonIndexPath.row + 1;
+  
+  //----Build a localized word for " first" or " second" based on which table view the user clicked in.
+  NSString *clickedTableVCName = [self firstOrSecondVCStringForVC: viewController];
+  
+  NSString *youClickedFormatString = NSLocalizedString(  @"You clicked button %d in the%@ tableview", @"String to tell user which button they clicked");
+  NSString *displayString = [NSString stringWithFormat: youClickedFormatString, oneBasedCellNumber, clickedTableVCName
+                             ];
+  
+  //Show the message
+  self.messageLabel.text = displayString;
+  self.messageLabel.alpha = 1.0;  //Make the message label visible.
+  
+  //Create an animation that begins after 1 second and fades away the message
+  [UIView animateWithDuration: .2
+                        delay: 1.0
+                      options: 0
+                   animations:
+   ^{
+     self.messageLabel.alpha = 0;
+   }
+                   completion:nil
+   ];
+
+}
+
+@end
+
+VPRJSON ;SLC/KCM -- Decode/Encode JSON
+ ;;1.0;VIRTUAL PATIENT RECORD;**2**;Sep 01, 2011;Build 50
+ ;
+ ; Note:  Since the routines use closed array references, VVROOT and VVERR
+ ;        are used to reduce risk of naming conflicts on the closed array.
+ ;
+DECODE(VVJSON,VVROOT,VVERR)  ; Set JSON object into closed array ref VVROOT
+ ; Examples: D DECODE^VPRJSON("MYJSON","LOCALVAR","LOCALERR")
+ ;           D DECODE^VPRJSON("^MYJSON(1)","^GLO(99)","^TMP($J)")
+ ;
+ ; VVJSON: string/array containing serialized JSON object
+ ; VVROOT: closed array reference for M representation of object
+ ;  VVERR: contains error messages, defaults to ^TMP("VPRJERR",$J)
+ ;
+ ;   VVIDX: points to next character in JSON string to process
+ ; VVSTACK: manages stack of subscripts
+ ;  VVPROP: true if next string is property name, otherwise treat as value
+ ;
+ G DIRECT^VPRJSOND
+ ;
+ENCODE(VVROOT,VVJSON,VVERR) ; VVROOT (M structure) --> VVJSON (array of strings)
+ ; Examples:  D ENCODE^VPRJSON("^GLO(99,2)","^TMP($J)")
+ ;            D ENCODE^VPRJSON("LOCALVAR","MYJSON","LOCALERR")
+ ;
+ ; VVROOT: closed array reference for M representation of object
+ ; VVJSON: destination variable for the string array formatted as JSON
+ ;  VVERR: contains error messages, defaults to ^TMP("VPRJERR",$J)
+ ;
+ G DIRECT^VPRJSONE
+ ;
+ ;
+ESC(X) ; Escape string for JSON
+ Q $$ESC^VPRJSONE(X)
+ ;
+UES(X) ; Unescape JSON string
+ Q $$UES^VPRJSOND(X)
+ ;
+ERRX(ID,VAL) ; Set the appropriate error message
+ ; switch (ID) -- XERRX ends statement
+ N ERRMSG
+ ;
+ ; Decode Error Messages
+ ;
+ I ID="STL{" S ERRMSG="Stack too large for new object." G XERRX
+ I ID="SUF}" S ERRMSG="Stack Underflow - extra } found" G XERRX
+ I ID="STL[" S ERRMSG="Stack too large for new array." G XERRX
+ I ID="SUF]" S ERRMSG="Stack Underflow - extra ] found." G XERRX
+ I ID="OBM" S ERRMSG="Array mismatch - expected ] got }." G XERRX
+ I ID="ARM" S ERRMSG="Object mismatch - expected } got ]." G XERRX
+ I ID="MPN" S ERRMSG="Missing property name." G XERRX
+ I ID="EXT" S ERRMSG="Expected true, got "_VAL G XERRX
+ I ID="EXF" S ERRMSG="Expected false, got "_VAL G XERRX
+ I ID="EXN" S ERRMSG="Expected null, got "_VAL G XERRX
+ I ID="TKN" S ERRMSG="Unable to identify type of token, value was "_VAL G XERRX
+ I ID="SCT" S ERRMSG="Stack mismatch - exit stack level was  "_VAL G XERRX
+ I ID="EIQ" S ERRMSG="Close quote not found before end of input." G XERRX
+ I ID="EIU" S ERRMSG="Unexpected end of input while unescaping." G XERRX
+ I ID="RSB" S ERRMSG="Reverse search for \ past beginning of input." G XERRX
+ I ID="ORN" S ERRMSG="Overrun while scanning name." G XERRX
+ I ID="OR#" S ERRMSG="Overrun while scanning number." G XERRX
+ I ID="ORB" S ERRMSG="Overrun while scanning boolean." G XERRX
+ I ID="ESC" S ERRMSG="Escaped character not recognized"_VAL G XERRX
+ ;
+ ; Encode Error Messages
+ ;
+ I ID="SOB" S ERRMSG="Unable to serialize node as object, value was "_VAL G XERRX
+ I ID="SAR" S ERRMSG="Unable to serialize node as array, value was "_VAL G XERRX
+ S ERRMSG="Unspecified error "_ID_" "_$G(VAL)
+XERRX ; end switch
+ S @VVERR@(0)=$G(@VVERR@(0))+1
+ S @VVERR@(@VVERR@(0))=ERRMSG
+ S VVERRORS=VVERRORS+1
+ Q
+
+ %WC ; VEN/SMH - Web Services Client using cURL ;2013-10-31  6:18 PM
+ ; See accompanying License for terms of use.
+ ;
+%(RETURN,METHOD,URL,PAYLOAD,MIME,TO,HEADERS) ; General call for any type
+ ;
+ ;
+ ; DEBUG; Test error trapping.
+ ; N X S X=1/0
+ ; DEBUG
+ ;
+ ;
+ S TO=$G(TO) ; Timeout
+ I +TO=0 S TO=30 ; Default timeout
+ ;
+ ; Write payload to File in shared memory
+ I $D(PAYLOAD) N F D
+ . S F="/dev/shm/"_$R(987987234)_$J_".DAT"
+ . O F:(NEWVERSION) U F
+ . I $D(PAYLOAD)#2 W PAYLOAD,!
+ . N I F I=0:0 S I=$O(PAYLOAD(I)) Q:'I  W PAYLOAD(I),!
+ . C F
+ ;
+ N CMD S CMD="curl -K -" ; Read options from stdin; GT.M cannot handle a command longer than 255 characters.
+ ;
+ ; DEBUG ; See if we can get an error if curl isn't found on the Operating System.
+ ;N CMD S CMD="curly -si -XPOST --connect-timeout "_TO_" -m "_TO_" -k "_URL_" --header 'Content-Type:"_MIME_"'"_" --data-binary @"_F
+ ; DEBUG
+ ;
+ ; DEBUG
+ ; W !,CMD
+ ; DEBUG
+ ;
+ ; TODO: Check curl return status. VEN/SMH - Seems that there is no way to get that from GT.M right now.
+ ; VEN/SMH - confirmed with Bhaskar that GT.M doesn't have a way check return status.
+ ;
+ ; VEN/SMH Okay. This the code is hard to understand. See comments.
+ ;
+ ; Execute and read back
+ N D S D="cURLDevice"
+ O D:(shell="/bin/sh":command=CMD:PARSE)::"PIPE" U D
+ ;
+ ; Write what to do for curl -K -
+ ; TODO: not bullet proof. Some characters may need to be escaped.
+ N Q S Q=""""
+ W "url = ",Q_URL_Q,!
+ W "request = ",METHOD,!
+ W "connect-timeout = ",TO,!
+ W "max-time = ",TO,!
+ W "insecure",!
+ W "silent",!
+ W "include",!
+ I $D(MIME)#2 W "header = "_Q_"Content-Type: "_MIME_Q,!
+ I $D(PAYLOAD) W "data-binary = "_Q_"@"_F_Q,!
+ W /EOF
+ ;
+ ; Flag to indicate whether a line we are getting a header or not. We are getting headers first, so it's true.
+ ; A la State machine.
+ N ISHEADER S ISHEADER=1 
+ N I F I=1:1 R RETURN(I)#4000:1 Q:$ZEOF  D   ; Read each line up to 4000 characters
+ . S RETURN(I)=$$TRIM(RETURN(I),,$C(13)) ; Strip CRs (we are on Unix)
+ . I RETURN(I)="",$G(HEADERS("STATUS")) S ISHEADER=0  ; If we get a blank line, and we don't have a status yet (e.g. if we got a 100 which we kill off), we are no longer at the headers
+ . I ISHEADER D  QUIT                    ; If we are at the headers, read them & remove them from RETURN array.
+ . . ; First Line is like HTTP/1.1 200 OK
+ . . I RETURN(I)'[":" S HEADERS("PROTOCOL")=$P(RETURN(I)," "),HEADERS("STATUS")=$P(RETURN(I)," ",2) K RETURN(I)
+ . . ; Next lines are key: value pairs. 
+ . . E  S HEADERS($P(RETURN(I),":"))=$$TRIM($P(RETURN(I),":",2,99)) K RETURN(I)
+ . . I HEADERS("STATUS")=100 K HEADERS("PROTOCOL"),HEADERS("STATUS") QUIT  ; We don't want the continue
+ . K:RETURN(I)="" RETURN(I) ; remove empty line
+ K:RETURN(I)="" RETURN(I)  ; remove empty line (last line when $ZEOF gets hit)
+ C D
+ 
+ ; Delete the file a la %ZISH
+ I $D(PAYLOAD) O F C F:(DELETE)
+ ;
+ ; Comment the zwrites out to see the return vales from the function
+ ;DEBUG
+ ; ZWRITE HEADERS
+ ; ZWRITE RETURN
+ ;DEBUG
+ ;
+ QUIT
+ ;
+ ;
+POST(RETURN,URL,PAYLOAD,MIME,TO,HEADERS) ; Post
+ ;D EWD(.RETURN,URL,.PAYLOAD,MIME)
+ D CURL(.RETURN,URL,.PAYLOAD,MIME,TO,.HEADERS)
+ QUIT
+ ;
+EWD(RETURN,URL,PAYLOAD,MIME,TO,HEADERS) ; Post using EWD
+ N OK S OK=$$httpPOST^%zewdGTM(URL,.PAYLOAD,MIME,.RETURN)
+ QUIT
+ ;
+CURL(RETURN,URL,PAYLOAD,MIME,TO,HEADERS) ; Post using CURL
+ ;
+ ; DEBUG; Test error trapping.
+ ; N X S X=1/0
+ ; DEBUG
+ ;
+ ;
+ S TO=$G(TO) ; Timeout
+ I +TO=0 S TO=30 ; Default timeout
+ ;
+ ; Write payload to File in shared memory
+ N F S F="/dev/shm/"_$R(987987234)_$J_".DAT"
+ O F:(NEWVERSION) U F
+ I $D(PAYLOAD)#2 W PAYLOAD,!
+ N I F I=0:0 S I=$O(PAYLOAD(I)) Q:'I  W PAYLOAD(I),!
+ C F
+ ;
+ ; Flags: -s : Silent; -X: HTTP POST; -k : Ignore certificate validation.
+ ; --connect-timeout: try only for this long; -m: max time to try. Both in sec.
+ ; -i: Print headers out in response.
+ N CMD S CMD="curl -si -XPOST --connect-timeout "_TO_" -m "_TO_" -k "_URL_" --header 'Content-Type:"_MIME_"'"_" --data-binary @"_F
+ ;
+ ;
+ ; DEBUG ; See if we can get an error if curl isn't found on the Operating System.
+ ;N CMD S CMD="curly -si -XPOST --connect-timeout "_TO_" -m "_TO_" -k "_URL_" --header 'Content-Type:"_MIME_"'"_" --data-binary @"_F
+ ; DEBUG
+ ;
+ ; DEBUG
+ ; W !,CMD
+ ; DEBUG
+ ;
+ ; TODO: Check curl return status. VEN/SMH - Seems that there is no way to get that from GT.M right now.
+ ; VEN/SMH - confirmed with Bhaskar that GT.M doesn't have a way check return status.
+ ;
+ ; VEN/SMH Okay. This the code is hard to understand. See comments.
+ ;
+ ; Execute and read back
+ N D S D="cURLDevice"
+ O D:(shell="/bin/sh":command=CMD:PARSE)::"PIPE" U D
+ ;
+ ;
+ ; Flag to indicate whether a line we are getting a header or not. We are getting headers first, so it's true.
+ ; A la State machine.
+ N ISHEADER S ISHEADER=1 
+ N I F I=1:1 R RETURN(I)#4000:1 Q:$ZEOF  D   ; Read each line up to 4000 characters
+ . S RETURN(I)=$$TRIM(RETURN(I),,$C(13)) ; Strip CRs (we are on Unix)
+ . I RETURN(I)="",$G(HEADERS("STATUS")) S ISHEADER=0  ; If we get a blank line, and we don't have a status yet (e.g. if we got a 100 which we kill off), we are no longer at the headers
+ . I ISHEADER D  QUIT                    ; If we are at the headers, read them & remove them from RETURN array.
+ . . ; First Line is like HTTP/1.1 200 OK
+ . . I RETURN(I)'[":" S HEADERS("PROTOCOL")=$P(RETURN(I)," "),HEADERS("STATUS")=$P(RETURN(I)," ",2) K RETURN(I)
+ . . ; Next lines are key: value pairs. 
+ . . E  S HEADERS($P(RETURN(I),":"))=$$TRIM($P(RETURN(I),":",2,99)) K RETURN(I)
+ . . I HEADERS("STATUS")=100 K HEADERS("PROTOCOL"),HEADERS("STATUS") QUIT  ; We don't want the continue
+ . K:RETURN(I)="" RETURN(I) ; remove empty line
+ K:RETURN(I)="" RETURN(I)  ; remove empty line (last line when $ZEOF gets hit)
+ C D
+ 
+ ; Delete the file a la %ZISH
+ O F C F:(DELETE)
+ ;
+ ; Comment the zwrites out to see the return vales from the function
+ ;DEBUG
+ ; ZWRITE HEADERS
+ ; ZWRITE RETURN
+ ;DEBUG
+ ;
+ QUIT
+ ;
+ ; Code below stolen from Kernel. Thanks Wally.
+TRIM(%X,%F,%V) ;Trim spaces\char from front(left)/back(right) of string
+ N %R,%L
+ S %F=$$UP($G(%F,"LR")),%L=1,%R=$L(%X),%V=$G(%V," ")
+ ;I %F["R" F %R=$L(%X):-1:1 Q:$E(%X,%R)'=%V  ;take out BT
+ I %F["R" F %R=$L(%X):-1:0 Q:$E(%X,%R)'=%V  ;598
+ ;I %F["L" F %L=1:1:$L(%X) Q:$E(%X,%L)'=%V  ;take out BT
+ I %F["L" F %L=1:1:$L(%X)+1 Q:$E(%X,%L)'=%V  ;598
+ I (%L>%R)!(%X=%V) Q ""
+ Q $E(%X,%L,%R)
+ ;
+UP(X) Q $TR(X,"abcdefghijklmnopqrstuvwxyz","ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+ ;
+TEST ; Unit Tests
+ ; Test Get
+ N RTN,H D %(.RTN,"GET","https://thebes.smh101.com/r/DIC",,"application/text",5,.H)
+ I H("STATUS")'=200 WRITE "FAIL FAIL FAIL",!
+ ;
+ ; Test Put
+ N PAYLOAD,RTN,H
+ N R S R=$R(123423421234)
+ S PAYLOAD(1)="KBANTEST ; VEN/SMH - Test routine for Sam ;"_R
+ S PAYLOAD(2)=" QUIT"
+ D %(.RTN,"PUT","https://thebes.smh101.com/r/KBANTEST",.PAYLOAD,"application/text",5,.H)
+ I H("STATUS")'=201 WRITE "FAIL FAIL FAIL",!
+ ;
+ ; Test Get with no mime and no headers to return
+ N RTN,H D %(.RTN,"GET","https://thebes.smh101.com/r/KBANTEST")
+ I $P(@$Q(RTN),";",3)'=R W "FAIL FAIL FAIL",!
+ ;
+ QUIT

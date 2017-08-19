@@ -1,0 +1,1029 @@
+MPORT * from WLAM.WebLogs;
+Analysis(File_WebLogs.Logs).Stats;
+Analysis(File_WebLogs.Logs).ContentSummary;
+
+OUTPUT(Topn(File_WebLogs.Logs,100,IP));
+
+MyFormat := RECORD
+				Ips := Analysis(File_WebLogs.Logs).Stats.TopIps.ip;
+				Cnt := Analysis(File_WebLogs.Logs).Stats.TopIps.cnt;
+			END;
+
+			IMPORT DataMgmt;
+IMPORT Std;
+
+EXPORT GenIndex := MODULE(DataMgmt.Common)
+
+    //--------------------------------------------------------------------------
+    // Internal Declarations and Functions
+    //--------------------------------------------------------------------------
+
+    SHARED ROXIE_PACKAGEMAP_NAME := 'genindex_packagemap.pkg';
+    SHARED DEFAULT_ROXIE_TARGET := 'roxie';
+    SHARED DEFAULT_ROXIE_PROCESS := '*';
+
+    SHARED FilePathLayout := RECORD
+        STRING      path;
+    END;
+
+    /**
+     * Local helper function finds all subkeys for the given superkey
+     * and creates a Roxie packagemap-compatible string citing them.  Subkeys
+     * are located recursively, so embedded superkeys will be processed
+     * correctly.
+     *
+     * @param   superkeyPath    The path to the superkey we're processing
+     *
+     * @return  String in Roxie packagemap format citing all subkeys that make
+     *          up the superkey
+     */
+    SHARED SuperfilePackageMapString(STRING superkeyPath) := FUNCTION
+        trimmedsuperkeyPath := TRIM(superkeyPath, LEFT, RIGHT);
+
+        StringRec := RECORD
+            STRING  s;
+        END;
+
+        // Get all subkeys referenced by the superkey, recursively
+        subkeyPaths := NOTHOR(Std.File.SuperFileContents(trimmedsuperkeyPath, TRUE));
+
+        // Create packagemap-compatible string fragments that reference the
+        // subkeys
+        subkeyDefinitions := PROJECT
+            (
+                subkeyPaths,
+                TRANSFORM
+                    (
+                        StringRec,
+                        SELF.s := '<SubFile value="~' + LEFT.name + '"/>';
+                    )
+            );
+
+        // Collapse to a single string
+        subkeyDefinition := Std.Str.CombineWords((SET OF STRING)SET(subkeyDefinitions, s), '');
+
+        // Wrap the subkey declarations in a superfile tag
+        superkeyDefinition := '<SuperFile id="' + trimmedsuperkeyPath + '">' + subkeyDefinition + '</SuperFile>';
+
+        RETURN superkeyDefinition;
+    END;
+
+    /**
+     * Local helper function that creates a Roxie packagemap-compatible
+     * string mapping a Roxie query with the data it will use after the
+     * packagemap is applied.
+     *
+     * @param   roxieQueryName              The name (not the ID) of the
+     *                                      Roxie query
+     * @param   superkeyPathList            A dataset containing a list of
+     *                                      superkeys that will are referenced
+     *                                      by the query
+     *
+     * @return  Roxie packagemap string suitable for sending to workunit
+     *          services for updating the Roxie query
+     */
+    SHARED RoxiePackageMapString(STRING roxieQueryName,
+                                 DATASET(FilePathLayout) superkeyPathList) := FUNCTION
+        RefRec := RECORD
+            STRING  superfileRef;
+            STRING  subfileRefs;
+        END;
+
+        // Lowercase paths to assist deduplication effort
+        preppedSuperkeyPathList := PROJECT
+            (
+                superkeyPathList,
+                TRANSFORM
+                    (
+                        RECORDOF(LEFT),
+                        SELF.path := Std.Str.ToLowerCase(LEFT.path)
+                    )
+            );
+
+        // Create packagemap-compatible string fragments referencing each
+        // superfile and its subfiles
+        superFilePackageStrings := PROJECT
+            (
+                DEDUP(preppedSuperkeyPathList, ALL, WHOLE RECORD),
+                TRANSFORM
+                    (
+                        RefRec,
+
+                        packageID := TRIM(Std.Str.FilterOut(LEFT.path, '~'), LEFT, RIGHT);
+                        packageMapString := SuperfilePackageMapString(LEFT.path);
+
+                        SELF.superfileRef := '<Base id="' + packageID + '"/>',
+                        SELF.subfileRefs := '<Package id="' + packageID + '">' + packageMapString + '</Package>'
+                    )
+            );
+
+        // Collapse the string fragments
+        superfileRefs := Std.Str.CombineWords((SET OF STRING)SET(superFilePackageStrings, superfileRef), '');
+        subfileRefs := Std.Str.CombineWords((SET OF STRING)SET(superFilePackageStrings, subfileRefs), '');
+
+        // Wrap the query definition (query name + its superfiles)
+        queryDefinition := '<Package id="' + TRIM(roxieQueryName, LEFT, RIGHT) + '">' + superfileRefs + '</Package>';
+
+        // Wrap the entire thing up with the right XML tag
+        finalDefinition := '<RoxiePackages>' + queryDefinition + subfileRefs + '</RoxiePackages>';
+
+        RETURN finalDefinition;
+    END;
+
+    /**
+     * Creates and applies a new packagemap for the given Roxie query and
+     * associated superfiles.
+     *
+     * Note that this function requires HPCC 6.0.0 or later to succeed.
+     *
+     * This function returns a value but will likely often need to be called
+     * in an action context, such as within a SEQUENTIAL set of commands
+     * that includes superfile management.  You can wrap the call to this
+     * function in an EVALUATE() to allow that construct to work.
+     *
+     * @param   roxieQueryName              The name (not the ID) of the Roxie
+     *                                      query
+     * @param   dataStorePath               The full path to the superkey we
+     *                                      will be processing
+     * @param   espURL                      The full URL to the ESP service,
+     *                                      which is the same as the URL used
+     *                                      for ECL Watch
+     * @param   roxieTargetName             The name of the target Roxie that
+     *                                      will receive the new packagemap
+     * @param   roxieProcessName            The name of the specific Roxie
+     *                                      process to target
+     *
+     * @return  A numeric code indicating success (zero = success).
+     */
+    SHARED UpdateRoxieSuperkeys(STRING roxieQueryName,
+                                STRING dataStorePath,
+                                STRING espURL,
+                                STRING roxieTargetName,
+                                STRING roxieProcessName) := FUNCTION
+        superkeyPathList := DATASET([CurrentPath(dataStorePath)], FilePathLayout);
+        newPackage := RoxiePackageMapString(roxieQueryName, superkeyPathList);
+        espHost := REGEXREPLACE('/+$', espURL, '');
+        packagePartName := roxieQueryName + '-' + REGEXREPLACE('\\W+', dataStorePath, '-') + '-package.part';
+
+        StatusRec := RECORD
+            INTEGER     code            {XPATH('Code')};
+            STRING      description     {XPATH('Description')};
+        END;
+
+        addPartToPackageMapResponse := SOAPCALL
+            (
+                espHost + '/WsPackageProcess/',
+                'AddPartToPackageMap',
+                {
+                    STRING      targetCluster               {XPATH('Target')} := roxieTargetName;
+                    STRING      targetProcess               {XPATH('Process')} := roxieProcessName;
+                    STRING      packageMapID                {XPATH('PackageMap')} := ROXIE_PACKAGEMAP_NAME;
+                    STRING      partName                    {XPATH('PartName')} := packagePartName;
+                    STRING      packageMapData              {XPATH('Content')} := newPackage;
+                    BOOLEAN     deletePreviousPackagePart   {XPATH('DeletePrevious')} := TRUE;
+                    STRING      daliIP                      {XPATH('DaliIp')} := Std.System.Thorlib.DaliServer();
+                },
+                StatusRec,
+                XPATH('AddPartToPackageMapResponse/status')
+            );
+
+        activatePackageResponse := SOAPCALL
+            (
+                espHost + '/WsPackageProcess/',
+                'ActivatePackage',
+                {
+                    STRING      targetCluster               {XPATH('Target')} := roxieTargetName;
+                    STRING      targetProcess               {XPATH('Process')} := roxieProcessName;
+                    STRING      packageMapID                {XPATH('PackageMap')} := ROXIE_PACKAGEMAP_NAME;
+                },
+                StatusRec,
+                XPATH('ActivatePackageResponse/status')
+            );
+
+        finalResponse := IF
+            (
+                addPartToPackageMapResponse.code = 0,
+                activatePackageResponse,
+                addPartToPackageMapResponse
+            );
+
+        RETURN WHEN(finalResponse.code, ASSERT(finalResponse.code = 0, 'Error while updating packagemap: ' + (STRING)finalResponse.code + '; (' + Std.Str.CombineWords([roxieQueryName, dataStorePath, espURL, roxieTargetName, roxieProcessName], ',') + ')', FAIL));
+    END;
+
+    //--------------------------------------------------------------------------
+    // Exported Functions
+    //--------------------------------------------------------------------------
+
+    /**
+     * Construct a path for a new index for the index store.  Note that
+     * the returned value will have time-oriented components in it, therefore
+     * callers should probably mark the returned value as INDEPENDENT if name
+     * will be used more than once (say, creating the index via BUILD and then
+     * calling WriteIndexFile() here to store it) to avoid a recomputation of
+     * the name.
+     *
+     * @param   dataStorePath   The full path of the generational index store;
+     *                          REQUIRED
+     *
+     * @return  String representing a new index that may be added to the
+     *          index store.
+     */
+    EXPORT NewSubkeyPath(STRING dataStorePath) := _NewSubfilePath(dataStorePath);
+
+    /**
+     * Function simply updates the given Roxie query with the indexes that
+     * reside in the current generation of the index store.  This may useful
+     * for rare cases where the Roxie query is redeployed and the references
+     * to the current index store are lost, or if the index store contents are
+     * manipulated outside of these functions and you tell the Roxie query
+     * about the changes, or if you have several Roxie queries that reference
+     * an index store and you want to update them independently.
+     *
+     * @param   dataStorePath           The full path of the generational data
+     *                                  store; REQUIRED
+     * @param   roxieQueryName          The name of the Roxie query to update
+     *                                  with the new index information; REQUIRED
+     * @param   espURL                  The URL to the ESP service on the
+     *                                  cluster, which is the same URL as used
+     *                                  for ECL Watch; REQUIRED
+     * @param   roxieTargetName         The name of the Roxie cluster to send
+     *                                  the information to; OPTIONAL, defaults
+     *                                  to 'roxie'
+     * @param   roxieProcessName        The name of the specific Roxie process
+     *                                  to target; OPTIONAL, defaults to '*'
+     *                                  (all processes)
+     *
+     * @return  An action that updates the given Roxie query with the contents
+     *          of the current generation of indexes.
+     */
+    EXPORT UpdateRoxie(STRING dataStorePath,
+                       STRING roxieQueryName,
+                       STRING espURL,
+                       STRING roxieTargetName = DEFAULT_ROXIE_TARGET,
+                       STRING roxieProcessName = DEFAULT_ROXIE_PROCESS) := FUNCTION
+        updateRoxieAction := EVALUATE(UpdateRoxieSuperkeys(roxieQueryName, dataStorePath, espURL, roxieTargetName, roxieProcessName));
+
+        RETURN IF(roxieQueryName != '', updateRoxieAction);
+    END;
+
+    /**
+     * Make the given index the first generation of index for the index store,
+     * bump all existing generations of data to the next level, then update
+     * the given Roxie query with references to the new index.  Any indexes
+     * stored in the last generation will be deleted.
+     *
+     * @param   dataStorePath           The full path of the generational data
+     *                                  store; REQUIRED
+     * @param   newIndexPath            The full path of the new index to insert
+     *                                  into the index store as the new current
+     *                                  generation of data; REQUIRED
+     * @param   roxieQueryName          The name of the Roxie query to update
+     *                                  with the new index information; REQUIRED
+     * @param   espURL                  The URL to the ESP service on the
+     *                                  cluster, which is the same URL as used
+     *                                  for ECL Watch; REQUIRED
+     * @param   roxieTargetName         The name of the Roxie cluster to send
+     *                                  the information to; OPTIONAL, defaults
+     *                                  to 'roxie'
+     * @param   roxieProcessName        The name of the specific Roxie process
+     *                                  to target; OPTIONAL, defaults to '*'
+     *                                  (all processes)
+     *
+     * @return  An action that inserts the given index into the index store.
+     *          Existing generations of indexes are bumped to the next
+     *          generation, and any index stored in the last generation will
+     *          be deleted.
+     *
+     * @see     AppendIndexFile
+     */
+    EXPORT WriteIndexFile(STRING dataStorePath,
+                          STRING newIndexPath,
+                          STRING roxieQueryName,
+                          STRING espURL,
+                          STRING roxieTargetName = DEFAULT_ROXIE_TARGET,
+                          STRING roxieProcessName = DEFAULT_ROXIE_PROCESS) := FUNCTION
+        updateRoxieAction := UpdateRoxie(dataStorePath, roxieQueryName, espURL, roxieTargetName, roxieProcessName);
+        promoteAction := _WriteFile(dataStorePath, newIndexPath);
+        allActions := SEQUENTIAL
+            (
+                promoteAction;
+                IF(roxieQueryName != '', updateRoxieAction);
+            );
+
+        RETURN allActions;
+    END;
+
+    /**
+     * Adds the given index to the first generation of indexes for the data
+     * store.  This does not replace any existing index, nor bump any index
+     * generations to another level.  The record structure of this index must
+     * be the same as other indexes in the index store.
+     *
+     * @param   dataStorePath           The full path of the generational data
+     *                                  store; REQUIRED
+     * @param   newIndexPath            The full path of the new index to append
+     *                                  to the current generation of indexes;
+     *                                  REQUIRED
+     * @param   roxieQueryName          The name of the Roxie query to update
+     *                                  with the new index information; REQUIRED
+     * @param   espURL                  The URL to the ESP service on the
+     *                                  cluster, which is the same URL as used
+     *                                  for ECL Watch; REQUIRED
+     * @param   roxieTargetName         The name of the Roxie cluster to send
+     *                                  the information to; OPTIONAL, defaults
+     *                                  to 'roxie'
+     * @param   roxieProcessName        The name of the specific Roxie process
+     *                                  to target; OPTIONAL, defaults to '*'
+     *                                  (all processes)
+     *
+     * @return  An action that appends the given index to the current
+     *          generation of indexes.
+     *
+     * @see     WriteIndexFile
+     */
+    EXPORT AppendIndexFile(STRING dataStorePath,
+                           STRING newIndexPath,
+                           STRING roxieQueryName,
+                           STRING espURL,
+                           STRING roxieTargetName = DEFAULT_ROXIE_TARGET,
+                           STRING roxieProcessName = DEFAULT_ROXIE_PROCESS) := FUNCTION
+        updateRoxieAction := UpdateRoxie(dataStorePath, roxieQueryName, espURL, roxieTargetName, roxieProcessName);
+        promoteAction := _AppendFile(dataStorePath, newIndexPath);
+        allActions := SEQUENTIAL
+            (
+                promoteAction;
+                IF(roxieQueryName != '', updateRoxieAction);
+            );
+
+        RETURN allActions;
+    END;
+
+    /**
+     * Method promotes all indexes associated with the first generation into the
+     * second, promotes the second to the third, and so on.  The first
+     * generation of indexes will be empty after this method completes.
+     *
+     * Note that if you have multiple indexes associated with a generation,
+     * as via AppendIndexFile(), all of those indexes will be deleted
+     * or moved.
+     *
+     * @param   dataStorePath           The full path of the generational data
+     *                                  store; REQUIRED
+     * @param   roxieQueryName          The name of the Roxie query to update
+     *                                  with the new index information; REQUIRED
+     * @param   espURL                  The URL to the ESP service on the
+     *                                  cluster, which is the same URL as used
+     *                                  for ECL Watch; REQUIRED
+     * @param   roxieTargetName         The name of the Roxie cluster to send
+     *                                  the information to; OPTIONAL, defaults
+     *                                  to 'roxie'
+     * @param   roxieProcessName        The name of the specific Roxie process
+     *                                  to target; OPTIONAL, defaults to '*'
+     *                                  (all processes)
+     *
+     * @return  An action that performs the generational promotion.
+     *
+     * @see     RollbackGeneration
+     */
+    EXPORT PromoteGeneration(STRING dataStorePath,
+                             STRING roxieQueryName,
+                             STRING espURL,
+                             STRING roxieTargetName = DEFAULT_ROXIE_TARGET,
+                             STRING roxieProcessName = DEFAULT_ROXIE_PROCESS) := FUNCTION
+        updateRoxieAction := UpdateRoxie(dataStorePath, roxieQueryName, espURL, roxieTargetName, roxieProcessName);
+        promoteAction := _PromoteGeneration(dataStorePath);
+        allActions := SEQUENTIAL
+            (
+                promoteAction;
+                IF(roxieQueryName != '', updateRoxieAction);
+            );
+
+        RETURN allActions;
+    END;
+
+    /**
+     * Method deletes all indexes associated with the current (first) generation
+     * of data, moves the second generation of indexes into the first
+     * generation, then repeats the process for any remaining generations.  This
+     * functionality can be thought of as restoring an older version of the
+     * index to the current generation.
+     *
+     * Note that if you have multiple indexes associated with a generation,
+     * as via AppendIndexFile(), all of those indexes will be deleted
+     * or moved.
+     *
+     * @param   dataStorePath           The full path of the generational data
+     *                                  store; REQUIRED
+     * @param   roxieQueryName          The name of the Roxie query to update
+     *                                  with the new index information; REQUIRED
+     * @param   espURL                  The URL to the ESP service on the
+     *                                  cluster, which is the same URL as used
+     *                                  for ECL Watch; REQUIRED
+     * @param   roxieTargetName         The name of the Roxie cluster to send
+     *                                  the information to; OPTIONAL, defaults
+     *                                  to 'roxie'
+     * @param   roxieProcessName        The name of the specific Roxie process
+     *                                  to target; OPTIONAL, defaults to '*'
+     *                                  (all processes)
+     *
+     * @return  An action that performs the generational rollback.
+     */
+    EXPORT RollbackGeneration(STRING dataStorePath,
+                              STRING roxieQueryName,
+                              STRING espURL,
+                              STRING roxieTargetName = DEFAULT_ROXIE_TARGET,
+                              STRING roxieProcessName = DEFAULT_ROXIE_PROCESS) := FUNCTION
+        updateRoxieAction := UpdateRoxie(dataStorePath, roxieQueryName, espURL, roxieTargetName, roxieProcessName);
+        rollbackAction := _RollbackGeneration(dataStorePath);
+        allActions := SEQUENTIAL
+            (
+                rollbackAction;
+                IF(roxieQueryName != '', updateRoxieAction);
+            );
+
+        RETURN allActions;
+    END;
+
+    /**
+     * Delete all indexes associated with the index store but leave the
+     * surrounding superfile structure intact.
+     *
+     * @param   dataStorePath           The full path of the generational data
+     *                                  store; REQUIRED
+     * @param   roxieQueryName          The name of the Roxie query to update
+     *                                  with the new index information; REQUIRED
+     * @param   espURL                  The URL to the ESP service on the
+     *                                  cluster, which is the same URL as used
+     *                                  for ECL Watch; REQUIRED
+     * @param   roxieTargetName         The name of the Roxie cluster to send
+     *                                  the information to; OPTIONAL, defaults
+     *                                  to 'roxie'
+     * @param   roxieProcessName        The name of the specific Roxie process
+     *                                  to target; OPTIONAL, defaults to '*'
+     *                                  (all processes)
+     *
+     * @return  An action performing the delete operations.
+     */
+    EXPORT ClearAll(STRING dataStorePath,
+                    STRING roxieQueryName,
+                    STRING espURL,
+                    STRING roxieTargetName = DEFAULT_ROXIE_TARGET,
+                    STRING roxieProcessName = DEFAULT_ROXIE_PROCESS) := FUNCTION
+        tempSuperfilePath := dataStorePath + '::' + Std.System.Job.WUID();
+        subkeysToDelete := PROJECT
+            (
+                NOTHOR(Std.File.SuperFileContents(dataStorePath, TRUE)),
+                TRANSFORM
+                    (
+                        {
+                            STRING  owner,
+                            STRING  subkey
+                        },
+                        SELF.subkey := '~' + LEFT.name,
+                        SELF.owner := '~' + Std.File.LogicalFileSuperOwners(SELF.subkey)[1].name
+                    )
+            );
+        addSubkeysToTempSuperfileAction := NOTHOR
+            (
+                APPLY
+                    (
+                        subkeysToDelete,
+                        Std.File.AddSuperFile(tempSuperfilePath, subkey)
+                    )
+            );
+        removeOldSubkeysAction := NOTHOR
+            (
+                APPLY
+                    (
+                        subkeysToDelete,
+                        Std.File.RemoveSuperFile(owner, subkey)
+                    )
+            );
+        deleteTempSuperfileAction := NOTHOR(Std.File.DeleteSuperFile(tempSuperfilePath, TRUE));
+        updateRoxieAction := UpdateRoxie(dataStorePath, roxieQueryName, espURL, roxieTargetName, roxieProcessName);
+        allActions := SEQUENTIAL
+            (
+                addSubkeysToTempSuperfileAction;
+                removeOldSubkeysAction;
+                IF(roxieQueryName != '', updateRoxieAction);
+                deleteTempSuperfileAction;
+            );
+
+        RETURN allActions;
+    END;
+
+    /**
+     * Delete all indexes and structure associated with the index store.
+     *
+     * @param   dataStorePath           The full path of the generational data
+     *                                  store; REQUIRED
+     * @param   roxieQueryName          The name of the Roxie query to update
+     *                                  with the new index information; REQUIRED
+     * @param   espURL                  The URL to the ESP service on the
+     *                                  cluster, which is the same URL as used
+     *                                  for ECL Watch; REQUIRED
+     * @param   roxieTargetName         The name of the Roxie cluster to send
+     *                                  the information to; OPTIONAL, defaults
+     *                                  to 'roxie'
+     * @param   roxieProcessName        The name of the specific Roxie process
+     *                                  to target; OPTIONAL, defaults to '*'
+     *                                  (all processes)
+     *
+     * @return  An action performing the delete operations.
+     */
+    EXPORT DeleteAll(STRING dataStorePath,
+                     STRING roxieQueryName,
+                     STRING espURL,
+                     STRING roxieTargetName = DEFAULT_ROXIE_TARGET,
+                     STRING roxieProcessName = DEFAULT_ROXIE_PROCESS) := FUNCTION
+        clearAction := ClearAll(dataStorePath, roxieQueryName, espURL, roxieTargetName, roxieProcessName);
+        deleteAction := _DeleteAll(dataStorePath);
+        allActions := SEQUENTIAL
+            (
+                clearAction;
+                deleteAction;
+            );
+
+        RETURN allActions;
+    END;
+
+    //--------------------------------------------------------------------------
+
+    EXPORT Tests := MODULE
+
+        SHARED indexStoreName := '~genindex::test::' + Std.System.Job.WUID();
+        SHARED numGens := 5;
+
+        SHARED subkeyPath := NewSubkeyPath(indexStoreName) : INDEPENDENT;
+
+        SHARED TestRec := {INTEGER1 n};
+        SHARED TestIDX(DATASET(TestRec) ds, STRING path) := INDEX(ds, {n}, {}, path);
+        SHARED CurrentIDX := INDEX({TestRec.n}, {}, DataMgmt.Common.CurrentPath(indexStoreName), OPT);
+
+        SHARED testInit := SEQUENTIAL
+            (
+                Init(indexStoreName, numGens);
+                EVALUATE(NumGenerationsAvailable(indexStoreName));
+                TRUE;
+            );
+
+        SHARED testInsertFile1 := FUNCTION
+            ds1 := DATASET(10, TRANSFORM(TestRec, SELF.n := RANDOM()));
+            idx1Path := subkeyPath + '-testInsertFile1';
+            idx1 := TestIDX(ds1, idx1Path);
+
+            RETURN SEQUENTIAL
+                (
+                    BUILD(idx1);
+                    WriteIndexFile(indexStoreName, idx1Path, '', '');
+                    ASSERT(DataMgmt.Common.NumGenerationsInUse(indexStoreName) = 1);
+                    ASSERT(COUNT(CurrentIDX) = 10)
+                );
+        END;
+
+        SHARED testInsertFile2 := FUNCTION
+            ds2 := DATASET(20, TRANSFORM(TestRec, SELF.n := RANDOM()));
+            idx2Path := subkeyPath + '-testInsertFile2';
+            idx2 := TestIDX(ds2, idx2Path);
+
+            RETURN SEQUENTIAL
+                (
+                    BUILD(idx2);
+                    WriteIndexFile(indexStoreName, idx2Path, '', '');
+                    ASSERT(DataMgmt.Common.NumGenerationsInUse(indexStoreName) = 2);
+                    ASSERT(COUNT(CurrentIDX) = 20)
+                );
+        END;
+
+        SHARED testAppendFile1 := FUNCTION
+            ds3 := DATASET(15, TRANSFORM(TestRec, SELF.n := RANDOM()));
+            idx3Path := subkeyPath + '-testAppendFile1';
+            idx3 := TestIDX(ds3, idx3Path);
+
+            RETURN SEQUENTIAL
+                (
+                    BUILD(idx3);
+                    AppendIndexFile(indexStoreName, idx3Path, '', '');
+                    ASSERT(DataMgmt.Common.NumGenerationsInUse(indexStoreName) = 2);
+                    ASSERT(COUNT(CurrentIDX) = 35)
+                );
+        END;
+
+        SHARED testPromote := SEQUENTIAL
+            (
+                PromoteGeneration(indexStoreName, '', '');
+                ASSERT(DataMgmt.Common.NumGenerationsInUse(indexStoreName) = 3);
+                ASSERT(NOT EXISTS(CurrentIDX))
+            );
+
+        SHARED testRollback1 := SEQUENTIAL
+            (
+                RollbackGeneration(indexStoreName, '', '');
+                ASSERT(DataMgmt.Common.NumGenerationsInUse(indexStoreName) = 2);
+                ASSERT(COUNT(CurrentIDX) = 35)
+            );
+
+        SHARED testRollback2 := SEQUENTIAL
+            (
+                RollbackGeneration(indexStoreName, '', '');
+                ASSERT(DataMgmt.Common.NumGenerationsInUse(indexStoreName) = 1);
+                ASSERT(COUNT(CurrentIDX) = 10)
+            );
+
+        SHARED testClearAll := SEQUENTIAL
+            (
+                ClearAll(indexStoreName, '', '');
+                ASSERT(DataMgmt.Common.NumGenerationsInUse(indexStoreName) = 0);
+            );
+
+        SHARED testDeleteAll := SEQUENTIAL
+            (
+                DeleteAll(indexStoreName, '', '');
+                ASSERT(NOT Std.File.SuperFileExists(indexStoreName));
+            );
+
+        EXPORT DoAll := SEQUENTIAL
+            (
+                testInit;
+                testInsertFile1;
+                testInsertFile2;
+                testAppendFile1;
+                testPromote;
+                testRollback1;
+                testRollback2;
+                testClearAll;
+                testDeleteAll;
+            );
+    END;
+
+END;
+
+IMPORT DataMgmt;
+IMPORT Std;
+
+EXPORT Common := MODULE, VIRTUAL
+
+    //--------------------------------------------------------------------------
+    // Internal to this module
+    //--------------------------------------------------------------------------
+
+    SHARED DEFAULT_GENERATION_CNT := 3; // Update Init() docs if changed
+    SHARED MIN_GENERATION_CNT := 2;
+    SHARED SUPERFILE_SUFFIX := 'gen_';
+    SHARED SUBFILE_SUFFIX := 'file_';
+
+    SHARED _BuildSuperfilePathPrefix(STRING parent) := Std.Str.ToLowerCase(parent) + '::' + SUPERFILE_SUFFIX;
+
+    SHARED _BuildSuperfilePath(STRING parent, UNSIGNED1 generationNum) := _BuildSuperfilePathPrefix(parent) + generationNum;
+
+    SHARED _BuildSubfilePath(STRING parent) := Std.Str.ToLowerCase(parent) + '::' + SUBFILE_SUFFIX + Std.System.Job.WUID() + '-' + (STRING)Std.Date.CurrentTimestamp();
+
+    SHARED _CreateSuperfilePathDS(STRING parent, UNSIGNED1 numGenerations) := DATASET
+        (
+            numGenerations,
+            TRANSFORM
+                (
+                    {
+                        UNSIGNED1   n, // Generation number
+                        STRING      f  // Superfile path
+                    },
+                    SELF.n := COUNTER,
+                    SELF.f := _BuildSuperfilePath(parent, COUNTER)
+                )
+        );
+
+    SHARED _CreateSuperfilePathSet(STRING parent, UNSIGNED1 numGenerations) := SET(_CreateSuperfilePathDS(parent, numGenerations), f);
+
+    SHARED _NumGenerationsAvailable(STRING dataStorePath) := FUNCTION
+        generationPattern := _BuildSuperfilePathPrefix(REGEXREPLACE('^~', dataStorePath, '')) + '*';
+        foundGenerationPaths := NOTHOR(Std.File.LogicalFileList(generationPattern, FALSE, TRUE));
+        expectedPaths := _CreateSuperfilePathDS(REGEXREPLACE('^~', dataStorePath, ''), COUNT(foundGenerationPaths));
+        joinedPaths := JOIN(foundGenerationPaths, expectedPaths, LEFT.name = RIGHT.f);
+        numJoinedPaths := COUNT(joinedPaths) : INDEPENDENT;
+        numExpectedPaths := COUNT(expectedPaths) : INDEPENDENT;
+        isSame := numJoinedPaths = numExpectedPaths;
+        isNumGenerationsValid := numJoinedPaths >= MIN_GENERATION_CNT;
+
+        RETURN WHEN(numJoinedPaths, ASSERT(isSame AND isNumGenerationsValid, 'Invalid structure: Unexpected superfile structure found for ' + dataStorePath, FAIL));
+    END;
+
+    //--------------------------------------------------------------------------
+    // Declarations and functions
+    //--------------------------------------------------------------------------
+
+    /**
+     * Function initializes the superfile structure needed to support
+     * generational data management methods.
+     *
+     * @param   dataStorePath   The full path of the generational data store
+     *                          that will be created; REQUIRED
+     * @param   numGenerations  The number of generations to maintain; OPTIONAL,
+     *                          defaults to 3.
+     *
+     * @return  An action that performs the necessary steps to create the
+     *          superfile structure.
+     *
+     * @see     DoesExist
+     */
+    EXPORT Init(STRING dataStorePath, UNSIGNED1 numGenerations = DEFAULT_GENERATION_CNT) := FUNCTION
+        clampedGenerations := MAX(MIN_GENERATION_CNT, numGenerations);
+        generationPaths := _CreateSuperfilePathDS(dataStorePath, clampedGenerations);
+        createParentAction := Std.File.CreateSuperFile(dataStorePath);
+        createGenerationsAction := NOTHOR(APPLY(generationPaths, Std.File.CreateSuperFile(f)));
+        appendGenerationsAction := NOTHOR(APPLY(generationPaths, Std.File.AddSuperFile(dataStorePath, f)));
+
+        RETURN ORDERED
+            (
+                createParentAction;
+                createGenerationsAction;
+                Std.File.StartSuperFileTransaction();
+                appendGenerationsAction;
+                Std.File.FinishSuperFileTransaction();
+            );
+    END;
+
+    /**
+     * A simple test of whether the top-level superfile supporting this
+     * structure actually exists or not.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     *
+     * @return  A boolean indicating presence of the superfile.
+     *
+     * @see     Init
+     */
+    EXPORT DoesExist(STRING dataStorePath) := Std.File.SuperFileExists(dataStorePath);
+
+    /**
+     * Returns the number of generations of data that could be tracked by
+     * the data store referenced by the argument.  The data stored must
+     * already be initialized.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     *
+     * @return  An integer representing the total number of data generations
+     *          that could be tracked by the data store
+     *
+     * @see     Init
+     * @see     NumGenerationsInUse
+     */
+    EXPORT NumGenerationsAvailable(STRING dataStorePath) := FUNCTION
+        numGens := _NumGenerationsAvailable(dataStorePath) : INDEPENDENT;
+
+        RETURN numGens;
+    END;
+
+    /**
+     * Returns the number of generations of data that are actually in use.
+     * The data store must already be initialized.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     *
+     * @return  An integer representing the total number of data generations
+     *          that are actually being used (those that have data)
+     *
+     * @see     Init
+     * @see     NumGenerationsAvailable
+     */
+    EXPORT NumGenerationsInUse(STRING dataStorePath) := FUNCTION
+        numPartitions := NumGenerationsAvailable(dataStorePath);
+        generationPaths := _CreateSuperfilePathDS(dataStorePath, numPartitions);
+        generationsUsed := NOTHOR
+            (
+                PROJECT
+                    (
+                        generationPaths,
+                        TRANSFORM
+                            (
+                                {
+                                    RECORDOF(LEFT),
+                                    BOOLEAN     hasFiles
+                                },
+                                SELF.hasFiles := Std.File.GetSuperFileSubCount(LEFT.f) > 0,
+                                SELF := LEFT
+                            )
+                    )
+            );
+
+        RETURN MAX(generationsUsed(hasFiles), n);
+    END;
+
+    /**
+     * Returns the full path to the superfile containing the given generation
+     * of data.  The returned value would be suitable for use in a DATASET()
+     * declaration or a function that requires a file path.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     * @param   numGeneration   An integer indicating which generation of data
+     *                          to build a path for; generations are numbered
+     *                          starting with 1 and increasing; OPTIONAL,
+     *                          defaults to 1
+     *
+     * @return  String containing the full path to the superfile containing
+     *          the desired generation of data.  Will return an empty string
+     *          if the requested generation is beyond the number of available
+     *          generations.
+     *
+     * @see     GetData
+     * @see     CurrentPath
+     * @see     CurrentData
+     */
+    EXPORT GetPath(STRING dataStorePath, UNSIGNED1 numGeneration = 1) := _BuildSuperfilePath(dataStorePath, numGeneration);
+
+    /**
+     * Returns the full path to the superfile containing the current generation
+     * of data.  The returned value would be suitable for use in a DATASET()
+     * declaration or a function that requires a file path.  This is the same
+     * as calling GetPath() and asking for generation 1.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     *
+     * @return  String containing the full path to the superfile containing
+     *          the current generation of data.
+     *
+     * @see     CurrentData
+     * @see     GetPath
+     * @see     GetData
+     */
+    EXPORT CurrentPath(STRING dataStorePath) := GetPath(dataStorePath, 1);
+
+    /**
+     * Construct a path for a new logical file for the data store.  Note that
+     * the returned value will have time-oriented components in it, therefore
+     * callers should probably mark the returned value as INDEPENDENT if name
+     * will be used more than once (say, creating the file via OUTPUT and then
+     * calling WriteFile() here to store it) to avoid a recomputation of the
+     * name.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     *
+     * @return  String representing a new logical subfile that may be added
+     *          to the data store.
+     */
+    EXPORT _NewSubfilePath(STRING dataStorePath) := _BuildSubfilePath(dataStorePath);
+
+    /**
+     * Make the given logical file the first generation of data for the data
+     * store and bump all existing generations of data to the next level.  If
+     * data is stored in the last generation then it will be deleted.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     * @param   newFilePath     The full path of the logical file to insert
+     *                          into the data store as the new current
+     *                          generation of data; REQUIRED
+     *
+     * @return  An action that inserts the given logical file into the data
+     *          store.  Existing generations of data are bumped to the next
+     *          generation, and any data stored in the last generation will
+     *          be deleted.
+     *
+     * @see     WriteData
+     * @see     AppendFile
+     * @see     AppendData
+     */
+    SHARED _WriteFile(STRING dataStorePath, STRING newFilePath) := FUNCTION
+        numPartitions := NumGenerationsAvailable(dataStorePath);
+        superfileSet := _CreateSuperfilePathSet(dataStorePath, numPartitions);
+        promoteAction := Std.File.PromoteSuperFileList(superfileSet, addHead := newFilePath, delTail := TRUE);
+
+        RETURN promoteAction;
+    END;
+
+    /**
+     * Adds the given logical file to the first generation of data for the data
+     * store.  This does not replace any existing data, nor bump any data
+     * generations to another level.  The record structure of this data must
+     * be the same as other data in the data store.
+     *
+     * If the data store does not exist then it is created with default
+     * parameters.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     * @param   newFilePath     The full path of the logical file to append
+     *                          to the current generation of data; REQUIRED
+     *
+     * @return  An action that appends the given logical file to the current
+     *          generation of data.
+     *
+     * @see     AppendData
+     * @see     WriteFile
+     * @see     WriteData
+     */
+    SHARED _AppendFile(STRING dataStorePath, STRING newFilePath) := FUNCTION
+        receivingSuperfilePath := CurrentPath(dataStorePath);
+        insertSubfileAction := Std.File.AddSuperFile(receivingSuperfilePath, newFilePath);
+        allActions := SEQUENTIAL
+            (
+                Std.File.StartSuperFileTransaction();
+                insertSubfileAction;
+                Std.File.FinishSuperFileTransaction();
+            );
+
+        RETURN allActions;
+    END;
+
+    /**
+     * Method promotes all data associated with the first generation into the
+     * second, promotes the second to the third, and so on.  The first
+     * generation of data will be empty after this method completes.
+     *
+     * Note that if you have multiple logical files associated with a generation,
+     * as via AppendFile() or AppendData(), all of those files will be deleted
+     * or moved.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     *
+     * @return  An action that performs the generational rollback.
+     *
+     * @see     _RollbackGeneration
+     */
+    SHARED _PromoteGeneration(STRING dataStorePath) := FUNCTION
+        numPartitions := NumGenerationsAvailable(dataStorePath);
+        superfileSet := _CreateSuperfilePathSet(dataStorePath, numPartitions);
+        promoteAction := Std.File.PromoteSuperFileList(superfileSet, delTail := TRUE);
+
+        RETURN promoteAction;
+    END;
+
+    /**
+     * Method deletes all data associated with the current (first) generation of
+     * data, moves the second generation of data into the first generation, then
+     * repeats the process for any remaining generations.  This functionality
+     * can be thought of restoring an older version of the data to the current
+     * generation.
+     *
+     * Note that if you have multiple logical files associated with a generation,
+     * as via AppendFile() or AppendData(), all of those files will be deleted
+     * or moved.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     *
+     * @return  An action that performs the generational rollback.
+     *
+     * @see     _PromoteGeneration
+     */
+    SHARED _RollbackGeneration(STRING dataStorePath) := FUNCTION
+        numPartitions := NumGenerationsAvailable(dataStorePath);
+        superfileSet := _CreateSuperfilePathSet(dataStorePath, numPartitions);
+        promoteAction := Std.File.PromoteSuperFileList(superfileSet, reverse := TRUE, delTail := TRUE);
+
+        RETURN promoteAction;
+    END;
+
+    /**
+     * Delete all data associated with the data store but leave the
+     * surrounding superfile structure intact.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     *
+     * @return  An action performing the delete operations.
+     *
+     * @see     DeleteAll
+     */
+    SHARED _ClearAll(STRING dataStorePath) := FUNCTION
+        subfilesToDelete := PROJECT
+            (
+                NOTHOR(Std.File.SuperFileContents(dataStorePath, TRUE)),
+                TRANSFORM
+                    (
+                        {
+                            STRING  owner,
+                            STRING  subfile
+                        },
+                        SELF.subfile := '~' + LEFT.name,
+                        SELF.owner := '~' + Std.File.LogicalFileSuperOwners(SELF.subfile)[1].name
+                    )
+            );
+        removeSubfilesAction := NOTHOR(APPLY(subfilesToDelete, Std.File.RemoveSuperFile(owner, subfile, del := TRUE)));
+
+        RETURN removeSubfilesAction;
+    END;
+
+    /**
+     * Delete all data and structure associated with the data store.
+     *
+     * @param   dataStorePath   The full path of the generational data store;
+     *                          REQUIRED
+     *
+     * @return  An action performing the delete operations.
+     *
+     * @see     _ClearAll
+     */
+    EXPORT _DeleteAll(STRING dataStorePath) := SEQUENTIAL
+        (
+            _ClearAll(dataStorePath);
+            NOTHOR(Std.File.DeleteSuperFile(dataStorePath, TRUE));
+        );
+
+END;

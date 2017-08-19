@@ -1,0 +1,835 @@
+require 'admin_data/rails_version_check'
+require 'will_paginate'
+
+require 'admin_data/engine'
+
+module AdminData
+  extend ActiveSupport::Autoload
+
+  class NoCreatedAtColumnException < Exception 
+
+  end
+
+  LIBPATH = File.dirname(__FILE__)
+
+  autoload :Configuration
+  autoload :Util
+  autoload :Config
+  autoload :ActiveRecordUtil
+  autoload :SetupConfig
+  autoload :DateUtil
+  autoload :Authenticator
+  autoload :Search
+  autoload :Analytics
+  autoload :ModelFinder
+
+  include SetupConfig
+end
+
+require "active_support/all"
+
+module AdminData
+  module Analytics
+
+    # a utility class to handle date interpolation for different databases
+    class Dater
+      attr_accessor :adapter, :type
+
+      def initialize(adapter, type = 'daily')
+        @adapter = adapter
+        @type = type
+      end
+
+      def date_select_key
+        "date_data"
+      end
+
+      def group_by_key
+        if adapter =~ /postgresql/i
+          self.type == 'monthly' ? "date_part('year', created_at), date_part('month', created_at)" : "date_data"
+        elsif adapter =~ /mysql/i
+          self.type == 'monthly' ? "YEAR(created_at), MONTH(created_at)" : "date_data"
+        else
+          self.type == 'monthly' ? "strftime('%Y', created_at), strftime('%m', created_at)" : "date_data"
+        end
+      end
+
+      def count_select_key
+        "count_data"
+      end
+
+      def count_function
+        "count(*) as count_data"
+      end
+
+      def date_select_function
+        self.type == 'monthly' ? date_select_function_monthly : date_select_function_daily
+      end
+
+      private
+
+      def date_select_function_monthly
+        if adapter =~ /mysql/i
+          "MONTH(created_at) as date_data"
+        elsif adapter =~ /postgresql/i
+          "date_part('month', created_at) as date_data"
+        else
+          "strftime('%m', created_at) as date_data"
+        end
+      end
+
+      def date_select_function_daily
+        if adapter =~ /mysql/i
+          "date_format(created_at, '%Y-%m-%d') as date_data"
+        else
+          "date(created_at) as date_data"
+        end
+      end
+
+    end
+
+    def self.monthly_report(klass, end_date)
+      begin_date = end_date.ago(1.year)
+      raise "begin_date should not be after end_date" if begin_date > end_date
+      raise AdminData::NoCreatedAtColumnException unless klass.columns.find {|r| r.name == 'created_at'}
+
+      begin_date = begin_date.beginning_of_day
+      end_date = end_date.end_of_day
+
+      dater = Dater.new(ActiveRecord::Base.connection.adapter_name, 'monthly')
+
+      query = klass.unscoped
+      query = query.where(["created_at >= ?", begin_date])
+      query = query.where(["created_at <= ?", end_date])
+      query = query.group(dater.group_by_key)
+      query = query.select(dater.date_select_function)
+      query = query.select(dater.count_function)
+      debug "sql: " + query.to_sql
+      result = query.all
+      debug "sql result: #{result.inspect}"
+
+      extract_data_from_result_set_monthly(result, dater, begin_date, end_date)
+    end
+
+    def self.extract_data_from_result_set_monthly(result, dater, begin_date, end_date)
+      debug "extracting from result set now"
+      result_hash = {}
+      result.each do |record|
+        result_hash.merge!(record[dater.date_select_key].to_i => record[dater.count_select_key])
+      end
+
+      debug "result_hash.inspect is #{result_hash.inspect}"
+      
+      current_month = begin_date.strftime('%m').to_i
+      months_order = (1..current_month).to_a.reverse + (current_month..12).to_a.reverse
+      months_order.uniq!.reverse!
+
+      debug "months order is #{months_order.inspect}"
+
+      final_hash = ActiveSupport::OrderedHash.new
+      months_order.each do |month|
+        month = month.to_i #sqlite3 has months as 03 instead of 3
+        m = Time.now.change(:month => month)
+        m = m.ago(1.year) if month > current_month
+
+        key = m.strftime('%b-%Y')
+        key = "'#{key}'"
+        if dater.adapter =~ /postgresql/i
+          value = result_hash[month]
+        elsif dater.adapter =~ /mysql/i
+          value = result_hash[month]
+        else
+          value = result_hash[month]
+        end
+        value = value.to_i
+        debug "month: #{month} key: #{key} value: #{value}"
+        final_hash.merge!(key => value)
+      end
+
+      final_hash.to_a.tap {|e| debug e.inspect }
+    end
+      
+    def self.daily_report(klass, end_date)
+      begin_date = end_date.ago(1.month)
+      raise "begin_date should not be after end_date" if begin_date > end_date
+      raise AdminData::NoCreatedAtColumnException unless klass.columns.find {|r| r.name == 'created_at'}
+
+      begin_date = begin_date.beginning_of_day
+      end_date = end_date.end_of_day
+
+      dater = Dater.new(ActiveRecord::Base.connection.adapter_name)
+
+      query = klass.unscoped
+      query = query.where(["created_at >= ?", begin_date])
+      query = query.where(["created_at <= ?", end_date])
+      query = query.group(dater.group_by_key)
+      query = query.select(dater.date_select_function)
+      query = query.select(dater.count_function)
+      debug "sql: " + query.to_sql
+      result = query.all
+      debug "sql result: #{result.inspect}"
+
+      extract_data_from_result_set_daily(result, dater, begin_date, end_date).tap {|e| debug "formatted output: "+e.inspect}
+    end
+
+    def self.extract_data_from_result_set_daily(result, dater, begin_date, end_date)
+      count = result.map {|r| r[dater.count_select_key] }
+      dates = result.map {|r| r[dater.date_select_key] }
+
+      debug "count is: #{count.inspect}"
+      debug "dates is: #{dates.inspect}"
+
+      final_output= []
+
+      while(begin_date) do
+        s = begin_date.strftime('%Y-%m-%d')
+        final_count = if index = dates.index(s)
+          count[index].to_i
+        else
+          0
+        end
+        final_output << ["'#{s}'", final_count]
+        begin_date = begin_date.tomorrow
+        break if begin_date > end_date
+      end
+      final_output
+    end
+
+    def self.debug(msg)
+      puts msg
+    end
+
+  end
+
+end
+
+module AdminData
+  module ModelFinder
+    extend self
+
+    def models
+      ActiveRecord::Base.send(:subclasses).map do | klass | 
+        namespaced_models(klass).push(klass.name) 
+      end.flatten.sort
+    end
+
+    def namespaced_models(model_klass)
+      model_klass.subclasses.map(&:name)
+    end
+  end
+end
+
+require 'rubygems/installer'
+
+Gem::Installer.class_eval do
+  def say(message)
+    super unless message == spec.post_install_message
+  end
+end
+
+require 'socket'
+require 'drb/drb'
+
+# We need to define our own NativeException class for the cases when a native
+# exception is raised by the JRuby DRb server.
+class NativeException < StandardError; end
+
+module Akephalos
+
+  # The +RemoteClient+ class provides an interface to an +Akephalos::Client+
+  # isntance on a remote DRb server.
+  #
+  # == Usage
+  #     client = Akephalos::RemoteClient.new
+  #     client.visit "http://www.oinopa.com"
+  #     client.page.source # => "<!DOCTYPE html PUBLIC..."
+  class RemoteClient
+    # @return [DRbObject] a new instance of Akephalos::Client from the DRb
+    #   server
+    def self.new(options = {})
+      manager.new_client(options)
+    end
+
+    # Starts a remove JRuby DRb server unless already running and returns an
+    # instance of Akephalos::ClientManager.
+    #
+    # @return [DRbObject] an instance of Akephalos::ClientManager
+    def self.manager
+      return @manager if defined?(@manager)
+
+      server_port = start!
+
+      DRb.start_service
+      manager = DRbObject.new_with_uri("druby://127.0.0.1:#{server_port}")
+
+      # We want to share our local configuration with the remote server
+      # process, so we share an undumped version of our configuration. This
+      # lets us continue to make changes locally and have them reflected in the
+      # remote process.
+      manager.configuration = Akephalos.configuration.extend(DRbUndumped)
+
+      @manager = manager
+    end
+
+    # Start a remote server process and return when it is available for use.
+    def self.start!
+      port = find_available_port
+
+      remote_client = IO.popen("#{Akephalos::BIN_DIR + 'akephalos'} #{port}")
+
+      # Set up a monitor thread to detect if the forked server exits
+      # prematurely.
+      server_monitor = Thread.new { Thread.current[:exited] = Process.wait(remote_client.pid) }
+
+      # Wait for the server to be accessible on the socket we specified.
+      until responsive?(port)
+        exit!(1) if server_monitor[:exited]
+        sleep 0.5
+      end
+      server_monitor.kill
+
+      # Ensure that the remote server shuts down gracefully when we are
+      # finished.
+      at_exit { Process.kill(:INT, remote_client.pid) }
+
+      port
+    end
+
+    private
+
+    # @api private
+    # @param [Integer] port the port to check for responsiveness
+    # @return [true, false] whether the port is responsive
+    def self.responsive?(port)
+      socket = TCPSocket.open('127.0.0.1', port)
+      true
+    rescue Errno::ECONNREFUSED
+      false
+    ensure
+      socket.close if socket
+    end
+
+    # @api private
+    # @return [Integer] the next available port
+    def self.find_available_port
+      server = TCPServer.new('127.0.0.1', 0)
+      server.addr[1]
+    ensure
+      server.close if server
+    end
+  end
+end
+
+=begin rdoc
+  Hash extentions
+=end
+class Hash
+    
+  # Return a hash of all the elements where the block evaluates to true
+  def choose(&block)
+    Hash[*self.select(&block).inject([]){|res,(k,v)| res << k << v}]
+  end
+  
+  # Computes the difference between two hashes
+  def diff(other, *hsh)
+    o = {}
+    keys.map do |k|
+      if hsh.include?(k) || hsh.empty?
+        other[k] == self[k] ? nil : o.merge!({k => other[k]})
+      end
+    end.reject {|b| b.nil? }
+    o
+  end
+  
+  def merge_if!(k, v)
+    self[k] = v if v
+    self
+  end
+  
+  # Converts all of the keys to strings
+  # can pass in a :key_modifier that will be sent to each key, before being symbolized.
+  # This can be usefull if you want to downcase, or snake_case each key.
+  # >> {'Placement' => {'AvailabilityZone'=>"us-east-1a"} }.symbolize_keys(:snake_case)
+  # => {:placement=>{:availability_zone=>"us-east-1a"}}  
+  def symbolize_keys!(key_modifier=nil) 
+    keys.each{|k| 
+      v = delete(k)
+      if key_modifier && k.respond_to?(key_modifier)
+        k = k.send(key_modifier)
+      end
+      self[k.to_sym] = v
+      v.symbolize_keys!(key_modifier) if v.is_a?(Hash)
+      v.each{|p| p.symbolize_keys!(key_modifier) if p.is_a?(Hash)} if v.is_a?(Array)
+    }
+    self
+  end
+    
+  def method_missing(sym, *args, &block)
+    if has_key?(sym.to_sym)
+      fetch(sym)
+    elsif has_key?(sym.to_s)
+      fetch(sym.to_s)
+    else
+      super
+    end
+  end  
+end
+
+# encoding: utf-8
+module ThemesForRails
+  
+  module ActionView
+
+    extend ActiveSupport::Concern
+
+    included do
+      include ThemesForRails::CommonMethods
+    end
+
+    def current_theme_stylesheet_path(asset)
+      base_theme_stylesheet_path(:theme => self.theme_name, :asset => "#{asset}.css")
+    end
+    
+    def current_theme_javascript_path(asset)
+      base_theme_javascript_path(:theme => self.theme_name, :asset => "#{asset}.js")
+    end
+
+    def current_theme_image_path(asset)
+      base_theme_image_path(:theme => self.theme_name, :asset => asset)
+    end
+
+    def theme_stylesheet_path(asset, new_theme_name = self.theme_name)
+      base_theme_stylesheet_path(:theme => new_theme_name, :asset => "#{asset}.css")
+    end
+
+    def theme_javascript_path(asset, new_theme_name = self.theme_name)
+      base_theme_javascript_path(:theme => new_theme_name, :asset => "#{asset}.js")
+    end
+
+    def theme_image_path(asset, new_theme_name = self.theme_name)
+      base_theme_image_path(:theme => new_theme_name, :asset => asset)
+    end
+    
+    def theme_image_tag(source, options = {})
+      image_tag(theme_image_path(source), options)
+    end
+
+    def theme_image_submit_tag(source, options = {})
+      image_submit_tag(theme_image_path(source), options)
+    end
+
+    def theme_javascript_include_tag(*files)
+      options = files.extract_options!
+      options.merge!({ :type => "text/javascript" })
+      files_with_options = files.collect {|file| theme_javascript_path(file) }
+      files_with_options += [options]
+
+      javascript_include_tag(*files_with_options)
+    end
+
+    def theme_stylesheet_link_tag(*files)
+      options = files.extract_options!
+      options.merge!({ :type => "text/css" })
+      files_with_options = files.collect {|file| theme_stylesheet_path(file) }
+      files_with_options += [options]
+
+      stylesheet_link_tag(*files_with_options)
+    end
+  end
+end
+
+module ThemesForRails
+
+  module Interpolation
+
+    def interpolate(pattern, name = nil)
+      pattern.gsub(":root", ThemesForRails.config.base_dir.to_s).gsub(":name", name.to_s)
+    end
+
+  end
+  
+end
+
+module OAuth
+  class Error < StandardError
+  end
+end
+
+require 'optparse'
+require 'oauth'
+
+module OAuth
+  class CLI
+    SUPPORTED_COMMANDS = {
+      "authorize" => "Obtain an access token and secret for a user",
+      "debug"     => "Verbosely generate an OAuth signature",
+      "query"     => "Query a protected resource",
+      "sign"      => "Generate an OAuth signature",
+      "version"   => "Display the current version of the library"
+    }
+
+    attr_reader :command
+    attr_reader :options
+    attr_reader :stdout, :stdin
+
+    def self.execute(stdout, stdin, stderr, arguments = [])
+      self.new.execute(stdout, stdin, stderr, arguments)
+    end
+
+    def initialize
+      @options = {}
+
+      # don't dump a backtrace on a ^C
+      trap(:INT) {
+        exit
+      }
+    end
+
+    def execute(stdout, stdin, stderr, arguments = [])
+      @stdout = stdout
+      @stdin  = stdin
+      @stderr = stderr
+      extract_command_and_parse_options(arguments)
+
+      if sufficient_options? && valid_command?
+        if command == "debug"
+          @command = "sign"
+          @options[:verbose] = true
+        end
+
+        case command
+        # TODO move command logic elsewhere
+        when "authorize"
+          begin
+            consumer = OAuth::Consumer.new \
+              options[:oauth_consumer_key],
+              options[:oauth_consumer_secret],
+              :access_token_url  => options[:access_token_url],
+              :authorize_url     => options[:authorize_url],
+              :request_token_url => options[:request_token_url],
+              :scheme            => options[:scheme],
+              :http_method       => options[:method].to_s.downcase.to_sym
+
+            # parameters for OAuth 1.0a
+            oauth_verifier = nil
+
+            # get a request token
+            request_token = consumer.get_request_token({ :oauth_callback => options[:oauth_callback] }, { "scope" => options[:scope] })
+
+            if request_token.callback_confirmed?
+              stdout.puts "Server appears to support OAuth 1.0a; enabling support."
+              options[:version] = "1.0a"
+            end
+
+            stdout.puts "Please visit this url to authorize:"
+            stdout.puts request_token.authorize_url
+
+            if options[:version] == "1.0a"
+              stdout.puts "Please enter the verification code provided by the SP (oauth_verifier):"
+              oauth_verifier = stdin.gets.chomp
+            else
+              stdout.puts "Press return to continue..."
+              stdin.gets
+            end
+
+            begin
+              # get an access token
+              access_token = request_token.get_access_token(:oauth_verifier => oauth_verifier)
+
+              stdout.puts "Response:"
+              access_token.params.each do |k,v|
+                stdout.puts "  #{k}: #{v}" unless k.is_a?(Symbol)
+              end
+            rescue OAuth::Unauthorized => e
+              stderr.puts "A problem occurred while attempting to obtain an access token:"
+              stderr.puts e
+              stderr.puts e.request.body
+            end
+          rescue OAuth::Unauthorized => e
+            stderr.puts "A problem occurred while attempting to authorize:"
+            stderr.puts e
+            stderr.puts e.request.body
+          end
+        when "query"
+          consumer = OAuth::Consumer.new \
+            options[:oauth_consumer_key],
+            options[:oauth_consumer_secret],
+            :scheme => options[:scheme]
+
+          access_token = OAuth::AccessToken.new(consumer, options[:oauth_token], options[:oauth_token_secret])
+
+          # append params to the URL
+          uri = URI.parse(options[:uri])
+          params = prepare_parameters.map { |k,v| v.map { |v2| "#{URI.encode(k)}=#{URI.encode(v2)}" } * "&" }
+          uri.query = [uri.query, *params].reject { |x| x.nil? } * "&"
+          p uri.to_s
+
+          response = access_token.request(options[:method].downcase.to_sym, uri.to_s)
+          puts "#{response.code} #{response.message}"
+          puts response.body
+        when "sign"
+          parameters = prepare_parameters
+
+          request = OAuth::RequestProxy.proxy \
+             "method"     => options[:method],
+             "uri"        => options[:uri],
+             "parameters" => parameters
+
+          if verbose?
+            stdout.puts "OAuth parameters:"
+            request.oauth_parameters.each do |k,v|
+              stdout.puts "  " + [k, v] * ": "
+            end
+            stdout.puts
+
+            if request.non_oauth_parameters.any?
+              stdout.puts "Parameters:"
+              request.non_oauth_parameters.each do |k,v|
+                stdout.puts "  " + [k, v] * ": "
+              end
+              stdout.puts
+            end
+          end
+
+          request.sign! \
+            :consumer_secret => options[:oauth_consumer_secret],
+            :token_secret    => options[:oauth_token_secret]
+
+          if verbose?
+            stdout.puts "Method: #{request.method}"
+            stdout.puts "URI: #{request.uri}"
+            stdout.puts "Normalized params: #{request.normalized_parameters}" unless options[:xmpp]
+            stdout.puts "Signature base string: #{request.signature_base_string}"
+
+            if options[:xmpp]
+              stdout.puts
+              stdout.puts "XMPP Stanza:"
+              stdout.puts <<-EOS
+  <oauth xmlns='urn:xmpp:oauth:0'>
+    <oauth_consumer_key>#{request.oauth_consumer_key}</oauth_consumer_key>
+    <oauth_token>#{request.oauth_token}</oauth_token>
+    <oauth_signature_method>#{request.oauth_signature_method}</oauth_signature_method>
+    <oauth_signature>#{request.oauth_signature}</oauth_signature>
+    <oauth_timestamp>#{request.oauth_timestamp}</oauth_timestamp>
+    <oauth_nonce>#{request.oauth_nonce}</oauth_nonce>
+    <oauth_version>#{request.oauth_version}</oauth_version>
+  </oauth>
+              EOS
+              stdout.puts
+              stdout.puts "Note: You may want to use bare JIDs in your URI."
+              stdout.puts
+            else
+              stdout.puts "OAuth Request URI: #{request.signed_uri}"
+              stdout.puts "Request URI: #{request.signed_uri(false)}"
+              stdout.puts "Authorization header: #{request.oauth_header(:realm => options[:realm])}"
+            end
+            stdout.puts "Signature:         #{request.oauth_signature}"
+            stdout.puts "Escaped signature: #{OAuth::Helper.escape(request.oauth_signature)}"
+          else
+            stdout.puts request.oauth_signature
+          end
+        when "version"
+          puts "OAuth for Ruby #{OAuth::VERSION}"
+        end
+      else
+        usage
+      end
+    end
+
+  protected
+
+    def extract_command_and_parse_options(arguments)
+      @command = arguments[-1]
+      parse_options(arguments[0..-1])
+    end
+
+    def option_parser(arguments = "")
+      # TODO add realm parameter
+      # TODO add user-agent parameter
+      option_parser = OptionParser.new do |opts|
+        opts.banner = "Usage: #{$0} [options] <command>"
+
+        # defaults
+        options[:oauth_nonce] = OAuth::Helper.generate_key
+        options[:oauth_signature_method] = "HMAC-SHA1"
+        options[:oauth_timestamp] = OAuth::Helper.generate_timestamp
+        options[:oauth_version] = "1.0"
+        options[:method] = :post
+        options[:params] = []
+        options[:scheme] = :header
+        options[:version] = "1.0"
+
+        ## Common Options
+
+        opts.on("-B", "--body", "Use the request body for OAuth parameters.") do
+          options[:scheme] = :body
+        end
+
+        opts.on("--consumer-key KEY", "Specifies the consumer key to use.") do |v|
+          options[:oauth_consumer_key] = v
+        end
+
+        opts.on("--consumer-secret SECRET", "Specifies the consumer secret to use.") do |v|
+          options[:oauth_consumer_secret] = v
+        end
+
+        opts.on("-H", "--header", "Use the 'Authorization' header for OAuth parameters (default).") do
+          options[:scheme] = :header
+        end
+
+        opts.on("-Q", "--query-string", "Use the query string for OAuth parameters.") do
+          options[:scheme] = :query_string
+        end
+
+        opts.on("-O", "--options FILE", "Read options from a file") do |v|
+          arguments.unshift(*open(v).readlines.map { |l| l.chomp.split(" ") }.flatten)
+        end
+
+        ## Options for signing and making requests
+
+        opts.separator("\n  options for signing and querying")
+
+        opts.on("--method METHOD", "Specifies the method (e.g. GET) to use when signing.") do |v|
+          options[:method] = v
+        end
+
+        opts.on("--nonce NONCE", "Specifies the none to use.") do |v|
+          options[:oauth_nonce] = v
+        end
+
+        opts.on("--parameters PARAMS", "Specifies the parameters to use when signing.") do |v|
+          options[:params] << v
+        end
+
+        opts.on("--signature-method METHOD", "Specifies the signature method to use; defaults to HMAC-SHA1.") do |v|
+          options[:oauth_signature_method] = v
+        end
+
+        opts.on("--secret SECRET", "Specifies the token secret to use.") do |v|
+          options[:oauth_token_secret] = v
+        end
+
+        opts.on("--timestamp TIMESTAMP", "Specifies the timestamp to use.") do |v|
+          options[:oauth_timestamp] = v
+        end
+
+        opts.on("--token TOKEN", "Specifies the token to use.") do |v|
+          options[:oauth_token] = v
+        end
+
+        opts.on("--realm REALM", "Specifies the realm to use.") do |v|
+          options[:realm] = v
+        end
+
+        opts.on("--uri URI", "Specifies the URI to use when signing.") do |v|
+          options[:uri] = v
+        end
+
+        opts.on(:OPTIONAL, "--version VERSION", "Specifies the OAuth version to use.") do |v|
+          if v
+            options[:oauth_version] = v
+          else
+            @command = "version"
+          end
+        end
+
+        opts.on("--no-version", "Omit oauth_version.") do
+          options[:oauth_version] = nil
+        end
+
+        opts.on("--xmpp", "Generate XMPP stanzas.") do
+          options[:xmpp] = true
+          options[:method] ||= "iq"
+        end
+
+        opts.on("-v", "--verbose", "Be verbose.") do
+          options[:verbose] = true
+        end
+
+        ## Options for authorization
+
+        opts.separator("\n  options for authorization")
+
+        opts.on("--access-token-url URL", "Specifies the access token URL.") do |v|
+          options[:access_token_url] = v
+        end
+
+        opts.on("--authorize-url URL", "Specifies the authorization URL.") do |v|
+          options[:authorize_url] = v
+        end
+
+        opts.on("--callback-url URL", "Specifies a callback URL.") do |v|
+          options[:oauth_callback] = v
+        end
+
+        opts.on("--request-token-url URL", "Specifies the request token URL.") do |v|
+          options[:request_token_url] = v
+        end
+
+        opts.on("--scope SCOPE", "Specifies the scope (Google-specific).") do |v|
+          options[:scope] = v
+        end
+      end
+    end
+
+    def parse_options(arguments)
+      option_parser(arguments).parse!(arguments)
+    end
+
+    def prepare_parameters
+      escaped_pairs = options[:params].collect do |pair|
+        if pair =~ /:/
+          Hash[*pair.split(":", 2)].collect do |k,v|
+            [CGI.escape(k.strip), CGI.escape(v.strip)] * "="
+          end
+        else
+          pair
+        end
+      end
+
+      querystring = escaped_pairs * "&"
+      cli_params = CGI.parse(querystring)
+
+      {
+        "oauth_consumer_key"     => options[:oauth_consumer_key],
+        "oauth_nonce"            => options[:oauth_nonce],
+        "oauth_timestamp"        => options[:oauth_timestamp],
+        "oauth_token"            => options[:oauth_token],
+        "oauth_signature_method" => options[:oauth_signature_method],
+        "oauth_version"          => options[:oauth_version]
+      }.reject { |k,v| v.nil? || v == "" }.merge(cli_params)
+    end
+
+    def sufficient_options?
+      case command
+      # TODO move command logic elsewhere
+      when "authorize"
+        options[:oauth_consumer_key] && options[:oauth_consumer_secret] &&
+          options[:access_token_url] && options[:authorize_url] &&
+          options[:request_token_url]
+      when "version"
+        true
+      else
+        options[:oauth_consumer_key] && options[:oauth_consumer_secret] &&
+          options[:method] && options[:uri]
+      end
+    end
+
+    def usage
+      stdout.puts option_parser.help
+      stdout.puts
+      stdout.puts "Available commands:"
+      SUPPORTED_COMMANDS.each do |command, desc|
+        puts "   #{command.ljust(15)}#{desc}"
+      end
+    end
+
+    def valid_command?
+      SUPPORTED_COMMANDS.keys.include?(command)
+    end
+
+    def verbose?
+      options[:verbose]
+    end
+  end
+end

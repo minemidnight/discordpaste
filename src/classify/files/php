@@ -1,0 +1,1490 @@
+<?php
+define("STORYTLR_VERSION","1.3.dev");
+define("DATABASE_VERSION", "5");
+define("AUTO_INSTALL", true);
+define("AUTO_UPGRADE", true);
+
+// Update after deployment for location of non-public files
+$root = dirname(__FILE__);
+
+set_include_path(
+      $root . '/protected/application' . PATH_SEPARATOR
+    . $root . '/protected/application/admin/models' . PATH_SEPARATOR    
+    . $root . '/protected/application/api/models' . PATH_SEPARATOR
+    . $root . '/protected/application/public/models' . PATH_SEPARATOR
+    . $root . '/protected/application/pages/models' . PATH_SEPARATOR
+    . $root . '/protected/application/widgets/models' . PATH_SEPARATOR
+    . $root . '/protected/library' . PATH_SEPARATOR
+    . $root . '/protected/library/Feedcreator' . PATH_SEPARATOR
+    . $root . '/protected/library/htmLawed' . PATH_SEPARATOR
+    . get_include_path()
+);
+
+// Run the install stuff if configuration is missing
+if( AUTO_INSTALL &&
+	! file_exists( $root . '/protected/config/config.ini') &&
+	! file_exists( '/etc/storytlr/storytlr.conf') &&
+	! file_exists( '/etc/storytlr/config.ini')) {
+	$template = array();
+	ob_start();
+	$template['title'] = require_once( $root . '/protected/install/install.php' );
+	$template['content'] = ob_get_contents();
+	ob_end_clean();
+	require_once( $root . '/protected/install/template.phtml' );
+	exit();
+}
+
+if( AUTO_UPGRADE &&
+	! file_exists( $root . '/protected/install/database/version')
+	|| trim(file_get_contents($root . '/protected/install/database/version')) != DATABASE_VERSION) {
+	ob_start();
+	$template['title'] = require_once( $root . '/protected/install/upgrade.php' );
+	$template['content'] = ob_get_contents();
+	ob_end_clean();
+	require_once( $root . '/protected/install/template.phtml' );
+	exit();
+}
+
+require_once 'Bootstrap.php';
+
+Bootstrap::run();
+
+<?php
+
+/*
+ * This file is part of the SpBowerBundle package.
+ *
+ * (c) Martin Parsiegla <martin.parsiegla@gmail.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Sp\BowerBundle\Bower;
+
+use Closure;
+use Doctrine\Common\Collections\Collection;
+use Sp\BowerBundle\Bower\Event\BowerCommandEvent;
+use Sp\BowerBundle\Bower\Event\BowerEvent;
+use Sp\BowerBundle\Bower\Event\BowerEvents;
+use Sp\BowerBundle\Bower\Exception\CommandException;
+use Sp\BowerBundle\Bower\Exception\InvalidMappingException;
+use Sp\BowerBundle\Bower\Exception\RuntimeException;
+use Sp\BowerBundle\Bower\Package\DependencyMapper;
+use Sp\BowerBundle\Bower\Package\DependencyMapperInterface;
+use Sp\BowerBundle\Bower\Package\Package;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
+use Symfony\Component\Process\ProcessBuilder;
+
+/**
+ * @author Martin Parsiegla <martin.parsiegla@gmail.com>
+ */
+class Bower
+{
+    /**
+     * @var string
+     */
+    protected $bowerPath;
+
+    /**
+     * @var ProcessBuilder
+     */
+    protected $processBuilder;
+
+    /**
+     * @var EventDispatcherInterface
+     */
+    protected $eventDispatcher;
+
+    /**
+     * @var DependencyMapperInterface
+     */
+    protected $dependencyMapper;
+
+    /**
+     * @var options to add to the bower command
+     */
+    protected $options;
+
+    /**
+     * @param string                    $bowerPath
+     * @param EventDispatcherInterface  $eventDispatcher
+     * @param DependencyMapperInterface $dependencyMapper
+     * @param array                     $options
+     */
+    public function __construct($bowerPath = '/usr/bin/bower', EventDispatcherInterface $eventDispatcher,
+                                DependencyMapperInterface $dependencyMapper = null, array $options = array())
+    {
+        $this->bowerPath = $bowerPath;
+        $this->eventDispatcher = $eventDispatcher;
+        $this->dependencyMapper = $dependencyMapper ?: new DependencyMapper();
+        $this->options = $options;
+    }
+
+    /**
+     * Installs bower dependencies from the given config directory.
+     *
+     * @param ConfigurationInterface $config
+     * @param null                   $callback
+     * @param bool                   $interactive
+     *
+     * @return int
+     */
+    public function install(ConfigurationInterface $config, $callback = null, $interactive = false)
+    {
+        $this->eventDispatcher->dispatch(BowerEvents::PRE_INSTALL, new BowerEvent($config));
+
+        $result = $this->execCommand($config, array('install'), $callback, $interactive);
+
+        $this->eventDispatcher->dispatch(BowerEvents::POST_INSTALL, new BowerEvent($config));
+
+        return $result->getProcess()->getExitCode();
+    }
+
+    /**
+     * Updates bower dependencies from the given config directory.
+     *
+     * @param ConfigurationInterface $config
+     * @param null                   $callback
+     * @param bool                   $interactive
+     *
+     * @return int
+     */
+    public function update(ConfigurationInterface $config, $callback = null, $interactive = false)
+    {
+        $this->eventDispatcher->dispatch(BowerEvents::PRE_UPDATE, new BowerEvent($config));
+
+        $result = $this->execCommand($config, array('update'), $callback, $interactive);
+
+        $this->eventDispatcher->dispatch(BowerEvents::POST_UPDATE, new BowerEvent($config));
+
+        return $result->getProcess()->getExitCode();
+    }
+
+    /**
+     * Creates the cache for the dependency mapping.
+     *
+     * @param ConfigurationInterface $config
+     *
+     * @throws Exception\MappingException
+     * @throws Exception\InvalidMappingException
+     * @return Bower
+     */
+    public function createDependencyMappingCache(ConfigurationInterface $config)
+    {
+        $result = $this->execCommand($config, array('list', '--json'));
+        $output = $result->getProcess()->getOutput();
+
+        $mapping = json_decode($output, true);
+        if (null === $mapping) {
+            throw new InvalidMappingException('Bower returned an invalid dependency mapping. This mostly happens when the dependencies are not yet installed or if you are using an old version of bower.');
+        }
+
+        $cacheKey = $this->createCacheKey($config);
+        $config->getCache()->save($cacheKey, $mapping);
+
+        return $this;
+    }
+
+    /**
+     * Get the dependency mapping from the installed packages.
+     *
+     * @param ConfigurationInterface $config
+     *
+     * @throws Exception\RuntimeException
+     * @return Collection|Package[]
+     */
+    public function getDependencyMapping(ConfigurationInterface $config)
+    {
+        $cacheKey = $this->createCacheKey($config);
+
+        $dependencyCache = $config->getCache();
+        if (!$dependencyCache->contains($cacheKey)) {
+            throw new RuntimeException(sprintf(
+                'Cached dependencies for "%s" not found, create it with the method createDependencyMappingCache().', $config->getDirectory()
+            ));
+        }
+
+        $mapping = $dependencyCache->fetch($cacheKey);
+
+        return $this->dependencyMapper->map($mapping, $config);
+    }
+
+    /**
+     * @return ProcessBuilder
+     */
+    public function getProcessBuilder()
+    {
+        if (null === $this->processBuilder) {
+            return new ProcessBuilder();
+        }
+
+        return $this->processBuilder;
+    }
+
+    /**
+     * @param ProcessBuilder $processBuilder
+     */
+    public function setProcessBuilder(ProcessBuilder $processBuilder)
+    {
+        $this->processBuilder = $processBuilder;
+    }
+
+    /**
+     * Creates a bower configuration file (.bowerrc) in the config directory.
+     *
+     * @param ConfigurationInterface $configuration The configuration for bower
+     */
+    protected function dumpBowerConfig(ConfigurationInterface $configuration)
+    {
+        $configFile = $configuration->getDirectory() . DIRECTORY_SEPARATOR . '.bowerrc';
+        if (!file_exists($configFile) || file_get_contents($configFile) != $configuration->getJson()) {
+            file_put_contents($configFile, $configuration->getJson());
+        }
+    }
+
+    /**
+     * Creates a cache key for the given configuration.
+     *
+     * @param ConfigurationInterface $config
+     *
+     * @return string
+     */
+    private function createCacheKey(ConfigurationInterface $config)
+    {
+        $file = $config->getDirectory() . DIRECTORY_SEPARATOR . $config->getJsonFile();
+
+        return hash_file("sha1", $file);
+    }
+
+    /**
+     * @param ConfigurationInterface    $config
+     * @param string|array              $commands
+     * @param Closure|string|array|null $callback
+     * @param bool                      $tty
+     *
+     * @return BowerResult
+     */
+    private function execCommand(ConfigurationInterface $config, $commands, $callback = null, $tty = false)
+    {
+        if (is_string($commands)) {
+            $commands = array($commands);
+        }
+
+        $event = new BowerCommandEvent($config, $commands);
+        $this->eventDispatcher->dispatch(BowerEvents::PRE_EXEC, $event);
+        $config = $event->getConfiguration();
+
+        $this->dumpBowerConfig($config);
+
+        $pb = $this->getProcessBuilder();
+        $pb->setWorkingDirectory($config->getDirectory());
+        $pb->setTimeout(600);
+        $pb->add($this->bowerPath);
+        foreach ($this->options as $key => $value) {
+            $name = is_bool($value) ? sprintf('--%s', $key) : sprintf('--%s %s', $key, $value);
+            $pb->add($name);
+        }
+
+        foreach ($commands as $command) {
+            $pb->add($command);
+        }
+
+        $proc = $pb->getProcess();
+        // TTY is not available on Windows.
+        if(DIRECTORY_SEPARATOR == '/'){
+            $tty = filter_var($tty, FILTER_VALIDATE_BOOLEAN);
+            $proc->setTty($tty);
+        }
+        $proc->run($callback);
+
+        if (!$proc->isSuccessful()) {
+            throw new CommandException($proc->getCommandLine(), trim($proc->getErrorOutput()));
+        }
+
+        $this->eventDispatcher->dispatch(BowerEvents::POST_EXEC, new BowerCommandEvent($config, $commands));
+
+        return new BowerResult($proc, $config);
+    }
+}
+
+<?php
+
+/*
+ * This file is part of the SpBowerBundle package.
+ *
+ * (c) Martin Parsiegla <martin.parsiegla@gmail.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Sp\BowerBundle\Bower;
+
+use Doctrine\Common\Collections\ArrayCollection;
+use Doctrine\Common\Collections\Collection;
+
+/**
+ * @author Martin Parsiegla <martin.parsiegla@gmail.com>
+ */
+class BowerManager
+{
+    /**
+     * @var \Doctrine\Common\Collections\Collection
+     */
+    protected $bundles;
+
+    /**
+     * Construct.
+     */
+    public function __construct()
+    {
+        $this->bundles = new ArrayCollection();
+    }
+
+    /**
+     * @param string                 $bundle
+     * @param ConfigurationInterface $configuration
+     */
+    public function addBundle($bundle, ConfigurationInterface $configuration)
+    {
+        $this->bundles->set($bundle, $configuration);
+    }
+
+    /**
+     * @return ArrayCollection
+     */
+    public function getBundles()
+    {
+        return $this->bundles;
+    }
+
+}
+
+<?php
+
+/*
+ * This file is part of the SpBowerBundle package.
+ *
+ * (c) Martin Parsiegla <martin.parsiegla@gmail.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Sp\BowerBundle\Bower;
+
+use Symfony\Component\Filesystem\Filesystem;
+use Doctrine\Common\Cache\Cache;
+
+/**
+ * @author Martin Parsiegla <martin.parsiegla@gmail.com>
+ */
+class Configuration implements ConfigurationInterface
+{
+    /**
+     * The config directory.
+     *
+     * @var string
+     */
+    protected $directory;
+
+    /**
+     * The directory where the bower dependencies should be installed to.
+     *
+     * @var string
+     */
+    protected $assetDirectory;
+
+    /**
+     * The name of the json file.
+     *
+     * @var string
+     */
+    protected $jsonFile;
+
+    /**
+     * The bower endpoint.
+     *
+     * @var string
+     */
+    protected $endpoint;
+
+    /**
+     * @var null|Cache
+     */
+    protected $cache;
+
+    /**
+     * Construct.
+     *
+     * @param string $directory
+     */
+    public function __construct($directory)
+    {
+        $this->directory = $directory;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function setDirectory($directory)
+    {
+        $this->directory = $directory;
+
+        return $this;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getDirectory()
+    {
+        return $this->directory;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function setAssetDirectory($assetDirectory)
+    {
+        $this->assetDirectory = $assetDirectory;
+
+        return $this;
+    }
+
+    /**
+     * @return string
+     */
+    public function getAssetDirectory()
+    {
+        return $this->assetDirectory;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function setEndpoint($endpoint)
+    {
+        $this->endpoint = $endpoint;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getEndpoint()
+    {
+        return $this->endpoint;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function setJsonFile($json)
+    {
+        $this->jsonFile = $json;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getJsonFile()
+    {
+        return $this->jsonFile;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getJson()
+    {
+        $assetDirectory = $this->getAssetDirectory();
+        if (null !== $assetDirectory) {
+            $filesystem = new Filesystem();
+            $directory = realpath($this->getDirectory());
+            $assetDirectory = $filesystem->makePathRelative($this->getAssetDirectory(), $directory);
+        }
+
+        $configuration = array(
+            'directory' => $assetDirectory,
+            'json' => $this->getJsonFile(),
+            'endpoint' => $this->getEndpoint()
+        );
+
+        $configuration = array_filter($configuration, function($value) {
+            return $value !== null;
+        });
+
+        return json_encode($configuration, JSON_FORCE_OBJECT);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function setCache(Cache $cache = null)
+    {
+        $this->cache = $cache;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getCache()
+    {
+        return $this->cache;
+    }
+}
+
+<?php
+
+/*
+ * This file is part of the SpBowerBundle package.
+ *
+ * (c) Martin Parsiegla <martin.parsiegla@gmail.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Sp\BowerBundle\Bower;
+use Doctrine\Common\Cache\Cache;
+
+/**
+ * @author Martin Parsiegla <martin.parsiegla@gmail.com>
+ */
+interface ConfigurationInterface
+{
+    /**
+     * @param string $directory
+     *
+     * @return self
+     */
+    public function setDirectory($directory);
+
+    /**
+     * @return string
+     */
+    public function getDirectory();
+
+    /**
+     * @param string $assetDirectory
+     *
+     * @return self
+     */
+    public function setAssetDirectory($assetDirectory);
+
+    /**
+     * @return string
+     */
+    public function getAssetDirectory();
+
+    /**
+     * @param string $json
+     *
+     * @return self
+     */
+    public function setJsonFile($json);
+
+    /**
+     * @return string
+     */
+    public function getJsonFile();
+
+    /**
+     * @return string
+     */
+    public function getJson();
+
+    /**
+     * @param Cache $cache
+     */
+    public function setCache(Cache $cache);
+
+    /**
+     * @return null|Cache
+     */
+    public function getCache();
+}
+
+<?php
+/**
+ * Array Datasource
+ *
+ * PHP 5
+ *
+ * CakePHP(tm) : Rapid Development Framework (http://cakephp.org)
+ * Copyright (c) Cake Software Foundation, Inc. (http://cakefoundation.org)
+ *
+ * Licensed under The MIT License
+ * For full copyright and license information, please see the LICENSE.txt
+ * Redistributions of files must retain the above copyright notice.
+ *
+ * @copyright     Copyright (c) Cake Software Foundation, Inc. (http://cakefoundation.org)
+ * @link          http://cakephp.org CakePHP(tm) Project
+ * @since         CakePHP Datasources v 0.3
+ * @license       http://www.opensource.org/licenses/mit-license.php MIT License
+ */
+
+App::uses('Hash', 'Utility');
+App::uses('ConnectionManager', 'Model');
+
+/**
+ * Array Datasource
+ *
+ * Datasource for array based models
+ */
+class ArraySource extends DataSource {
+
+/**
+ * Description string for this Data Source.
+ *
+ * @var string
+ */
+	public $description = 'Array Datasource';
+
+/**
+ * List of requests ("queries")
+ *
+ * @var array
+ */
+	protected $_requestsLog = array();
+
+/**
+ * Base Config
+ *
+ * @var array
+ */
+	protected $_baseConfig = array(
+		'driver' => '' // Just to avoid DebugKit warning
+	);
+
+/**
+ * Start quote
+ *
+ * @var string
+ */
+	public $startQuote = null;
+
+/**
+ * End quote
+ *
+ * @var string
+ */
+	public $endQuote = null;
+
+/**
+ * Imitation of DboSource method.
+ * @param mixed $data Either a string with a column to quote. An array of columns
+ *   to quote.
+ * @return string SQL field
+ */
+	public function name($data) {
+		if (is_object($data) && isset($data->type)) {
+			return $data->value;
+		}
+		if ($data === '*') {
+			return '*';
+		}
+		if (is_array($data)) {
+			foreach ($data as $i => $dataItem) {
+				$data[$i] = $this->name($dataItem);
+			}
+			return $data;
+		}
+		return (string)$data;
+	}
+
+/**
+ * Returns a Model description (metadata) or null if none found.
+ *
+ * @param Model $model
+ * @return array Show only id
+ */
+	public function describe($model) {
+		return array('id' => array());
+	}
+
+/**
+ * List sources
+ *
+ * @param mixed $data
+ * @return boolean Always false. It's not supported
+ */
+	public function listSources($data = null) {
+		return false;
+	}
+
+/**
+ * Used to read records from the Datasource. The "R" in CRUD
+ *
+ * @param Model $model The model being read.
+ * @param array $queryData An array of query data used to find the data you want
+ * @param null $recursive
+ * @return mixed
+ */
+	public function read(Model $model, $queryData = array(), $recursive = null) {
+		if (!isset($model->records) || !is_array($model->records) || empty($model->records)) {
+			$this->_requestsLog[] = array(
+				'query' => 'Model ' . $model->alias,
+				'error' => __('No records found in model.'),
+				'affected' => 0,
+				'numRows' => 0,
+				'took' => 0
+			);
+			return array($model->alias => array());
+		}
+		$startTime = microtime(true);
+		$data = array();
+		$i = 0;
+		$limit = false;
+		if ($recursive === null && isset($queryData['recursive'])) {
+			$recursive = $queryData['recursive'];
+		}
+
+		if ($recursive !== null) {
+			$_recursive = $model->recursive;
+			$model->recursive = $recursive;
+		}
+
+		if (is_integer($queryData['limit']) && $queryData['limit'] > 0) {
+			$limit = $queryData['page'] * $queryData['limit'];
+		}
+
+		foreach ($model->records as $pos => $record) {
+			// Tests whether the record will be chosen
+			if (!empty($queryData['conditions'])) {
+				$queryData['conditions'] = (array)$queryData['conditions'];
+				if (!$this->conditionsFilter($model, $record, $queryData['conditions'])) {
+					continue;
+				}
+			}
+			$data[$i][$model->alias] = $record;
+			$i++;
+			// Test limit
+			if ($limit !== false && $i == $limit && empty($queryData['order'])) {
+				break;
+			}
+		}
+		if ($queryData['fields'] === 'COUNT') {
+			$this->_registerLog($model, $queryData, microtime(true) - $startTime, 1);
+			if ($limit !== false) {
+				$data = array_slice($data, ($queryData['page'] - 1) * $queryData['limit'], $queryData['limit'], false);
+			}
+			return array(array(array('count' => count($data))));
+		}
+		// Order
+		if (!empty($queryData['order'])) {
+			if (is_string($queryData['order'][0])) {
+				$field = $queryData['order'][0];
+				$alias = $model->alias;
+				if (strpos($field, '.') !== false) {
+					list($alias, $field) = explode('.', $field, 2);
+				}
+				if ($alias === $model->alias) {
+					$sort = 'ASC';
+					if (strpos($field, ' ') !== false) {
+						list($field, $sort) = explode(' ', $field, 2);
+					}
+					if ($data) {
+						$data = Hash::sort($data, '{n}.' . $model->alias . '.' . $field, $sort);
+					}
+				}
+			}
+		}
+		// Limit
+		if ($limit !== false) {
+			$data = array_slice($data, ($queryData['page'] - 1) * $queryData['limit'], $queryData['limit'], false);
+		}
+		// Filter fields
+		if (!empty($queryData['fields'])) {
+			$listOfFields = array();
+			foreach ((array)$queryData['fields'] as $field) {
+				if (strpos($field, '.') !== false) {
+					list($alias, $field) = explode('.', $field, 2);
+					if ($alias !== $model->alias) {
+						continue;
+					}
+				}
+				$listOfFields[] = $field;
+			}
+			foreach ($data as $id => $record) {
+				foreach ($record[$model->alias] as $field => $value) {
+					if (!in_array($field, $listOfFields)) {
+						unset($data[$id][$model->alias][$field]);
+					}
+				}
+			}
+		}
+		$this->_registerLog($model, $queryData, microtime(true) - $startTime, count($data));
+		$associations = $model->_associations;
+		if ($model->recursive > -1) {
+			foreach ($associations as $type) {
+				foreach ($model->{$type} as $assoc => $assocData) {
+					$linkModel = $model->{$assoc};
+
+					if ($model->useDbConfig == $linkModel->useDbConfig) {
+						$db = $this;
+					} else {
+						$db = ConnectionManager::getDataSource($linkModel->useDbConfig);
+					}
+
+					if (isset($db)) {
+						if (method_exists($db, 'queryAssociation')) {
+							$stack = array($assoc);
+							$db->queryAssociation($model, $linkModel, $type, $assoc, $assocData, $queryData, true, $data, $model->recursive - 1, $stack);
+						}
+						unset($db);
+					}
+
+				}
+			}
+		}
+
+		if ($recursive !== null) {
+			$model->recursive = $_recursive;
+		}
+		return $data;
+	}
+
+/**
+ * Conditions Filter
+ *
+ * @param Model $model
+ * @param string $record
+ * @param array $conditions
+ * @param boolean $or
+ * @return boolean
+ */
+	public function conditionsFilter(Model $model, $record, $conditions, $or = false) {
+		foreach ($conditions as $field => $value) {
+			$return = null;
+			if ($value === '') {
+				continue;
+			}
+			if (is_array($value) && in_array(strtoupper($field), array('AND', 'NOT', 'OR'))) {
+				switch (strtoupper($field)) {
+					case 'AND':
+						$return = $this->conditionsFilter($model, $record, $value);
+						break;
+					case 'NOT':
+						$return = !$this->conditionsFilter($model, $record, $value);
+						break;
+					case 'OR':
+						$return = $this->conditionsFilter($model, $record, $value, true);
+						break;
+				}
+			} else {
+				if (is_array($value)) {
+					$type = 'IN';
+				} elseif (preg_match('/^(\w+\.?\w+)\s+(=|!=|LIKE|IN|<|<=|>|>=)\s*$/i', $field, $matches)) {
+					$field = $matches[1];
+					$type = strtoupper($matches[2]);
+				} elseif (preg_match('/^(\w+\.?\w+)\s+(=|!=|LIKE|IN|<|<=|>|>=)\s+(.*)$/i', $value, $matches)) {
+					$field = $matches[1];
+					$type = strtoupper($matches[2]);
+					$value = $matches[3];
+				} else {
+					$type = '=';
+				}
+				if (strpos($field, '.') !== false) {
+					list($alias, $field) = explode('.', $field, 2);
+					if ($alias != $model->alias) {
+						continue;
+					}
+				}
+				switch ($type) {
+					case '<':
+						$return = (array_key_exists($field, $record) && $record[$field] < $value);
+						break;
+					case '<=':
+						$return = (array_key_exists($field, $record) && $record[$field] <= $value);
+						break;
+					case '=':
+						$return = (array_key_exists($field, $record) && $record[$field] == $value);
+						break;
+					case '>':
+						$return = (array_key_exists($field, $record) && $record[$field] > $value);
+						break;
+					case '>=':
+						$return = (array_key_exists($field, $record) && $record[$field] >= $value);
+						break;
+					case '!=':
+						$return = (!array_key_exists($field, $record) || $record[$field] != $value);
+						break;
+					case 'LIKE':
+						$value = preg_replace(array('#(^|[^\\\\])_#', '#(^|[^\\\\])%#'), array('$1.', '$1.*'), $value);
+						$return = (isset($record[$field]) && preg_match('#^' . $value . '$#i', $record[$field]));
+						break;
+					case 'IN':
+						$items = array();
+						if (is_array($value)) {
+							$items = $value;
+						} elseif (preg_match('/^\(\w+(,\s*\w+)*\)$/', $value)) {
+							$items = explode(',', trim($value, '()'));
+							$items = array_map('trim', $items);
+						}
+						$return = (array_key_exists($field, $record) && in_array($record[$field], (array)$items));
+						break;
+				}
+			}
+			if ($return === $or) {
+				return $or;
+			}
+		}
+		return !$or;
+	}
+
+/**
+ * Returns an calculation
+ *
+ * @param model $model
+ * @param string $type Lowercase name type, i.e. 'count' or 'max'
+ * @param array $params Function parameters (any values must be quoted manually)
+ * @return string Calculation method
+ */
+	public function calculate(Model $model, $type, $params = array()) {
+		return 'COUNT';
+	}
+
+/**
+ * Implemented to make the datasource work with Model::find('count').
+ *
+ * @return boolean Always false;
+ */
+	public function expression() {
+		return false;
+	}
+
+/**
+ * Queries associations. Used to fetch results on recursive models.
+ *
+ * @param Model $model Primary Model object
+ * @param Model $linkModel Linked model that
+ * @param string $type Association type, one of the model association types ie. hasMany
+ * @param string $association The name of the association
+ * @param array $assocData The data about the association
+ * @param array $queryData
+ * @param boolean $external Whether or not the association query is on an external datasource.
+ * @param array $resultSet Existing results
+ * @param integer $recursive Number of levels of association
+ * @param array $stack
+ */
+	public function queryAssociation(Model $model, Model $linkModel, $type, $association, $assocData, &$queryData, $external, &$resultSet, $recursive, $stack) {
+		$assocData = array_merge(array('conditions' => null, 'fields' => null, 'order' => null), $assocData);
+		if (isset($queryData['fields'])) {
+			$assocData['fields'] = array_filter(array_merge((array)$queryData['fields'], (array)$assocData['fields']));
+		}
+		if (isset($queryData['conditions'])) {
+			$assocData['conditions'] = array_filter(array_merge((array)$queryData['conditions'], (array)$assocData['conditions']));
+		}
+		$query = array(
+			'fields' => array_filter((array)$assocData['fields']),
+			'conditions' => array_filter((array)$assocData['conditions']),
+			'group' => null,
+			'order' => $assocData['order'],
+			'limit' => isset($assocData['limit']) ? $assocData['limit'] : null,
+			'page' => 1,
+			'offset' => null,
+			'callbacks' => true,
+			'recursive' => $recursive === 0 ? -1 : $recursive
+		);
+		foreach ($resultSet as &$record) {
+			$data = array();
+			if ($type === 'belongsTo') {
+				if (isset($record[$model->alias][$assocData['foreignKey']])) {
+					$conditions = array_merge($query['conditions'], array($linkModel->alias . '.' . $linkModel->primaryKey => $record[$model->alias][$assocData['foreignKey']]));
+					$limit = 1;
+					$data = $this->read($linkModel, compact('conditions', 'limit') + $query);
+				}
+			} elseif (($type === 'hasMany' || $type === 'hasOne') && $model->recursive > 0) {
+				$conditions = array_merge($query['conditions'], array($linkModel->alias . '.' . $assocData['foreignKey'] => $record[$model->alias][$model->primaryKey]));
+				$limit = $type === 'hasOne' ? 1 : $query['limit'];
+				$data = $this->read($linkModel, compact('conditions', 'limit') + $query);
+			} elseif ($type === 'hasAndBelongsToMany' && $model->recursive > 0) {
+				$joinModel = ClassRegistry::init($assocData['with']);
+				$fields = array($joinModel->alias . '.' . $assocData['associationForeignKey']);
+				$conditions = array($joinModel->alias . '.' . $assocData['foreignKey'] => $record[$model->alias][$model->primaryKey]);
+				$recursive = -1;
+				$ids = $joinModel->getDataSource()->read($joinModel, compact('fields', 'conditions', 'recursive') + $query);
+				if ($ids) {
+					$ids = Hash::extract($ids, "{n}.{$joinModel->alias}.{$assocData['associationForeignKey']}");
+					$conditions = array_merge($query['conditions'], array($linkModel->alias . '.' . $linkModel->primaryKey => $ids));
+					$data = $this->read($linkModel, compact('conditions') + $query);
+				}
+			} else {
+				continue;
+			}
+
+			if (!$data) {
+				$record += array($linkModel->alias => array());
+				continue;
+			}
+
+			$formatted = array();
+			foreach ($data as $associated) {
+				foreach ($associated as $modelName => $associatedData) {
+					if ($modelName === $linkModel->alias) {
+						continue;
+					}
+					$associated[$linkModel->alias][$modelName] = $associatedData;
+					unset($associated[$modelName]);
+				}
+				$formatted[] = $associated;
+			}
+
+			if ($type === 'hasOne' || $type === 'belongsTo') {
+				$record += array($linkModel->alias => $formatted[0][$linkModel->alias]);
+				continue;
+			}
+			$record += array($linkModel->alias => Hash::extract($formatted, "{n}.{$linkModel->alias}"));
+		}
+	}
+
+/**
+ * Get the query log as an array.
+ *
+ * @param boolean $sorted Get the queries sorted by time taken, defaults to false.
+ * @param boolean $clear Clear after return logs
+ * @return array Array of queries run as an array
+ */
+	public function getLog($sorted = false, $clear = true) {
+		if ($sorted) {
+			$log = sortByKey($this->_requestsLog, 'took', 'desc', SORT_NUMERIC);
+		} else {
+			$log = $this->_requestsLog;
+		}
+		if ($clear) {
+			$this->_requestsLog = array();
+		}
+		return array('log' => $log, 'count' => count($log), 'time' => array_sum(Hash::extract($log, '{n}.took')));
+	}
+
+/**
+ * Generate a log registry
+ *
+ * @param Model $model
+ * @param array $queryData
+ * @param float $took
+ * @param integer $numRows
+ * @return void
+ */
+	protected function _registerLog(Model $model, &$queryData, $took, $numRows) {
+		if (!Configure::read('debug')) {
+			return;
+		}
+		$this->_requestsLog[] = array(
+			'query' => $this->_pseudoSelect($model, $queryData),
+			'error' => '',
+			'affected' => 0,
+			'numRows' => $numRows,
+			'took' => round($took, 3)
+		);
+	}
+
+/**
+ * Generate a pseudo select to log
+ *
+ * @param Model $model Model
+ * @param array $queryData Query data sent by find
+ * @return string Pseudo query
+ */
+	protected function _pseudoSelect(Model $model, &$queryData) {
+		$out = '(symbolic) SELECT ';
+		if (empty($queryData['fields'])) {
+			$out .= '*';
+		} elseif ($queryData['fields']) {
+			$out .= 'COUNT(*)';
+		} else {
+			$out .= implode(', ', $queryData['fields']);
+		}
+		$out .= ' FROM ' . $model->alias;
+		if (!empty($queryData['conditions'])) {
+			$out .= ' WHERE';
+			foreach ($queryData['conditions'] as $id => $condition) {
+				if (empty($condition)) {
+					continue;
+				}
+				if (is_array($condition)) {
+					$condition = '(' . implode(', ', $condition) . ')';
+					if (strpos($id, ' ') === false) {
+						$id .= ' IN';
+					}
+				}
+				if (is_string($id)) {
+					if (strpos($id, ' ') !== false) {
+						$condition = $id . ' ' . $condition;
+					} else {
+						$condition = $id . ' = ' . $condition;
+					}
+				}
+				if (preg_match('/^(\w+\.)?\w+ /', $condition, $matches)) {
+					if (!empty($matches[1]) && substr($matches[1], 0, -1) !== $model->alias) {
+						continue;
+					}
+				}
+				$out .= ' (' . $condition . ') &&';
+			}
+			$out = substr($out, 0, -3);
+		}
+		if (!empty($queryData['order'][0])) {
+			$order = $queryData['order'];
+			if (is_array($order[0])) {
+				$new = array();
+				foreach ($order[0] as $field => $direction) {
+					$new[] = "$field $direction";
+				}
+				$order = $new;
+			}
+			$out .= ' ORDER BY ' . implode(', ', $order);
+		}
+		if (!empty($queryData['limit'])) {
+			$out .= ' LIMIT ' . (($queryData['page'] - 1) * $queryData['limit']) . ', ' . $queryData['limit'];
+		}
+		return $out;
+	}
+}
+
+<?php
+/**
+ * This file houses the MpmDbHelper class.
+ *
+ * @package mysql_php_migrations
+ * @subpackage Helpers
+ * @license    http://www.opensource.org/licenses/bsd-license.php  The New BSD License
+ * @link       http://code.google.com/p/mysql-php-migrations/
+ */
+
+/**
+ * The MpmDbHelper class is used to fetch database objects (PDO or Mysqli right now) and perform basic database actions.
+ *
+ * @package mysql_php_migrations
+ * @subpackage Helpers
+ */
+class MpmDbHelper
+{
+
+    /**
+     * Returns the correct database object based on the database configuration file.
+     *
+     * @throws Exception if database configuration file is missing or method is incorrectly defined
+     *
+     * @uses MpmDbHelper::getPdoObj()
+     * @uses MpmDbHelper::getMysqliObj()
+     * @uses MpmDbHelper::getMethod()
+     * @uses MPM_METHOD_PDO
+     * @uses MPM_METHOD_MYSQLI
+     *
+     * @return object
+     */
+    static public function getDbObj()
+    {
+		switch (MpmDbHelper::getMethod())
+		{
+		    case MPM_METHOD_PDO:
+        	    return MpmDbHelper::getPdoObj();
+            case MPM_METHOD_MYSQLI:
+                return MpmDbHelper::getMysqliObj();
+            default:
+                throw new Exception('Unknown database connection method defined in database configuration.');
+		}
+    }
+
+    /**
+     * Returns a PDO object with connection in place.
+     *
+     * @throws MpmDatabaseConnectionException if unable to connect to the database
+     *
+     * @return PDO
+     */
+    static public function getPdoObj()
+    {
+		$pdo_settings = array
+		(
+			PDO::ATTR_PERSISTENT => true,
+			PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+			PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true
+		);
+        $db_config = $GLOBALS['db_config'];
+		return new PDO("mysql:host={$db_config->host};port={$db_config->port};dbname={$db_config->name}", $db_config->user, $db_config->pass, $pdo_settings);
+    }
+
+    /**
+     * Returns an ExceptionalMysqli object with connection in place.
+     *
+     * @throws MpmDatabaseConnectionException if unable to connect to the database
+     *
+     * @return ExceptionalMysqli
+     */
+    static public function getMysqliObj()
+    {
+        $db_config = $GLOBALS['db_config'];
+        return new ExceptionalMysqli($db_config->host, $db_config->user, $db_config->pass, $db_config->name, $db_config->port);
+    }
+
+    /**
+     * Returns the correct database connection method as set in the database configuration file.
+     *
+     * @throws Exception if database configuration file is missing
+     *
+     * @return int
+     */
+    static public function getMethod()
+    {
+		if (!isset($GLOBALS['db_config']))
+		{
+			throw new Exception('Missing database configuration.');
+		}
+		$db_config = $GLOBALS['db_config'];
+		return $db_config->method;
+    }
+
+    /**
+     * Performs a query; $sql should be a SELECT query that returns exactly 1 row of data; returns an object that contains the row
+     *
+     * @uses MpmDbHelper::getDbObj()
+     * @uses MpmDbHelper::getMethod()
+     * @uses MPM_METHOD_PDO
+     * @uses MPM_METHOD_MYSQLI
+     *
+     * @param string $sql a SELECT query that returns exactly 1 row of data
+     * @param object $db  a PDO or ExceptionalMysqli object that can be used to run the query
+     *
+     * @return obj
+     */
+    static public function doSingleRowSelect($sql, &$db = null)
+    {
+        try
+        {
+            if ($db == null)
+            {
+                $db = MpmDbHelper::getDbObj();
+            }
+            switch (MpmDbHelper::getMethod())
+            {
+                case MPM_METHOD_PDO:
+                    $stmt = $db->query($sql);
+                    $obj = $stmt->fetch(PDO::FETCH_OBJ);
+                    return $obj;
+                case MPM_METHOD_MYSQLI:
+                    $stmt = $db->query($sql);
+                    $obj = $stmt->fetch_object();
+                    return $obj;
+                default:
+                    throw new Exception('Unknown method defined in database configuration.');
+            }
+        }
+        catch (Exception $e)
+        {
+            echo "\n\nError: ", $e->getMessage(), "\n\n";
+            exit;
+        }
+    }
+
+    /**
+     * Performs a SELECT query
+     *
+     * @uses MpmDbHelper::getDbObj()
+     * @uses MpmDbHelper::getMethod()
+     * @uses MPM_METHOD_PDO
+     * @uses MPM_METHOD_MYSQLI
+     *
+     * @param string $sql a SELECT query
+     *
+     * @return array
+     */
+    static public function doMultiRowSelect($sql)
+    {
+        try
+        {
+            $db = MpmDbHelper::getDbObj();
+            $results = array();
+            switch (MpmDbHelper::getMethod())
+            {
+                case MPM_METHOD_PDO:
+                    $stmt = $db->query($sql);
+                    while ($obj = $stmt->fetch(PDO::FETCH_OBJ))
+                    {
+                        $results[] = $obj;
+                    }
+                    return $results;
+                case MPM_METHOD_MYSQLI:
+                    $stmt = $db->query($sql);
+                    while($obj = $stmt->fetch_object())
+                    {
+                        $results[] = $obj;
+                    }
+                    return $results;
+                default:
+                    throw new Exception('Unknown method defined in database configuration.');
+            }
+        }
+        catch (Exception $e)
+        {
+            echo "\n\nError: ", $e->getMessage(), "\n\n";
+            exit;
+        }
+    }
+
+    /**
+     * Checks to make sure everything is in place to be able to use the migrations tool.
+     *
+     * @uses MpmDbHelper::getMethod()
+     * @uses MpmDbHelper::getPdoObj()
+     * @uses MpmDbHelper::getMysqliObj()
+     * @uses MpmDbHelper::getMethod()
+     * @uses MpmDbHelper::checkForDbTable()
+     * @uses MpmCommandLineWriter::getInstance()
+     * @uses MpmCommandLineWriter::addText()
+     * @uses MpmCommandLineWriter::write()
+     * @uses MPM_METHOD_PDO
+     * @uses MPM_METHOD_MYSQLI
+     *
+     * @return void
+     */
+    static public function test()
+    {
+        $problems = array();
+        if (!file_exists(MPM_PATH . '/config/db_config.php'))
+        {
+            $problems[] = 'You have not yet run the init command.  You must run this command before you can use any other commands.';
+        }
+        else
+        {
+            switch (MpmDbHelper::getMethod())
+            {
+                case MPM_METHOD_PDO:
+                    if (!class_exists('PDO'))
+                    {
+                        $problems[] = 'It does not appear that the PDO extension is installed.';
+                    }
+                    $drivers = PDO::getAvailableDrivers();
+                    if (!in_array('mysql', $drivers))
+                    {
+                        $problems[] = 'It appears that the mysql driver for PDO is not installed.';
+                    }
+                    if (count($problems) == 0)
+                    {
+                        try
+                        {
+                            $pdo = MpmDbHelper::getPdoObj();
+                        }
+                        catch (Exception $e)
+                        {
+                            $problems[] = 'Unable to connect to the database: ' . $e->getMessage();
+                        }
+                    }
+                    break;
+                case MPM_METHOD_MYSQLI:
+                    if (!class_exists('mysqli'))
+                    {
+                        $problems[] = "It does not appear that the mysqli extension is installed.";
+                    }
+                    if (count($problems) == 0)
+                    {
+                        try
+                        {
+                            $mysqli = MpmDbHelper::getMysqliObj();
+                        }
+                        catch (Exception $e)
+                        {
+                            $problems[] = "Unable to connect to the database: " . $e->getMessage();
+                        }
+                    }
+                    break;
+            }
+            if (!MpmDbHelper::checkForDbTable())
+            {
+                $problems[] = 'Migrations table not found in your database.  Re-run the init command.';
+            }
+            if (count($problems) > 0)
+            {
+                $obj = MpmCommandLineWriter::getInstance();
+                $obj->addText("It appears there are some problems:");
+                $obj->addText("\n");
+                foreach ($problems as $problem)
+                {
+                    $obj->addText($problem, 4);
+                    $obj->addText("\n");
+                }
+                $obj->write();
+                exit;
+            }
+        }
+    }
+
+	/**
+	 * Checks whether or not the migrations database table exists.
+	 *
+     * @uses MpmDbHelper::getDbObj()
+     * @uses MpmDbHelper::getMethod()
+     * @uses MPM_METHOD_PDO
+     * @uses MPM_METHOD_MYSQLI
+     *
+	 * @return bool
+	 */
+	static public function checkForDbTable()
+	{
+		$db_config = $GLOBALS['db_config'];
+		$migrations_table = $db_config->migrations_table;
+		if (isset($db_config->migrations_table))
+		{
+			$migrations_table = $db_config->migrations_table;
+		}
+	    $tables = MpmDbHelper::getTables();
+		if (count($tables) == 0 || !in_array($migrations_table, $tables))
+	    {
+	        return false;
+	    }
+	    return true;
+	}
+
+	/**
+	 * Returns an array of all the tables in the database.
+	 *
+	 * @uses MpmDbHelper::getDbObj()
+	 * @uses MpmDbHelper::getMethod()
+	 *
+	 * @return array
+	 */
+	static public function getTables(&$dbObj = null)
+	{
+	    if ($dbObj == null)
+	    {
+	        $dbObj = MpmDbHelper::getDbObj();
+	    }
+   		$sql = "SHOW TABLES";
+    	$tables = array();
+		switch (MpmDbHelper::getMethod())
+		{
+		    case MPM_METHOD_PDO:
+        	    try
+        	    {
+            		foreach ($dbObj->query($sql) as $row)
+            		{
+            			$tables[] = $row[0];
+            		}
+        	    }
+        	    catch (Exception $e)
+        	    {
+        	    }
+        	    break;
+        	case MPM_METHOD_MYSQLI:
+			    try
+			    {
+				    $result = $dbObj->query($sql);
+				    while ($row = $result->fetch_array())
+				    {
+					    $tables[] = $row[0];
+				    }
+			    }
+			    catch (Exception $e)
+			    {
+			    }
+			    break;
+		}
+		return $tables;
+	}
+
+}
+
+?>

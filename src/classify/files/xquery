@@ -1,0 +1,795 @@
+xquery version "3.0";
+
+(:~
+ : A module for converting between byte sequences and xs:base64Binary values.
+ :
+ : @author Leo Woerteler &lt;leo@woerteler.de&gt;
+ : @version 0.1
+ : @license BSD 2-Clause License
+ :)
+module namespace base64 = 'http://www.woerteler.de/xquery/modules/base64';
+
+(:~ Codepoint for the '=' padding character. :)
+declare %private variable $base64:PAD as xs:integer := string-to-codepoints('=');
+
+(:~ Encoding characters. :)
+declare %private variable $base64:chars := string-to-codepoints(
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/');
+
+(:~ Decoding table. :)
+declare %private variable $base64:decode-table := map:new((
+  map:entry($base64:PAD, -1),
+  for $char at $pos in $base64:chars
+  return map:entry($char, $pos - 1)
+));
+
+(:~
+ : Encodes a sequence of <code>xs:byte</code>s into an <code>xs:base64Binary</code> value.
+ : @param $bytes byte sequence to be converted
+ : @return the <code>xs:base64Binary</code> value encoding the bytes
+ :)
+declare %public function base64:encode(
+  $bytes as xs:byte*
+) as xs:base64Binary {
+  xs:base64Binary(
+    codepoints-to-string(
+      let $state :=
+        fold-left(
+          function($state as map(xs:string, xs:integer*), $byte as xs:byte) {
+            let $bits  := $state('bits') * 256 + ($byte + 256) mod 256,
+                $n     := ($state('n') + 8) mod 6,
+                $rest  := (1, 4, 16)[$n idiv 2 + 1],
+                $use   := $bits idiv $rest
+            return map {
+              'bits' := $bits mod $rest,
+              'n'    := $n,
+              'cps'  := (
+                $state('cps'),
+                if($n eq 0) then $base64:chars[$use idiv 64 + 1] else (),
+                $base64:chars[$use mod 64 + 1]
+              )
+            }
+          },
+          map { 'bits' := 0, 'n' := 0, 'cps' := () },
+          $bytes
+        )
+      return (
+        $state('cps'),
+        switch($state('n'))
+          case 2 return ($base64:chars[$state('bits') * 16 + 1], $base64:PAD, $base64:PAD)
+          case 4 return ($base64:chars[$state('bits') *  4 + 1], $base64:PAD)
+          default return ()
+      )
+    )
+  )
+};
+
+(:~
+ : Decodes a sequence of bytes from a <code>xs:base64Binary</code> value.
+ : @param $b64 value to be decoded
+ : @return decoded bytes
+ :)
+declare %public function base64:decode(
+  $b64 as xs:base64Binary
+) as xs:byte* {
+  let $start  := map { 'more' := 4, 'out' := 3, 'bits' := 0, 'bytes' := () },
+      $result := fold-left(
+        function($state as map(xs:string, xs:integer*), $val as xs:integer) {
+          let $more := $state('more') - 1,
+              $bits := if($val ge 0) then $state('bits') * 64 + $val else $state('bits'),
+              $out  := if($val ge 0) then $state('out') else $state('out') - 1
+          return if($more eq 0) then map:new((
+            $start,
+            map:entry('bytes', (
+                $state('bytes'),
+                switch($out)
+                  case 3 return ($bits idiv 65536, $bits idiv 256 mod 256, $bits mod 256)
+                  case 2 return ($bits idiv  1024, $bits idiv   4 mod 256)
+                  default return $bits idiv    16
+              )
+            )
+          )) else map {
+            'more' := $more, 'out' := $out, 'bits' := $bits, 'bytes' := $state('bytes')
+          }
+        },
+        $start,
+        for $cp in string-to-codepoints(xs:string($b64))
+        return $base64:decode-table($cp)
+      )
+  for $byte in $result('bytes')
+  return xs:byte(if($byte ge 128) then $byte - 256 else $byte)
+};
+
+xquery version "3.0";
+
+(:~
+ : A simple Skew Heap implementation.
+ :
+ : @author Leo Woerteler &lt;leo@woerteler.de&gt;
+ : @version 0.1
+ : @license BSD 2-Clause License
+ :)
+module namespace heap = 'http://www.woerteler.de/xquery/modules/heap';
+
+import module namespace pair = 'http://www.woerteler.de/xquery/modules/pair'
+    at 'pair.xqm';
+
+import module namespace queue = 'http://www.woerteler.de/xquery/modules/queue'
+    at 'queue.xqm';
+
+(:~
+ : Creates a new empty binary heap with a given comparison function.
+ :
+ : @param $leq comparison function, returns true() if
+ :   the first argument is less-than-or-equal to the second one
+ : @return a new empty binary heap
+ :)
+declare %public function heap:new(
+  $leq as function(item()*, item()*) as xs:boolean
+) as function(*) {
+  pair:new($leq, heap:empty())
+};
+
+(:~
+ : Check if the given heap is empty.
+ : @param $heap the heap to check
+ : @return <code>true()</code> if the heap is empty, <code>false()</code> otherwise
+ :)
+declare %public function heap:is-empty(
+  $heap as function(*)
+) as xs:boolean {
+  heap:extract-min(
+    $heap,
+    function() { true() },
+    function($h, $t) { false() }
+  )
+};
+
+(:~
+ : Inserts a value into a heap.
+ :
+ : @param $heap heap to insert the value into
+ : @param $x value to insert
+ : @return the heap where $x is inserted
+ :)
+declare %public function heap:insert(
+  $heap as function(*),
+  $x as item()*
+) as function(*) {
+  pair:deconstruct(
+    $heap,
+    function($leq, $root) {
+      pair:new(
+        $leq,
+        heap:union(
+          $leq,
+          function($_, $b) {
+            $b(heap:empty(), $x, heap:empty())
+          },
+          $root
+        )
+      )
+    }
+  )
+};
+
+(:~
+ : Tries to extract the minimum element from this heap and either calls the
+ : callback for the non-empty heap with the minimal element and the rest of the heap
+ : or the one for the empty heap.
+ :
+ : @param $heap the heap to extract the minimum from
+ : @param $empty callback for the empty heap
+ : @param $non-empty callback for the non-empty heap
+ : @return result of the callback
+ :)
+declare %public function heap:extract-min(
+  $heap as function(*),
+  $empty as function() as item()*,
+  $non-empty as function(item()*, function(*)) as item()*
+) as item()* {
+  pair:deconstruct(
+    $heap,
+    function($leq, $root) {
+      $root(
+        $empty,
+        function($l, $x, $r) {
+          $non-empty($x, pair:new($leq, heap:union($leq, $l, $r)))
+        }
+      )
+    }
+  )
+};
+
+(:~
+ : Sorts the given sequence according to the given less-than predicate.
+ : @param $lt less-than predicate
+ : @param $seq sequence to sort
+ : @return the sorted sequence
+ :)
+declare %public function heap:sort(
+  $lt as function(item(), item()) as item()*,
+  $seq as item()*
+) as item()* {
+  if(empty($seq)) then ()
+  else heap:values(
+    $lt,
+    heap:build(
+      fold-left(
+        $seq,
+        queue:empty(),
+        function($q, $it) {
+          queue:enqueue(heap:singleton($it), $q)
+        }
+      ),
+      $lt
+    ),
+    ()
+  )
+};
+
+(::::::::::::::::::::::::::: private functions :::::::::::::::::::::::::::)
+
+declare %private function heap:build($queue, $cmp) {
+  queue:match(
+    $queue,
+    function() {
+      (: empty queue, should not happen :)
+      error(xs:QName('heap:EMPTYQUE'), 'empty queue')
+    },
+    function($h1, $queue2) {
+      queue:match(
+        $queue2,
+        function() {
+          (: only one heap left, we are finished :)
+          $h1
+        },
+        function($h2, $queue3) {
+          (: at least to heaps, union them and put the result back in the queue :)
+          let $h := heap:union($cmp, $h1, $h2)
+          return heap:build(queue:enqueue($h, $queue3), $cmp)
+        }
+      )
+    }
+  )
+};
+
+declare %private function heap:values(
+  $cmp as function(item(), item()) as item()*,
+  $heap as function(*),
+  $seq as item()*
+) as item()* {
+  $heap(
+    function() { $seq },
+    function($l, $x, $r) {
+      heap:values($cmp, heap:union($cmp, $l, $r), ($seq, $x))
+    }
+  )
+};
+
+declare %private function heap:empty() {
+  function($empty, $branch) { $empty() }
+};
+
+declare %private function heap:singleton($x) {
+  heap:branch(heap:empty(), $x, heap:empty())
+};
+
+declare %private function heap:branch($left, $x, $right) {
+  function($empty, $branch) {
+    $branch($left, $x, $right)
+  }
+};
+
+declare %private function heap:union($leq, $left, $right) {
+  $left(
+    function() { $right },
+    function($ll, $lx, $lr) {
+      $right(
+        function() { $left },
+        function($rl, $rx, $rr) {
+          if($leq($lx, $rx))
+            then heap:branch($lr, $lx, heap:union($leq, $ll, $right))
+            else heap:branch($rr, $rx, heap:union($leq, $rl, $left))
+        }
+      )
+    }
+  )
+};
+xquery version "3.0";
+
+(:~
+ : Abstract interface for a set of integers.
+ :
+ : @author Leo Woerteler &lt;leo@woerteler.de&gt;
+ : @version 0.1
+ : @license BSD 2-Clause License
+ :)
+module namespace int-set = 'http://www.woerteler.de/xquery/modules/int-set';
+
+(:: )
+import module namespace impl = "http://www.woerteler.de/xquery/modules/int-set/jpcs"
+    at 'int_set/jpcs.xqm';
+( ::)
+
+(::)
+import module namespace impl = "http://www.woerteler.de/xquery/modules/int-set/lw"
+    at 'int_set/lw.xqm';
+(::)
+
+(:~
+ : Returns the empty set.
+ : @return the empty set
+ :)
+declare function int-set:empty() {
+  impl:empty()
+};
+
+(:~
+ : Inserts the given integer into the given set and returns the resulting set.
+ : @param $set set to insert into
+ : @param $x element to insert
+ : @return the set that contains <code>$x</code> in addition to
+           all elements of <code>$set</code>
+ :)
+declare function int-set:insert(
+  $set as item()*,
+  $x as xs:integer
+) as item()* {
+  impl:insert($set, $x)
+};
+
+(:~
+ : Checks if the given element is contained in the given set.
+ : @param $set set to search in
+ : @param $x element to look for
+ : @return <code>true()</code> if the element is contained in the set,
+           <code>false()</code> otherwise
+ :)
+declare function int-set:contains(
+  $set as item()*,
+  $x as xs:integer
+) as item()* {
+ impl:contains($set, $x)
+};
+xquery version "3.0";
+
+(:~
+ : A linked list.
+ :
+ : @author Leo Woerteler &lt;leo@woerteler.de&gt;
+ : @version 0.1
+ : @license BSD 2-Clause License
+ :)
+module namespace list = 'http://www.woerteler.de/xquery/modules/list';
+
+(:~
+ : Returns the empty list.
+ : @return empty list
+ :)
+declare %public function list:nil() {
+  function($nil, $cons) {
+    $nil()
+  }
+};
+
+(:~
+ : Creates a non-empty list with the given first element and rest of the list.
+ :
+ : @param $head the first element
+ : @param $tail rest of the list
+ : @return non-empty list
+ :)
+declare %public function list:cons(
+  $head as item()*,
+  $tail as function(*)
+) as function(*) {
+  function($nil, $cons) {
+    $cons($head, $tail)
+  }
+};
+
+(:~
+ : Performs case analysis on the given list and calls the corresponding
+ : callback for an empty and non-empty list.
+ :
+ : @param $list list to match
+ : @param $nil callback for the empty list
+ : @param $cons case for the non-empty list
+ : @return result of the callback
+ :)
+declare %public function list:match(
+  $list as function(*),
+  $nil as function(*),
+  $cons as function(*)
+) as item()* {
+  $list($nil, $cons)
+};
+
+(:~
+ : Performs a left fold on the given list.
+ :
+ : @param $f combining function
+ : @param $z starting value
+ : @param $list list to fold over
+ : @return the folding result
+ :)
+declare %public function list:fold-left(
+  $f as function(item()*, item()*) as item()*,
+  $z as item()*,
+  $list as function(*)
+) as item()* {
+  let $go :=
+      function($go, $acc, $xs) {
+        $xs(
+          function() { $acc },
+          function($hd, $tl) { $go($go, $f($acc, $hd), $tl) }
+        )
+      }
+  return $go($go, $z, $list)
+};
+
+(:~
+ : Performs a right fold on the given list.
+ :
+ : @param $f combining function
+ : @param $z starting value
+ : @param $list list to fold over
+ : @return the folding result
+ :)
+declare %public function list:fold-right(
+  $f as function(item()*, item()*) as item()*,
+  $z as item()*,
+  $list as function(*)
+) as item()* {
+  let $go :=
+      function($go, $xs) {
+        $xs(
+          function() { $z },
+          function($hd, $tl) { $f($hd, $go($go, $tl)) }
+        )
+      }
+  return $go($go, $list)
+};
+
+(:~
+ : Reverses the given list.
+ :
+ : @param $list the list to reverse
+ : @return the reversed list
+ :)
+declare %public function list:reverse(
+  $list as function(*)
+) as function(*) {
+  list:fold-left(
+    function($xs, $x) { list:cons($x, $xs) },
+    list:nil(),
+    $list
+  )
+};
+xquery version "3.0";
+
+(:~
+ : Abstract interface for an ordered map.
+ :
+ : @author Leo Woerteler &lt;leo@woerteler.de&gt;
+ : @version 0.1
+ : @license BSD 2-Clause License
+ :)
+module namespace ordered-map = 'http://www.woerteler.de/xquery/modules/ordered-map';
+
+(:~ Pairs for grouping root and less-than predicate together. :)
+import module namespace pair = 'http://www.woerteler.de/xquery/modules/pair' at 'pair.xqm';
+
+(:~
+ : The exchangeable implementation of the map.
+ : Each implementation has to provide the following methods:
+ : <ul>
+ :   <li><code>empty() as item()*</code> returns the empty map</li>
+ :   <li><code>lookup($lt, $root, $key, $found, $notFound) as item()*</code>
+ :         searches for the given key and calls <code>$found($val)</code>
+ :         if the map contains the entry <code>($key, $val)</code>
+ :         and <code>$notFound()</code> otherwise</li>
+ :   <li><code>insert($lt, $root, $key, $val) as item()*</code>
+ :         inserts the entry <code>($key, $val)</code> into <code>$root</code>
+ :         and returns the resulting map</li>
+ :   <li><code>delete($lt, $root, $key) as item()*</code>
+ :         deletes the entry with key <code>$key</code> from <code>$root</code>
+ :         and returns the resulting map</li>
+ :   <li><code>check($lt, $root, $min, $max, $msg) as item()*</code></li>
+ :   <li><code>fold($node, $acc, $f) as item()*</code></li>
+ :   <li><code>to-xml($root) as element()</code></li>
+ : </ul>
+ :)
+import module namespace impl = 'http://www.woerteler.de/xquery/modules/ordered-map/avltree'
+  at 'ordered_map/avltree.xqm';
+
+(:~
+ : Creates a new map with the given less-than predicate.
+ : @param $lt less-than predicate
+ : @return the empty map
+ :)
+declare %public function ordered-map:new(
+  $lt as function(item()*, item()*) as xs:boolean
+) as function(*) {
+  pair:new($lt, impl:empty())
+};
+
+(:~
+ : Looks up the given key in the given map and calls the corresponding callback.
+ : @param $m the map to search in
+ : @param $k key to look up
+ : @param $found callback for when the key was found
+ : @param $notFound callback for when the key was not found
+ : @return result from the callback
+ :)
+declare %public function ordered-map:lookup(
+  $m as function(*),
+  $k as item()*,
+  $found as function(item()*) as item()*,
+  $notFound as function() as item()*
+) as item()* {
+  pair:deconstruct(
+    $m,
+    function($lt, $root) {
+      impl:lookup($lt, $root, $k, $found, $notFound)
+    }
+  )
+};
+
+(:~
+ : Checks if the given map contains an entry with the given key.
+ :
+ : @param $m map to look in
+ : @param $k key to look for
+ : @return <code>true()</code> if the key is in the map, <code>false()</code> otherwise
+ :)
+declare %public function ordered-map:contains(
+  $m as function(*),
+  $k as item()*
+) as xs:boolean {
+  ordered-map:lookup(
+    $m,
+    $k,
+    function($_) { true()  },
+    function()   { false() }
+  )
+};
+
+(:~
+ : Gets the value bound to the given key in the given map.
+ :
+ : @param $m the map
+ : @param $k key to look up
+ : @return the bound value if the key exists in the map, <code>()</code> otherwise
+ :)
+declare %public function ordered-map:get(
+  $m as function(*),
+  $k as item()*
+) as item()* {
+  ordered-map:lookup(
+    $m,
+    $k,
+    function($v) { $v },
+    function() { () }
+  )
+};
+
+(:~
+ : Determines the number of entries in the given map.
+ : @param $m map to determine the number of entries of
+ : @return number of entries
+ :)
+declare %public function ordered-map:size(
+  $m as function(*)
+) as xs:integer {
+  impl:fold(
+    pair:second($m),
+    0,
+    function($size, $k, $v) { $size + 1 }
+  )
+};
+
+(:~
+ : Inserts the given key and value into the given map and returns the new map.
+ : @param $m map to insert into
+ : @param $k key to insert
+ : @param $v value to insert
+ : @return the new map
+ :)
+declare %public function ordered-map:insert(
+  $m as function(*),
+  $k as item()*,
+  $v as item()*
+) as item()* {
+  pair:deconstruct(
+    $m,
+    function($lt, $root) {
+      pair:new($lt, impl:insert($lt, $root, $k, $v))
+    }
+  )
+};
+
+(:~
+ : Deletes the given key from the map if it exists.
+ : @param $m map to delete from
+ : @param $k key to delete
+ : @return map that does not contain the deleted key
+ :)
+declare %public function ordered-map:delete(
+  $m as function(*),
+  $k as item()*
+) as function(*) {
+  pair:deconstruct(
+    $m,
+    function($lt, $root) {
+      pair:new($lt, impl:delete($lt, $root, $k))
+    }
+  )
+};
+
+(:~
+ : Parse PathPattern.
+ :
+ : @param $input the input string.
+ : @param $state the parser state.
+ : @return the updated parser state.
+ :)
+declare function p:parse-PathPattern($input as xs:string, $state as item()+) as item()+
+{
+  let $count := count($state)
+  let $state := p:lookahead1W(144, $input, $state)          (: S^WS | QName^Token | Wildcard | ('(' ':') | '/' | '//' |
+                                                               '@' | 'ancestor' | 'ancestor-or-self' | 'and' |
+                                                               'ascending' | 'attribute' | 'case' | 'cast' |
+                                                               'castable' | 'child' | 'collation' | 'comment' |
+                                                               'declare' | 'default' | 'descendant' |
+                                                               'descendant-or-self' | 'descending' | 'div' |
+                                                               'document' | 'document-node' | 'element' | 'else' |
+                                                               'empty' | 'empty-sequence' | 'eq' | 'every' | 'except' |
+                                                               'following' | 'following-sibling' | 'for' | 'ge' | 'gt' |
+                                                               'id' | 'idiv' | 'if' | 'import' | 'include' |
+                                                               'instance' | 'intersect' | 'is' | 'item' | 'key' | 'le' |
+                                                               'let' | 'lt' | 'mod' | 'module' | 'namespace' | 'ne' |
+                                                               'node' | 'or' | 'order' | 'ordered' | 'param' |
+                                                               'parent' | 'preceding' | 'preceding-sibling' |
+                                                               'processing-instruction' | 'return' | 'satisfies' |
+                                                               'schema-attribute' | 'schema-element' | 'self' | 'some' |
+                                                               'stable' | 'text' | 'to' | 'treat' | 'typeswitch' |
+                                                               'union' | 'unordered' | 'validate' | 'where' | 'xquery' :)
+  let $state :=
+    if ($state[$p:l1] = 46) then                            (: '/' :)
+      let $state := p:shift(46, $input, $state)             (: '/' :)
+      let $state := p:lookahead1W(143, $input, $state)      (: S^WS | QName^Token | Wildcard | ('(' ':') | ')' | ';' |
+                                                               '@' | 'ancestor' | 'ancestor-or-self' | 'and' |
+                                                               'ascending' | 'attribute' | 'case' | 'cast' |
+                                                               'castable' | 'child' | 'collation' | 'comment' |
+                                                               'declare' | 'default' | 'descendant' |
+                                                               'descendant-or-self' | 'descending' | 'div' |
+                                                               'document' | 'document-node' | 'element' | 'else' |
+                                                               'empty' | 'empty-sequence' | 'eq' | 'every' | 'except' |
+                                                               'following' | 'following-sibling' | 'for' | 'ge' | 'gt' |
+                                                               'idiv' | 'if' | 'import' | 'include' | 'instance' |
+                                                               'intersect' | 'is' | 'item' | 'le' | 'let' | 'lt' |
+                                                               'mod' | 'module' | 'namespace' | 'ne' | 'node' | 'or' |
+                                                               'order' | 'ordered' | 'param' | 'parent' | 'preceding' |
+                                                               'preceding-sibling' | 'processing-instruction' |
+                                                               'return' | 'satisfies' | 'schema-attribute' |
+                                                               'schema-element' | 'self' | 'some' | 'stable' | 'text' |
+                                                               'to' | 'treat' | 'typeswitch' | 'union' | 'unordered' |
+                                                               'validate' | 'where' | 'xquery' | '|' :)
+      let $state :=
+        if ($state[$p:error]) then
+          $state
+        else if ($state[$p:l1] != 36                        (: ')' :)
+             and $state[$p:l1] != 52                        (: ';' :)
+             and $state[$p:l1] != 173) then                 (: '|' :)
+          let $state := p:parse-RelativePathPattern($input, $state)
+          return $state
+        else
+          $state
+      return $state
+    else if ($state[$p:l1] = 47) then                       (: '//' :)
+      let $state := p:shift(47, $input, $state)             (: '//' :)
+      let $state := p:lookahead1W(20, $input, $state)       (: EPSILON | S^WS | ('(' ':') :)
+      let $state := p:parse-RelativePathPattern($input, $state)
+      return $state
+    else if ($state[$p:l1] = 112                            (: 'id' :)
+          or $state[$p:l1] = 123) then                      (: 'key' :)
+      let $state := p:parse-IdKeyPattern($input, $state)
+      let $state := p:lookahead1W(88, $input, $state)       (: S^WS | ('(' ':') | ')' | '/' | '//' | ';' | '|' :)
+      let $state :=
+        if ($state[$p:error]) then
+          $state
+        else if ($state[$p:l1] = 46                         (: '/' :)
+              or $state[$p:l1] = 47) then                   (: '//' :)
+          let $state :=
+            if ($state[$p:l1] = 46) then                    (: '/' :)
+              let $state := p:shift(46, $input, $state)     (: '/' :)
+              return $state
+            else if ($state[$p:error]) then
+              $state
+            else
+              let $state := p:shift(47, $input, $state)     (: '//' :)
+              return $state
+          let $state := p:lookahead1W(20, $input, $state)   (: EPSILON | S^WS | ('(' ':') :)
+          let $state := p:parse-RelativePathPattern($input, $state)
+          return $state
+        else
+          $state
+      return $state
+    else if ($state[$p:error]) then
+      $state
+    else
+      let $state := p:parse-RelativePathPattern($input, $state)
+      return $state
+  return p:reduce($state, "PathPattern", $count)
+};
+
+(:~
+ : Parse Pattern.
+ :
+ : @param $input the input string.
+ : @param $state the parser state.
+ : @return the updated parser state.
+ :)
+declare function p:parse-Pattern($input as xs:string, $state as item()+) as item()+
+{
+  let $count := count($state)
+  let $state := p:parse-PathPattern($input, $state)
+  let $state := p:lookahead1W(20, $input, $state)           (: EPSILON | S^WS | ('(' ':') :)
+  let $state := p:parse-NextPathPatternOpt($input, $state)
+  return p:reduce($state, "Pattern", $count)
+};
+
+(:~
+ : Parse Carrot.
+ :
+ : @param $input the input string.
+ : @param $state the parser state.
+ : @return the updated parser state.
+ :)
+declare function p:parse-Carrot($input as xs:string, $state as item()+) as item()+
+{
+  let $count := count($state)
+  let $state := p:lookahead1W(20, $input, $state)           (: EPSILON | S^WS | ('(' ':') :)
+  let $state := p:parse-CarrotModule($input, $state)
+  let $state := p:lookahead1W(25, $input, $state)           (: S^WS | EOF | ('(' ':') :)
+  let $state := p:shift(25, $input, $state)                 (: EOF :)
+  return p:reduce($state, "Carrot", $count)
+};
+
+(:~
+ : Parse start symbol Carrot from given string.
+ :
+ : @param $s the string to be parsed.
+ : @return the result as generated by parser actions.
+ :)
+declare function p:parse-Carrot($s as xs:string) as item()*
+{
+  let $state := p:parse-Carrot($s, (0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, false()))
+  let $error := $state[$p:error]
+  return
+    if ($error) then
+      element ERROR {$error/@*, p:error-message($s, $error)}
+    else
+      subsequence($state, $p:result)
+};
+
+(:~
+ : Parse start symbol KeyValuePairs from given string.
+ :
+ : @param $s the string to be parsed.
+ : @return the result as generated by parser actions.
+ :)
+declare function p:parse-KeyValuePairs($s as xs:string) as item()*
+{
+  let $state := p:parse-KeyValuePairs($s, (0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, false()))
+  let $error := $state[$p:error]
+  return
+    if ($error) then
+      element ERROR {$error/@*, p:error-message($s, $error)}
+    else
+      subsequence($state, $p:result)
+};
+
+(: End :)

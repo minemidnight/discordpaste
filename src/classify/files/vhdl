@@ -1,0 +1,1989 @@
+LIBRARY IEEE;
+USE ieee.std_logic_1164.all;
+USE ieee.std_logic_arith.all;		 
+USE ieee.std_logic_unsigned.all;
+
+Library UNISIM;
+use UNISIM.vcomponents.all;
+
+
+entity hdmi2usb is 
+generic (
+	SIMULATION             	  : string := "FALSE";
+	C3_P0_MASK_SIZE           : integer := 4;
+    C3_P0_DATA_PORT_SIZE      : integer := 32;
+    C3_P1_MASK_SIZE           : integer := 4;
+    C3_P1_DATA_PORT_SIZE      : integer := 32;
+    C3_MEMCLK_PERIOD          : integer := 3200;
+    C3_RST_ACT_LOW            : integer := 0;
+    C3_INPUT_CLK_TYPE         : string := "SINGLE_ENDED";
+    C3_CALIB_SOFT_IP          : string := "TRUE";
+    C3_SIMULATION             : string := "FALSE";
+    DEBUG_EN                  : integer := 0;
+    C3_MEM_ADDR_ORDER         : string := "ROW_BANK_COLUMN";
+    C3_NUM_DQ_PINS            : integer := 16;
+    C3_MEM_ADDR_WIDTH         : integer := 13;
+    C3_MEM_BANKADDR_WIDTH     : integer := 3
+);
+
+port
+(
+	HDMI_RX0_tmds_p	: in std_logic_vector(3 downto 0);
+	HDMI_RX0_tmds_n	: in std_logic_vector(3 downto 0);
+	HDMI_RX0_scl    : in std_logic;    -- DDC scl connected with PC
+	HDMI_RX0_sda    : inout std_logic; -- DDC sda connected with PC
+
+	HDMI_RX1_tmds_p	: in std_logic_vector(3 downto 0);
+	HDMI_RX1_tmds_n : in std_logic_vector(3 downto 0);
+	HDMI_RX1_scl    : in std_logic;    -- DDC scl connected with PC
+	HDMI_RX1_sda    : inout std_logic; -- DDC sda connected with PC
+
+	HDMI_TX0_tmds_p	: out std_logic_vector(3 downto 0);
+	HDMI_TX0_tmds_n : out std_logic_vector(3 downto 0);
+	HDMI_TX0_scl    : out std_logic;   -- DDC scl connected with LCD
+	HDMI_TX0_sda    : inout std_logic; -- DDC sda connected with LCD
+
+	HDMI_TX1_tmds_p	: out std_logic_vector(3 downto 0);
+	HDMI_TX1_tmds_n : out std_logic_vector(3 downto 0);
+	-- HDMI_TX1_scl    : out std_logic;   -- DDC scl connected with LCD
+	-- HDMI_TX1_sda    : inout std_logic; -- DDC sda connected with LCD
+
+	btnc 		: in std_logic;
+	btnu		: in std_logic; 
+	btnl		: in std_logic;
+	btnr		: in std_logic; 
+	btnd		: in std_logic; 
+
+	LED 		: out std_logic_vector(7 downto 0);
+	sw 			: in std_logic_vector(7 downto 0);
+
+	-- USB Chip
+	fx2_addr 		: out std_logic_vector(1 downto 0);
+	fx2_data 		: inout std_logic_vector(7 downto 0);
+	fx2_flagA 		: in std_logic;
+	fx2_flagB 		: in std_logic; -- flag_full(flagB)
+	fx2_flagC 		: in std_logic; -- flag_empty(flagC)
+	fx2_slwr 		: out std_logic;
+	fx2_slrd 		: out std_logic;
+	fx2_sloe 		: out std_logic;
+	fx2_pktend 		: out std_logic;
+	fx2_slcs 		: out std_logic;
+	fx2_ifclk 		: in std_logic;
+
+	-- DDR2 RAM
+	mcb3_dram_dq 	: inout std_logic_vector(15 downto 0);
+	mcb3_dram_a 	: out std_logic_vector(12 downto 0);
+	mcb3_dram_ba 	: out std_logic_vector(2 downto 0);
+	mcb3_dram_ras_n : out std_logic;
+	mcb3_dram_cas_n	: out std_logic;
+	mcb3_dram_we_n	: out std_logic;
+	mcb3_dram_cke	: out std_logic;
+	mcb3_dram_dm	: out std_logic;
+	mcb3_dram_udqs 	: inout std_logic;
+	mcb3_dram_udqs_n: inout std_logic;
+	mcb3_rzq		: inout std_logic;
+	mcb3_zio		: inout std_logic;
+	mcb3_dram_udm	: out std_logic;
+	mcb3_dram_odt	: out std_logic;
+	mcb3_dram_dqs	: inout std_logic;
+	mcb3_dram_dqs_n	: inout std_logic;
+	mcb3_dram_ck	: out std_logic;
+	mcb3_dram_ck_n	: out std_logic;
+
+	--UART
+	rx : in std_logic;
+	tx : out std_logic;
+
+	rst_n : in std_logic;
+	clk	: in std_logic
+);
+
+end entity hdmi2usb;
+
+architecture rtl of hdmi2usb is 
+
+
+
+signal de_H : std_logic;
+signal de : std_logic;
+signal hsync : std_logic;
+signal vsync : std_logic;
+signal pclk_H : std_logic;
+signal resx : std_logic_vector(15 DOWNTO 0);
+signal resy : std_logic_vector(15 DOWNTO 0);
+signal rgb : std_logic_vector(23 DOWNTO 0);
+
+signal rgb_H : std_logic_vector(23 DOWNTO 0);
+
+
+signal rdy_H0 : std_logic;
+signal de_H0 : std_logic;
+signal rgb_H0 : std_logic_vector(23 downto 0);
+signal hsync_H0 : std_logic;
+signal vsync_H0 : std_logic;
+signal pclk_H0 : std_logic;
+signal resx_H0 : std_logic_vector(15 DOWNTO 0);
+signal resy_H0 : std_logic_vector(15 DOWNTO 0);
+
+signal rdy_H1 : std_logic;
+signal de_H1 : std_logic;
+signal rgb_H1 : std_logic_vector(23 downto 0);
+signal hsync_H1 : std_logic;
+signal vsync_H1 : std_logic;
+signal pclk_H1 : std_logic;
+signal resx_H1 : std_logic_vector(15 DOWNTO 0);
+signal resy_H1 : std_logic_vector(15 DOWNTO 0);
+
+
+
+signal de_vga : std_logic;
+signal hsync_vga : std_logic;
+signal vsync_vga : std_logic;
+signal pclk_vga : std_logic;
+signal resx_vga : std_logic_vector(15 DOWNTO 0);
+signal resy_vga : std_logic_vector(15 DOWNTO 0);
+signal rgb_vga : std_logic_vector(23 downto 0);
+
+
+signal de_tp : std_logic;
+signal hsync_tp : std_logic;
+signal vsync_tp : std_logic;
+signal pclk_tp : std_logic;
+signal resx_tp : std_logic_vector(15 DOWNTO 0);
+signal resy_tp : std_logic_vector(15 DOWNTO 0);
+signal rgb_tp : std_logic_vector(23 downto 0);
+
+signal rst : std_logic;
+
+signal edid0_byte : std_logic_vector(7 downto 0);
+signal edid0_byte_en : std_logic;
+signal hpd : std_logic;
+signal edid1_byte : std_logic_vector(7 downto 0);
+signal edid1_byte_en : std_logic;
+
+
+signal slwr_i : std_logic;
+signal cmd_en : std_logic;
+signal cmd_byte : std_logic_vector(7 downto 0);
+signal uvc_rst : std_logic;
+signal jpg_start : std_logic;
+signal jpg_done : std_logic;
+signal jpg_busy : std_logic;
+signal hdmi_cmd : std_logic_vector(1 downto 0);
+signal dvi_only : std_logic_vector(1 downto 0);
+signal usb_cmd : std_logic_vector(2 downto 0);
+signal selector_cmd : std_logic_vector(12 downto 0);
+signal status : std_logic_vector(4 downto 0);
+signal img_clk : std_logic;
+signal jpg_enable : std_logic;
+signal raw_fifo_full : std_logic;
+signal img_out_en : std_logic;
+signal ycbcr_en : std_logic;
+signal img_out : std_logic_vector(23 downto 0);
+signal ycbcr : std_logic_vector(23 downto 0);
+signal jpeg_encoder_cmd : std_logic_vector(1 downto 0);
+signal outif_almost_full : std_logic;
+signal btnr_s : std_logic;
+signal btnu_s : std_logic;
+signal btnd_s : std_logic;
+signal btnl_s : std_logic;
+signal jpeg_byte : std_logic_vector(7 downto 0);
+signal jpeg_en : std_logic;
+signal jpg_fifo_afull : std_logic;
+signal error_ram : std_logic;
+signal to_send : std_logic_vector(23 downto 0);
+signal pktend_s:std_logic;
+signal HB_on : std_logic;
+signal rd_uart_s : std_logic;
+signal rx_empty_s : std_logic;
+signal uart_din_s : std_logic_vector(7 downto 0);
+signal dout : std_logic_vector(15 downto 0);
+
+--debug signals
+signal write_img:std_logic;
+signal no_frame_read:std_logic;
+signal uart_byte:std_logic_vector(7 downto 0);
+signal uart_en: std_logic;
+signal clk_50Mhz:std_logic;
+signal frame_size:std_logic_vector(23 downto 0);
+signal debug_byte:std_logic_vector(7 downto 0);
+signal debug_index:integer range 0 to 15;
+signal eof_jpg: std_logic;
+
+---------------------------------------------------------------------------------------------------------------------	
+begin
+
+rst <= not rst_n;
+fx2_slcs <= '0';
+fx2_slwr <= slwr_i;
+
+LED(0) <= de_H0;
+LED(1) <= de_H1;
+LED(2) <= usb_cmd(1);
+LED(3) <= fx2_flagB; -- full flag
+LED(4) <= fx2_flagC; -- empty flag
+LED(5) <= slwr_i;
+LED(6) <= selector_cmd(0);
+LED(7) <= selector_cmd(1);
+
+fx2_pktend <= pktend_s;
+
+debouncerBtnc : entity work.debouncer
+	port map(clk    => img_clk,
+		     rst_n  => rst_n,
+		     insig  => btnc,
+		     outsig => hpd);
+			 
+debouncerBtnu : entity work.debouncer
+	port map(clk    => img_clk,
+		     rst_n  => rst_n,
+		     insig  => btnu,
+		     outsig => btnu_s);
+		     
+debouncerBtnd : entity work.debouncer
+	port map(clk    => img_clk,
+		     rst_n  => rst_n,
+		     insig  => btnd,
+		     outsig => btnd_s);		     
+
+debouncerBtnl : entity work.debouncer
+	port map(clk    => img_clk,
+		     rst_n  => rst_n,
+		     insig  => btnl,
+		     outsig => btnl_s);		     
+
+debouncerBtnr : entity work.debouncer
+	port map(clk    => img_clk,
+		     rst_n  => rst_n,
+		     insig  => btnr,
+		     outsig => btnr_s);		     
+
+		     
+jpeg_encoder : entity work.jpeg_encoder_top
+	port map(
+		     --debug signal
+		     frame_size        => frame_size,
+		     clk               => img_clk,
+		     uvc_rst             => uvc_rst,
+		     iram_wdata        => img_out,
+		     iram_wren         => img_out_en,
+		     iram_fifo_afull   => jpg_fifo_afull,
+		     ram_byte          => jpeg_byte,
+		     ram_wren          => jpeg_en,
+		     outif_almost_full => outif_almost_full,
+		     resx              => resx,
+		     resy              => resy,
+		     jpeg_encoder_cmd  => jpeg_encoder_cmd,
+			 enable				=> jpg_enable,
+		     start             => jpg_start,
+		     done              => jpg_done,
+		     busy              => jpg_busy);
+			 
+		     
+jpg_enable <= (usb_cmd(2) and usb_cmd(1));
+		     
+ddr2_comp : entity work.image_buffer
+	generic map(C3_P0_MASK_SIZE       => C3_P0_MASK_SIZE,
+		        C3_P0_DATA_PORT_SIZE  => C3_P0_DATA_PORT_SIZE,
+		        C3_P1_MASK_SIZE       => C3_P1_MASK_SIZE,
+		        C3_P1_DATA_PORT_SIZE  => C3_P1_DATA_PORT_SIZE,
+		        C3_MEMCLK_PERIOD      => C3_MEMCLK_PERIOD,
+		        C3_RST_ACT_LOW        => C3_RST_ACT_LOW,
+		        C3_INPUT_CLK_TYPE     => C3_INPUT_CLK_TYPE,
+		        C3_CALIB_SOFT_IP      => C3_CALIB_SOFT_IP,
+		        C3_SIMULATION         => C3_SIMULATION,
+		        DEBUG_EN              => DEBUG_EN,
+		        C3_MEM_ADDR_ORDER     => C3_MEM_ADDR_ORDER,
+		        C3_NUM_DQ_PINS        => C3_NUM_DQ_PINS,
+		        C3_MEM_ADDR_WIDTH     => C3_MEM_ADDR_WIDTH,
+		        C3_MEM_BANKADDR_WIDTH => C3_MEM_BANKADDR_WIDTH)
+	port map(
+	             --debug signals
+		     no_frame_read    => no_frame_read,
+		     write_img_s      => write_img,
+
+		     mcb3_dram_dq     => mcb3_dram_dq,
+		     mcb3_dram_a      => mcb3_dram_a,
+		     mcb3_dram_ba     => mcb3_dram_ba,
+		     mcb3_dram_ras_n  => mcb3_dram_ras_n,
+		     mcb3_dram_cas_n  => mcb3_dram_cas_n,
+		     mcb3_dram_we_n   => mcb3_dram_we_n,
+		     mcb3_dram_cke    => mcb3_dram_cke,
+		     mcb3_dram_dm     => mcb3_dram_dm,
+		     mcb3_dram_udqs   => mcb3_dram_udqs,
+		     mcb3_dram_udqs_n => mcb3_dram_udqs_n,
+		     mcb3_rzq         => mcb3_rzq,
+		     mcb3_zio         => mcb3_zio,
+		     mcb3_dram_udm    => mcb3_dram_udm,
+		     mcb3_dram_odt    => mcb3_dram_odt,
+		     mcb3_dram_dqs    => mcb3_dram_dqs,
+		     mcb3_dram_dqs_n  => mcb3_dram_dqs_n,
+		     mcb3_dram_ck     => mcb3_dram_ck,
+		     mcb3_dram_ck_n   => mcb3_dram_ck_n,
+		     img_in           => rgb,
+		     img_in_en        => de,
+		     img_out          => img_out,
+		     img_out_en       => img_out_en,
+		     jpg_fifo_afull   => jpg_fifo_afull,
+		     raw_fifo_afull   => raw_fifo_full,
+		     clk              => clk,
+		     clk_out          => img_clk,
+		     jpg_or_raw       => usb_cmd(1),
+			 vsync			  => vsync,
+			 jpg_busy		  => jpg_busy,
+			 jpg_done		  => jpg_done,
+			 jpg_start		  => jpg_start,
+			 resX			  => resX,
+			 resY			  => resY,
+			 to_send		  => to_send,
+		     rst              => rst,
+			 uvc_rst		  => uvc_rst,
+		     error            => error_ram);
+		     
+img_sel_comp : entity work.image_selector
+	port map(rgb_H0       => rgb_H0,
+		     de_H0        => de_H0,
+		     pclk_H0      => pclk_H0,
+		     hsync_H0     => hsync_H0,
+		     vsync_H0     => vsync_H0,
+		     resX_H0      => resX_H0,
+		     resY_H0      => resY_H0,
+		     rgb_H1       => rgb_H1,
+		     de_H1        => de_H1,
+		     pclk_H1      => pclk_H1,
+		     hsync_H1     => hsync_H1,
+		     vsync_H1     => vsync_H1,
+		     resX_H1      => resX_H1,
+		     resY_H1      => resY_H1,
+		     rgb_tp       => rgb_tp,
+		     de_tp        => de_tp,
+		     pclk_tp      => pclk_tp,
+		     hsync_tp     => hsync_tp,
+		     vsync_tp     => vsync_tp,
+		     resX_tp      => resX_tp,
+		     resY_tp      => resY_tp,
+		     rgb_vga      => rgb_vga,
+		     de_vga       => de_vga,
+		     pclk_vga     => pclk_vga,
+		     hsync_vga    => hsync_vga,
+		     vsync_vga    => vsync_vga,
+		     resX_vga     => resX_vga,
+		     resY_vga     => resY_vga,
+		     selector_cmd => selector_cmd,
+		     HB_on        => HB_on,
+		     HB_sw	  => sw(0),
+		     rgb          => rgb,
+		     de           => de,
+		     hsync        => hsync,
+		     vsync        => vsync,
+		     resX         => resX,
+		     resY         => resY,
+			 rgb_H		  => rgb_H,
+			 de_H		  => de_H,
+			 pclk_H		  => pclk_H,
+		     clk          => img_clk,
+		     rst          => rst);
+
+hdmiMatri_Comp : entity work.hdmimatrix
+	port map(rst_n           => rst_n,
+		     HDMI_RX0_tmds_p => HDMI_RX0_tmds_p,
+		     HDMI_RX0_tmds_n => HDMI_RX0_tmds_n,
+		     HDMI_TX0_tmds_p => HDMI_TX0_tmds_p,
+		     HDMI_TX0_tmds_n => HDMI_TX0_tmds_n,
+		     HDMI_RX1_tmds_p => HDMI_RX1_tmds_p,
+		     HDMI_RX1_tmds_n => HDMI_RX1_tmds_n,
+		     HDMI_TX1_tmds_p => HDMI_TX1_tmds_p,
+		     HDMI_TX1_tmds_n => HDMI_TX1_tmds_n,
+		     rx0_de          => de_H0,
+		     rx1_de          => de_H1,
+		     rx1_hsync       => hsync_H1,
+		     rx0_hsync       => hsync_H0,
+		     rx1_vsync       => vsync_H1,
+		     rx0_vsync       => vsync_H0,
+		     rx1_pclk        => pclk_H1,
+		     rx0_pclk        => pclk_H0,
+			 rdy0			 => rdy_H0,	 
+			 rdy1			 => rdy_H1,			 
+			 rx0_rgb		=> rgb_H0,
+			 rx1_rgb		=> rgb_H1,			 
+			 tx_rgb			=> rgb_H,			 
+			 tx_de 			 => de_H,
+			 tx_hsync 		 => hsync,
+			 tx_vsync 		 => vsync,
+			 tx_pclk 		 => pclk_H,
+			 rst => rst);	 
+
+			 
+calc_res0 : entity work.calc_res
+	port map(rst_n => rst_n,
+		     clk   => pclk_H0,
+		     de    => de_H0,
+		     hsync => hsync_H0,
+		     vsync => vsync_H0,
+		     resX  => resX_H0,
+		     resY  => resY_H0);
+		     
+		     
+calc_res1 : entity work.calc_res
+	port map(rst_n => rst_n,
+		     clk   => pclk_H1,
+		     de    => de_H1,
+		     hsync => hsync_H1,
+		     vsync => vsync_H1,
+		     resX  => resX_H1,
+		     resY  => resY_H1);
+
+
+edid_hack0 : entity work.edid_master_slave_hack
+	port map(rst_n       => rst_n,
+		     clk         => img_clk,
+		     sda_lcd     => HDMI_TX0_sda,
+		     scl_lcd     => HDMI_TX0_scl,
+		     sda_pc      => HDMI_RX0_sda,
+		     scl_pc      => HDMI_RX0_scl,
+		     hpd_lcd     => hpd,
+			 hpd_pc		 => open,
+		     sda_byte    => edid0_byte,
+		     sda_byte_en => edid0_byte_en,
+			 dvi_only	 => dvi_only(0),
+			 hdmi_dvi	 => hdmi_cmd(0));
+
+edid_hack1 : entity work.edid_master_slave_hack
+	port map(rst_n       => rst_n,
+		     clk         => img_clk,
+		     sda_lcd     => open,
+		     scl_lcd     => open,
+		     sda_pc      => HDMI_RX1_sda,
+		     scl_pc      => HDMI_RX1_scl,
+		     hpd_lcd     => hpd,
+			 hpd_pc		 => open,
+		     sda_byte    => edid1_byte,
+		     sda_byte_en => edid1_byte_en,
+			 dvi_only	 => dvi_only(1),
+			 hdmi_dvi	 => hdmi_cmd(1));
+		     
+rgb2ycbcr_comp: entity work.rgb2ycbcr
+	port map(
+		rgb 	=> img_out,
+		de_in 	=> img_out_en,
+		ycbcr 	=> ycbcr,
+		de_out 	=> ycbcr_en,
+		rst_n 	=> rst_n,
+		clk 	=> img_clk);
+
+
+usb_comp: entity work.usb_top
+	port map(edid0_byte       => edid0_byte,
+		     edid0_byte_en    => edid0_byte_en,
+		     edid1_byte       => edid1_byte,
+		     edid1_byte_en    => edid1_byte_en,
+		     jpeg_byte        => jpeg_byte,
+		     jpeg_clk         => img_clk,
+		     jpeg_en          => jpeg_en,
+		     jpeg_fifo_full   => outif_almost_full,
+		     raw_en           => ycbcr_en,
+		     raw_bytes        => ycbcr,
+		     raw_fifo_full    => raw_fifo_full,
+		     raw_clk          => img_clk,
+		     faddr            => fx2_addr,
+		     fdata            => fx2_data,
+		     flag_full        => fx2_flagB,
+		     flag_empty       => fx2_flagC,
+		     slwr             => slwr_i,
+		     slrd             => fx2_slrd,
+		     sloe             => fx2_sloe,
+		     pktend           => pktend_s,
+		     ifclk            => fx2_ifclk,
+		     resX_H0          => resX_H0,
+		     resY_H0          => resY_H0,
+		     resX_H1          => resX_H1,
+		     resY_H1          => resY_H1,
+		     de_H0            => de_H0,
+		     de_H1            => de_H1,
+		     status           => status,
+		     usb_cmd          => usb_cmd,
+		     jpeg_encoder_cmd => jpeg_encoder_cmd,
+		     selector_cmd     => selector_cmd,
+		     hdmi_cmd         => hdmi_cmd,
+	             debug_byte       => debug_byte,
+	             debug_index      => debug_index,
+					 eof_jpg     => eof_jpg,
+		     uvc_rst          => uvc_rst,
+			 to_send		  => to_send,
+		     cmd_en           => cmd_en,
+		     cmd              => cmd_byte,
+		     rst              => rst,
+		     clk              => img_clk);
+		     
+		     
+testpattern_comp : entity work.pattern
+	generic map( SIMULATION => SIMULATION)
+	port map(rgb 	=> rgb_tp,
+		     resX  => resX_tp,
+		     resY  => resY_tp,
+		     de    => de_tp,
+		     pclk  => pclk_tp,
+		     vsync => vsync_tp,
+		     hsync => hsync_tp,
+		     clk   => clk,
+		     rst_n => rst_n);	
+		     
+controller_comp : entity work.controller
+	port map(
+		     status           => status,
+		     usb_cmd          => usb_cmd,
+		     jpeg_encoder_cmd => jpeg_encoder_cmd,
+		     selector_cmd     => selector_cmd,
+		     HB_on	      => HB_on,
+	             uart_rd          => rd_uart_s,
+	             uart_rx_empty    => rx_empty_s,
+	             uart_din         => uart_din_s,
+	             uart_clk         => clk_50Mhz,
+           	     usb_or_uart      => sw(1),
+		     hdmi_cmd         => hdmi_cmd,
+			 hdmi_dvi		  => dvi_only,
+		     rdy_H            => (rdy_H1 & rdy_H0),
+		     btnu             => btnu_s,
+		     btnd             => btnd_s,
+		     btnl             => btnl_s,
+		     btnr             => btnr_s,
+		     uvc_rst          => uvc_rst,
+		     cmd_byte         => cmd_byte,
+		     cmd_en           => cmd_en,
+		     rst              => rst,
+		     ifclk            => fx2_ifclk,
+		     clk              => img_clk);
+
+debug_module: entity work.debug_top
+	port map(
+		clk		=> clk,
+		clk_50Mhz	=> clk_50Mhz,
+		rst		=> rst,
+		vsync		=> vsync,
+		no_frame_read	=> no_frame_read,
+		pktend		=> pktend_s,
+		jpg_busy	=> jpg_busy,
+		write_img	=> write_img,
+		sw		=> sw,
+		uart_en		=> uart_en,
+		frame_size	=> frame_size,
+		de_H0		=> de_H0,
+		vsync_H0	=> vsync_H0,
+		hsync_H0	=> hsync_H0,
+		de_H1		=> de_H1,
+		vsync_H1	=> vsync_H1,
+		hsync_H1	=> hsync_H1,
+		jpgORraw	=> usb_cmd(1),
+		input_source	=> selector_cmd(0) & selector_cmd(1),
+		encoding_Q	=> jpeg_encoder_cmd(1 downto 0),
+		resX		=> resX,
+		resY		=> resY,
+		eof_jpg  => eof_jpg,
+		debug_byte	=> debug_byte,
+		debug_index	=> debug_index,
+		uart_byte	=> uart_byte
+	);
+
+uart_module: entity work.uart
+	port map(
+		clk	=> clk_50Mhz,
+		reset	=> rst,
+		rd_uart	=> rd_uart_s,
+		r_data => uart_din_s,
+		rx_empty => rx_empty_s,
+		wr_uart	=> uart_en,
+		rx	=> rx,
+		w_data	=> uart_byte,
+		tx	=> tx
+	);
+
+end architecture rtl;	
+
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+use work.common.all;
+
+entity alu is
+  port (
+    tos     : in    word;
+    nos     : in    word;
+    results : out   alu_results_t
+    );
+end alu;
+
+architecture Behavioral of alu is
+  signal alu_results : alu_results_t;
+begin
+
+  -- assign outputs
+  results <= alu_results;
+
+  -- where the magic happens... :-)
+  alu_proc : process( tos, nos )
+    variable not_shiftable : std_logic;
+  begin
+    
+    -- arithmetic
+    alu_results.add_result <= std_logic_vector( signed( nos ) + signed( tos ) );
+    alu_results.sub_result <= std_logic_vector( signed( nos ) - signed( tos ) );
+
+    -- logic
+    not_shiftable := or_vector( tos( 15 downto 4 ) );
+    if not_shiftable = '1' then
+      alu_results.sll_result <= ( others => '0' );
+      alu_results.srl_result <= ( others => '0' );
+    else
+      alu_results.sll_result <= std_logic_vector( shift_left( signed( nos ), to_integer( signed( tos ) ) ) );
+      alu_results.srl_result <= std_logic_vector( shift_right( signed( nos ), to_integer( signed( tos ) ) ) );
+    end if;
+    
+    alu_results.or_result   <= nos or tos;
+    alu_results.and_result  <= nos and tos;
+    
+    -- relational
+    if tos = nos then
+      alu_results.eq_result <= ( others => '1' );
+    else
+      alu_results.eq_result <= ( others => '0' );
+    end if;
+    
+  end process alu_proc;
+
+end Behavioral;
+
+library IEEE;
+use IEEE.STD_LOGIC_1164.all;
+
+use work.uart_pkg.all;
+use work.gpio_pkg.all;
+
+package common is
+  -- Constants
+  constant c_word_width : integer := 16;
+  constant c_word_msb   : integer := c_word_width - 1;
+  constant c_stack_size : integer := 32;
+  constant c_address_width : integer := 13;
+
+  -- Data types
+  subtype word is std_logic_vector( c_word_msb downto 0 );
+  subtype address is std_logic_vector( c_address_width-1 downto 0 );
+  
+  type io_write_ctrl is record
+    io_addr       : address;
+    io_write      : word;
+    io_we         : std_logic;
+  end record;
+  
+  type io_read_ctrl is record
+    io_addr       : address;
+    io_read       : word;
+    io_re         : std_logic;
+  end record;
+
+  -- input pins to peripheral bus
+  type peri_in_pins_t is record
+    uart_in_pins    : uart_in_pins_t;
+    gpio_in_pins    : gpio_in_pins_t;
+  end record;
+  
+  -- output pins from peripheral bus
+  type peri_out_pins_t is record
+    uart_out_pins   : uart_out_pins_t;
+    gpio_out_pins   : gpio_out_pins_t;
+  end record;
+  
+  -- functions
+  function or_vector( s : std_logic_vector ) return std_logic;
+  function log2( n : natural ) return natural;
+
+  -- ALU operations
+  type alu_results_t is record
+    add_result : word;
+    sub_result : word;
+    sll_result : word;
+    srl_result : word;
+    eq_result  : word;
+    or_result  : word;
+    and_result : word;
+  end record;
+
+end common;
+
+package body common is
+
+  -- OR reduction of a vector
+  function or_vector( s : std_logic_vector ) return std_logic is
+    variable res : std_logic := '0';
+  begin
+    for i in s'range loop
+      res := res or s( i );
+    end loop;
+    return res;
+  end function or_vector;
+
+  -- log base 2 of 'n'
+  function log2( n : natural ) return natural is
+    variable a : natural := n;
+    variable log : natural := 0;
+  begin
+    for i in n downto 0 loop
+      if a > 0 then
+        log := log + 1;
+      end if;
+      a := a / 2;
+    end loop;
+    return log;
+  end function log2;
+
+end common;
+
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use ieee.numeric_std.all;
+
+use work.common.all;
+use work.opcodes.all;
+
+entity control is
+    port (
+        -- entity control
+        clk   : in std_logic;
+        rst_n : in std_logic;
+
+        -- ALU
+        alu_results : in alu_results_t;
+
+        -- data stack
+        dtos     : in  word;
+        dnos     : in  word;
+        dtos_in  : out word;
+        dnos_in  : out word;
+        dpush    : out std_logic;
+        dpop     : out std_logic;
+        dtos_sel : out std_logic_vector(1 downto 0);
+        dnos_sel : out std_logic_vector(1 downto 0);
+        dstk_sel : out std_logic;
+
+        -- return stack
+        rtos     : in  word;
+        rtos_in  : out word;
+        rpush    : out std_logic;
+        rpop     : out std_logic;
+        rtos_sel : out std_logic;
+
+        -- program counter
+        pc      : in  address;
+        pc_next : out address;
+        pc_inc  : out std_logic;
+        pc_load : out std_logic;
+
+        -- instruction
+        insn : in word;
+
+        -- working memory
+        mem_read  : in  word;
+        mem_write : out word;
+        mem_addr  : out address;
+        mem_we    : out std_logic;
+
+        -- I/O
+        io_read  : in  word;
+        io_addr  : out address;
+        io_write : out word;
+        io_we    : out std_logic;
+        io_re    : out std_logic
+        );
+end control;
+
+architecture Behavioral of control is
+    -- internal signals
+    signal stall, stall_i : std_logic := '0';
+begin
+
+    -- create register for stall
+    regs : process(clk, rst_n)
+    begin
+        if rst_n = '0' then
+            stall <= '0';
+        elsif rising_edge(clk) then
+            stall <= stall_i;
+        end if;
+    end process regs;
+
+    -- instruction decoding
+    decode : process(alu_results, dnos, dtos, insn, io_read, mem_read, pc,
+                     rtos, stall)
+        variable mcode : mcode;
+        variable fcode : fcode;
+
+        -- Procedures
+        procedure pop_dstack is
+        begin
+            dtos_sel <= "01";
+            dnos_sel <= "10";
+            dpop     <= '1';
+        end procedure pop_dstack;
+    begin
+        -- default values
+        dpush     <= '0';
+        dpop      <= '0';
+        dtos_sel  <= "00";
+        dnos_sel  <= "00";
+        dtos_in   <= (others => '0');
+        dnos_in   <= (others => '0');
+        dstk_sel  <= '0';
+        rpush     <= '0';
+        rpop      <= '0';
+        rtos_sel  <= '0';
+        rtos_in   <= rtos;              -- this feedback is necessary to store
+                                        -- the value
+        pc_inc    <= '1';
+        pc_load   <= '0';
+        pc_next   <= (others => '0');
+        mem_addr  <= (others => '0');
+        mem_write <= (others => '0');
+        mem_we    <= '0';
+        stall_i   <= '0';
+        io_re     <= '0';
+        io_we     <= '0';
+        io_addr   <= dtos(c_address_width-1 downto 0);
+        io_write  <= (others => '0');
+
+        -- grab the major code and function code
+        mcode := insn(14 downto 13);
+        fcode := insn(12 downto 8);
+
+        -- stalling or executing?
+        if stall = '1' then
+            stall_i <= '0';  -- only ever need one cycle of stalling right now
+        else
+            -- decode the instruction
+            if insn(insn'high) = '1' then  -- literal
+                dtos_in  <= insn(insn'high-1) & insn(insn'high-1 downto 0);  -- sign-extend the literal by 1 bit
+                dtos_sel <= "11";
+                dnos_sel <= "01";
+                dpush    <= '1';
+                -- if it's a new literal that's going on the stack, it could be an address to read from memory
+                mem_addr <= insn(c_address_width-1 downto 0);
+            else
+                -- otherwise the memory address to use will come from the top of the D stack
+                mem_addr <= dtos(c_address_width-1 downto 0);
+
+                -- which major code is this instruction?
+                case mcode is
+                    
+                    when m_jump =>      -- unconditional jump
+                        pc_load <= '1';
+                        pc_next <= insn(c_address_width-1 downto 0);
+                        stall_i <= '1';
+                        
+                    when m_0bra =>      -- conditional jump (0branch)
+                        if dtos = "0000000000000000" then
+                            pc_load <= '1';
+                            pc_next <= insn(c_address_width-1 downto 0);
+                            stall_i <= '1';
+                        end if;
+                        pop_dstack;
+                        
+                    when m_call =>      -- call a word
+                        pc_load <= '1';
+                        pc_next <= insn(c_address_width-1 downto 0);
+                        rtos_in <= "000" & pc;
+                        rpush   <= '1';
+                        stall_i <= '1';
+
+                    when m_func =>      -- function
+
+                        -- execute the function
+                        case fcode is
+                            when f_add =>  -- add
+                                dtos_in  <= alu_results.add_result;
+                                dtos_sel <= "11";
+                                dnos_sel <= "10";
+                                dpop     <= '1';
+                                
+                            when f_sub =>  -- subtract
+                                dtos_in  <= alu_results.sub_result;
+                                dtos_sel <= "11";
+                                dnos_sel <= "10";
+                                dpop     <= '1';
+                                
+                            when f_sla =>  -- arithmetic left shift
+                                dtos_in  <= alu_results.sll_result;
+                                dtos_sel <= "11";
+                                dnos_sel <= "10";
+                                dpop     <= '1';
+                                
+                            when f_sra =>  -- arithmetic right shift
+                                dtos_in  <= alu_results.srl_result;
+                                dtos_sel <= "11";
+                                dnos_sel <= "10";
+                                dpop     <= '1';
+                                
+                            when f_dup =>  -- dup
+                                dtos_sel <= "00";
+                                dnos_sel <= "01";
+                                dstk_sel <= '0';
+                                dpush    <= '1';
+                                
+                            when f_not =>  -- not
+                                dtos_sel <= "11";
+                                dtos_in  <= not dtos;
+                                
+                            when f_ftc =>  -- fetch   @
+                                dtos_in  <= mem_read;
+                                dtos_sel <= "11";
+                                
+                            when f_dtr =>  -- >R   "to R"
+                                rpush    <= '1';
+                                rtos_in  <= dtos;
+                                dtos_sel <= "01";
+                                dnos_sel <= "10";
+                                dpop     <= '1';
+                                
+                            when f_str =>  -- store   ! [assembler MUST insert a drop after this]
+                                mem_addr  <= dtos(c_address_width-1 downto 0);
+                                mem_write <= dnos;
+                                mem_we    <= '1';
+                                pop_dstack;
+                                
+                            when f_pop =>  -- drop
+                                pop_dstack;
+                                
+                            when f_rtd =>  -- R>  "from R"
+                                rtos_sel <= '1';
+                                rpop     <= '1';
+                                dtos_in  <= rtos;
+                                dtos_sel <= "11";
+                                dnos_sel <= "01";
+                                dpush    <= '1';
+                                
+                            when f_rot =>  -- rot ( a b c -- b c a )
+                                dtos_sel <= "10";
+                                dnos_sel <= "01";
+                                dpush    <= '1';
+                                dpop     <= '1';
+                                
+                            when f_nrt =>  -- -rot ( a b c -- c b a )
+                                dtos_sel <= "01";
+                                dnos_sel <= "10";
+                                dstk_sel <= '1';
+                                dpush    <= '1';
+                                dpop     <= '1';
+                                
+                            when f_swp =>  -- swap ( a b -- b a )
+                                dtos_sel <= "01";
+                                dnos_sel <= "01";
+                                
+                            when f_nip =>  -- nip  ( a b c -- a c )
+                                dtos_sel <= "00";
+                                dnos_sel <= "10";
+                                dpop     <= '1';
+                                
+                            when f_tck =>  -- tuck ( a b -- b a b )
+                                dtos_sel <= "00";
+                                dnos_sel <= "00";
+                                dstk_sel <= '1';
+                                dpush    <= '1';
+                                
+                            when f_ovr =>  -- over ( a b -- a b a )
+                                dtos_sel <= "01";
+                                dnos_sel <= "01";
+                                dpush    <= '1';
+                                
+                            when f_equ =>  -- = ( a b -- t/f )
+                                dtos_in  <= alu_results.eq_result;
+                                dtos_sel <= "11";
+                                dnos_sel <= "10";
+                                dpop     <= '1';
+                                
+                            when f_ioo =>  -- io! ( n a -- ) [assembler MUST (well, should probably) insert a drop after this]
+                                io_write <= dnos;
+                                io_we    <= '1';
+                                pop_dstack;
+                                
+                            when f_ioi =>  -- io@ ( a -- n )
+                                io_addr  <= dtos(c_address_width-1 downto 0);
+                                io_re    <= '1';
+                                dtos_sel <= "11";
+                                dtos_in  <= io_read;
+                            
+                            when f_or =>    -- or ( a b -- a|b)
+                                dtos_in  <= alu_results.or_result;
+                                dtos_sel <= "11";
+                                dnos_sel <= "10";
+                                dpop     <= '1';
+                            
+                            when f_and =>   -- and ( a b -- a&b)
+                                dtos_in  <= alu_results.and_result;
+                                dtos_sel <= "11";
+                                dnos_sel <= "10";
+                                dpop     <= '1';
+                                
+                            when others =>  -- NOP
+                                null;
+                                
+                        end case;  -- case( fcode )
+
+                        ------------------------
+                        -- check for subcodes --
+                        ------------------------
+
+                        -- ret (return from word)
+                        if insn(s_ret) = '1' then
+                            rtos_sel <= '1';
+                            rpop     <= '1';
+                            pc_load  <= '1';
+                            pc_next  <= rtos(c_address_width-1 downto 0);
+                            stall_i  <= '1';
+                        end if;
+                        
+                    when others =>
+                        null;
+                end case;  -- case( mcode )
+            end if;  -- insn( insn'high ) = 0
+        end if;  -- if stall
+    end process decode;
+end Behavioral;
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_arith.all;
+use ieee.std_logic_unsigned.all;
+library work;
+
+package free_6502 is
+  component core_6502
+    port (clk	 	:in std_logic;
+          reset	 	:in std_logic;
+          irq_in	:in std_logic;
+          nmi_in	:in std_logic;
+          addr_pin 	:out std_logic_vector (15 downto 0);
+          din	 	:in  std_logic_vector (7 downto 0);
+          dout	 	:out std_logic_vector (7 downto 0);
+          dout_oe  	:out std_logic;
+          we_pin	:out std_logic;
+          rd_pin	:out std_logic;
+          sync	 	:out std_logic
+         );
+  end component;
+
+  component core_6502_debug
+    port (clk	 	:in std_logic;
+          reset	 	:in std_logic;
+          irq_in	:in std_logic;
+          nmi_in	:in std_logic;
+          addr_pin 	:out std_logic_vector (15 downto 0);
+          din	 	:in  std_logic_vector (7 downto 0);
+          dout	 	:out std_logic_vector (7 downto 0);
+          dout_oe  	:out std_logic;
+          we_pin	:out std_logic;
+          rd_pin	:out std_logic;
+          sync	 	:out std_logic;
+          stack_page	:in  std_logic_vector (7 downto 0);
+          reg_a_out	:out std_logic_vector (7 downto 0);
+          reg_x_out	:out std_logic_vector (7 downto 0);
+          reg_y_out	:out std_logic_vector (7 downto 0);
+          reg_sr_out	:out std_logic_vector (7 downto 0);
+          reg_sp_out	:out std_logic_vector (7 downto 0);
+          reg_pc_out	:out std_logic_vector (15 downto 0)
+         );
+  end component;
+end free_6502;
+
+----------------------------------------------------------------------------
+----------------------------------------------------------------------------
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_arith.all;
+use ieee.std_logic_unsigned.all;
+library work;
+use work.microcode.all;
+use work.free_6502.all;
+
+
+entity core_6502_debug is
+  port (clk	 :in std_logic;
+        reset	 :in std_logic;
+        irq_in	 :in std_logic;
+        nmi_in	 :in std_logic;
+        addr_pin :out std_logic_vector (15 downto 0);
+        din	 :in  std_logic_vector (7 downto 0);
+        dout	 :out std_logic_vector (7 downto 0);
+        dout_oe  :out std_logic;
+        we_pin	 :out std_logic;
+        rd_pin	 :out std_logic;
+        sync	 :out std_logic;
+        stack_page	:in  std_logic_vector (7 downto 0);
+        reg_a_out	:out std_logic_vector (7 downto 0);
+        reg_x_out	:out std_logic_vector (7 downto 0);
+        reg_y_out	:out std_logic_vector (7 downto 0);
+        reg_sr_out	:out std_logic_vector (7 downto 0);
+        reg_sp_out	:out std_logic_vector (7 downto 0);
+        reg_pc_out	:out std_logic_vector (15 downto 0)
+       );
+end core_6502_debug;
+
+
+architecture core_6502_arch_debug of core_6502_debug is
+  -- Constants
+  constant reset_opcode :std_logic_vector (7 downto 0) := "00000011";
+  constant irq_opcode   :std_logic_vector (7 downto 0) := "01000011";
+  constant nmi_opcode   :std_logic_vector (7 downto 0) := "00110011";
+  constant vect_nmi1    :std_logic_vector (15 downto 0) := "1111111111111010";
+  constant vect_nmi2    :std_logic_vector (15 downto 0) := "1111111111111011";
+  constant vect_reset1  :std_logic_vector (15 downto 0) := "1111111111111100";
+  constant vect_reset2  :std_logic_vector (15 downto 0) := "1111111111111101";
+  constant vect_irq1    :std_logic_vector (15 downto 0) := "1111111111111110";
+  constant vect_irq2    :std_logic_vector (15 downto 0) := "1111111111111111";
+
+  -- Internal state info
+  type STATES is (RESET1, RESET2, FETCH, START_IRQ, START_NMI, RUN);
+  signal state :STATES;
+  signal step  :std_logic_vector (2 downto 0);
+
+  -- registered inputs
+  signal nmi_reg1	:std_logic;
+  signal nmi_reg2	:std_logic;
+  signal irq_reg	:std_logic;
+  signal data_in	:std_logic_vector (7 downto 0);
+
+  -- Microcode ROM outputs
+  signal done		:MCT_DONE;
+  signal addr_op	:MCT_ADDR_OP;
+  signal din_le		:MCT_DIN_LE;
+  signal rd_en      	:MCT_RD_EN;
+  signal dout_op	:MCT_DOUT_OP;
+  signal dint1_op	:MCT_DINT1_OP;
+  signal dint2_op	:MCT_DINT2_OP;
+  signal dint3_op	:MCT_DINT3_OP;
+  signal pc_op		:MCT_PC_OP;
+  signal sp_op		:MCT_SP_OP;
+  signal alu1		:MCT_ALU1;
+  signal alu2		:MCT_ALU2;
+  signal alu_op		:MCT_ALU_OP;
+  signal a_le		:MCT_A_LE;
+  signal x_le		:MCT_X_LE;
+  signal y_le		:MCT_Y_LE;
+  signal flag_op	:MCT_FLAG_OP;
+
+  -- Internal registers
+  signal a_reg		:std_logic_vector (7 downto 0);
+  signal x_reg		:std_logic_vector (7 downto 0);
+  signal y_reg		:std_logic_vector (7 downto 0);
+  signal dint1		:std_logic_vector (7 downto 0);
+  signal dint2		:std_logic_vector (7 downto 0);
+  signal dint3		:std_logic_vector (7 downto 0);
+  signal opcode_reg	:std_logic_vector (7 downto 0);
+  signal sp		:std_logic_vector (7 downto 0);
+  signal pc		:std_logic_vector (15 downto 0);
+  signal n_flag		:std_logic;
+  signal v_flag		:std_logic;
+  signal b_flag		:std_logic;
+  signal d_flag		:std_logic;
+  signal i_flag		:std_logic;
+  signal z_flag		:std_logic;
+  signal c_flag		:std_logic;
+
+  -- Combinotorial signals
+  signal opcode		:std_logic_vector (7 downto 0);
+  signal alu_in1	:std_logic_vector (8 downto 0);
+  signal alu_in2	:std_logic_vector (8 downto 0);
+  signal alu_out	:std_logic_vector (8 downto 0);
+
+  signal alu_add	:std_logic_vector (8 downto 0);
+  signal alu_add_in2	:std_logic_vector (8 downto 0);
+  signal alu_add_cin	:std_logic;
+  
+  signal addr_out_d     :std_logic_vector(15 downto 0);
+
+  -- Misc signals
+  signal first_run	:std_logic;
+  signal fetch_d	:std_logic;
+  signal data_out	:std_logic_vector (7 downto 0);
+  signal data_oe	:std_logic;
+  signal addr_out	:std_logic_vector (15 downto 0);
+  signal we_out		:std_logic;
+  signal nmi_event	:std_logic;
+
+begin
+  -- Debug outputs
+  reg_a_out <= a_reg;
+  reg_x_out <= x_reg;
+  reg_y_out <= y_reg;
+  reg_sr_out <= n_flag & v_flag & '1' & b_flag & d_flag
+                & i_flag & z_flag & c_flag;
+  reg_sp_out <= sp;
+  reg_pc_out <= pc;
+
+
+  -- The sync output
+  process (clk, reset)
+  begin
+    if reset='1' then
+      sync <= '0';
+    elsif clk'event and clk='1' then
+      case state is
+        when RESET1 =>		sync <= '0';
+        when RESET2 =>		sync <= '0';
+        when FETCH =>		sync <= '0';
+        when START_IRQ =>	sync <= '0';
+        when START_NMI =>	sync <= '0';
+        when RUN =>
+            if done=MC_DONE then
+              if nmi_event='1' then
+                sync <= '0';
+              elsif i_flag='0' and irq_reg='1' then
+                sync <= '0';
+              else
+                sync <= '1';
+              end if;
+            end if;
+        when others =>  sync <= '0';	
+      end case;
+    end if;
+  end process;
+  
+
+  -- The main state machine
+  process (clk, reset)
+  begin
+    if reset='1' then
+      state <= RESET1;
+    elsif clk'event and clk='1' then
+      case state is
+        when RESET1 =>		state <= RESET2;
+        when RESET2 =>		state <= RUN;
+        when FETCH =>		state <= RUN;
+        when START_IRQ =>	state <= RUN;
+        when START_NMI =>	state <= RUN;
+        when RUN =>
+            if done=MC_DONE then
+              if nmi_event='1' then
+                state <= START_NMI;
+              elsif i_flag='0' and irq_reg='1' then
+                state <= START_IRQ;
+              else
+                state <= FETCH;
+              end if;
+            end if;
+        when others =>  	state <= RESET1;
+      end case;
+    end if;
+  end process;
+
+
+  -- The microcode step counter
+  process (clk, reset)
+  begin
+    if reset='1' then
+      step<="000";
+    elsif clk'event and clk='1' then
+      case state is
+        when RESET1 =>          step <= "000";
+        when RESET2 =>          step <= "000";
+        when FETCH =>           step <= "000";
+        when START_IRQ =>       step <= "000";
+        when START_NMI =>       step <= "000";
+        when RUN =>             step <= step + 1;
+        when others =>          step <= step + 1;
+      end case;
+    end if;
+  end process;
+
+
+  -- The input registers
+  process (clk, reset)
+  begin
+    if reset='1' then
+      data_in <= "00000000";
+    elsif clk'event and clk='1' then
+      if din_le=MC_EN or state=FETCH then
+        data_in <= din;
+      end if;
+    end if;
+  end process;
+
+  process (clk, reset)
+  begin
+    if reset='1' then
+      irq_reg <= '0';
+    elsif clk'event and clk='1' then
+      irq_reg <= irq_in;
+    end if;
+  end process;
+
+  process (clk, reset)
+  begin
+    if reset='1' then
+      nmi_reg1 <= '0';
+      nmi_reg2 <= '0';
+    elsif clk'event and clk='1' then
+      nmi_reg1 <= nmi_in;
+      nmi_reg2 <= nmi_reg1;
+    end if;
+  end process;
+
+  -- The NMI __RISING_EDGE__ detect
+  process (clk, reset)
+  begin
+    if reset='1' then
+      nmi_event <= '0';
+    elsif clk'event and clk='1' then
+      if nmi_reg1='1' and nmi_reg2='0' then
+        nmi_event <= '1';
+      elsif state=START_NMI then
+        nmi_event <= '0';
+      end if;
+    end if;
+  end process;
+      
+
+  -- The first run signal.  Active on the first run clock
+  process (clk, reset)
+  begin
+    if reset='1' then
+      first_run <= '0';
+    elsif clk'event and clk='1' then
+      case state is
+        when RESET2 =>          first_run <= '0';
+        when FETCH =>           first_run <= '1';
+        when START_IRQ =>       first_run <= '0'; -- was '1' -- bjs 09/05/99
+        when START_NMI =>       first_run <= '0'; -- was '1' -- bjs 09/05/99
+        when RUN =>             first_run <= '0';
+        when others =>          first_run <= '0';
+      end case;
+    end if;
+  end process;
+
+
+  -- The fetch_d signal.  Active one clock after a fetch cycle
+  process (clk, reset)
+  begin
+    if reset='1' then
+      fetch_d <= '0';
+    elsif clk'event and clk='1' then
+      if state=FETCH then
+        fetch_d <= '1';
+      else
+        fetch_d <= '0';
+      end if;
+    end if;
+  end process;
+
+
+  -- The opcode register and opcode decode logic
+  process (clk, reset)
+  begin
+    if reset='1' then
+      opcode_reg <= "00000000";
+    elsif clk'event and clk='1' then
+      case state is
+        when RESET2 =>          opcode_reg <= reset_opcode;
+        when START_IRQ =>       opcode_reg <= irq_opcode;
+        when START_NMI =>       opcode_reg <= nmi_opcode;
+
+        when RUN =>
+            if first_run='1' then
+              opcode_reg <=data_in;
+            end if;
+
+        when others =>
+            --
+      end case;
+    end if;
+  end process;
+
+  opcode <= data_in when fetch_d='1' else opcode_reg;
+
+
+  -- The Microcode ROM
+  MC_ROM0:  mc_rom port map
+        (opcode, step, done, addr_op, din_le, rd_en, dout_op,
+         dint1_op, dint2_op, dint3_op, pc_op, sp_op, alu1, alu2,
+         alu_op, a_le, x_le, y_le, flag_op);
+
+  -- The program counter
+  process (clk, reset)
+    variable pc_add : std_logic_vector(15 downto 0);
+    variable pc_inc : std_logic_vector(15 downto 0);
+  begin
+    if reset='1' then
+      pc <= "0000000000000000";
+    elsif clk'event and clk='1' then
+      -- Sept 23, 1999 -- Fixed by David Kessner, reported by Bill Seiler
+      -- was:  pc_add <= pc + data_in
+      -- now:  pc_add <= pc + a sign extended version of data_in
+      pc_add := pc +
+                (data_in(7) & data_in(7) & data_in(7) & data_in(7) &
+                 data_in(7) & data_in(7) & data_in(7) & data_in(7) &
+                 data_in);
+      pc_inc := pc + '1';
+      if state=fetch then
+        pc <= pc_inc;
+      else
+        case pc_op is
+            when MC_NOP =>   -- Do nothing
+            when MC_INC =>   pc <= pc_inc;
+            when MC_BCC =>   if c_flag='0' then pc<=pc_add; end if;
+            when MC_BCS =>   if c_flag='1' then pc<=pc_add; end if;
+            when MC_BEQ =>   if z_flag='1' then pc<=pc_add; end if;
+            when MC_BNE =>   if z_flag='0' then pc<=pc_add; end if;
+            when MC_BMI =>   if n_flag='1' then pc<=pc_add; end if;
+            when MC_BPL =>   if n_flag='0' then pc<=pc_add; end if;
+            when MC_BVC =>   if v_flag='0' then pc<=pc_add; end if;
+            when MC_BVS =>   if v_flag='1' then pc<=pc_add; end if;
+            when MC_SPLIT => pc <= data_in & dint1;
+            when others =>   -- Do nothing
+        end case;
+      end if;
+    end if;
+  end process;
+
+
+  -- Data output logic
+  process (clk, reset)
+  begin
+    if reset='1' then
+      data_out <= "00000000";
+      data_oe  <= '0';
+      we_out   <= '0';
+    elsif clk'event and clk='1' then
+      case dout_op is
+          when MC_NOP =>	data_oe <= '0';  we_out<='0';  data_out <= dint3;
+          when MC_DINT3 =>	data_oe <= '1';  we_out<='1';  data_out <= dint3;
+          when MC_PCH =>	data_oe <= '1';  we_out<='1';  data_out <= pc(15 downto 8);
+          when MC_PCL =>	data_oe <= '1';  we_out<='1';  data_out <= pc (7 downto 0);
+          when MC_P_REG =>	data_oe <= '1';  we_out<='1';
+                                data_out <= n_flag & v_flag & '1' & b_flag &
+                                            d_flag & i_flag & z_flag & c_flag;
+          when MC_A_REG =>	data_oe <= '1';  we_out<='1';  data_out <= a_reg;
+          when MC_X_REG =>	data_oe <= '1';  we_out<='1';  data_out <= x_reg;
+          when MC_Y_REG =>	data_oe <= '1';  we_out<='1';  data_out <= y_reg;
+          when others =>	data_oe <= '0';  we_out<='0';  data_out <= dint3;
+      end case;
+    end if;
+  end process;
+
+  dout <= data_out;
+  dout_oe <= data_oe;
+ 
+  we_pin <= we_out;
+
+
+  -- Generate the rd_pin signals
+  process (reset, clk)
+  begin
+    if reset='1' then
+      rd_pin <= '0';
+    elsif clk'event and clk='1' then
+      case state is
+        when RESET1 =>		rd_pin <= '0';
+        when RESET2 =>		rd_pin <= '0';
+        when FETCH =>		rd_pin <= '1';
+        when START_IRQ =>	rd_pin <= '0';
+        when START_NMI =>	rd_pin <= '0';
+        when RUN =>
+            if done=MC_DONE then
+              if nmi_event='1' then
+                rd_pin <= '0';
+              elsif i_flag='0' and irq_reg='1' then
+                rd_pin <= '0';
+              else
+                rd_pin <= '1';
+              end if;
+            elsif rd_en=MC_READ then
+              rd_pin <= '1';
+            else
+              rd_pin <= '0';
+            end if;
+        when others =>  	rd_pin <= '0';
+      end case;
+    end if;
+  end process;
+
+  -----------------------------------------------------------------------------
+  -- Revised address output block
+  -------------------------------
+  -- These revisons to the address output block are intended to improve
+  -- synthesis results for both area and speed.  They intended to
+  -- accomplish the following:
+  -- - Make the use of a single adder very clear to the synthesis tool.
+  -- - Move all decoding and muxing in front of the adder.  This allows
+  --   the synthesis more flexibility in optimizing an balancing propagation
+  --   paths.
+  -- Ed Beers (sreeb@beers.nu) 9/14/99
+  -----------------------------------------------------------------------------
+  
+  -- The address output logic
+  process (clk, reset)
+    variable addr_add_1     :std_logic_vector(15 downto 0);
+    variable addr_add_2     :std_logic_vector(7 downto 0);
+    variable addr_add_cin   :std_logic;
+
+    variable addr_out_low   :std_logic_vector (8 downto 0);
+    variable addr_out_high  :std_logic_vector (7 downto 0);
+    variable eight_bit_flag :std_logic;
+  begin
+    if reset='1' then
+      addr_out <= (others=>'0');
+    elsif clk'event and clk='1' then 
+
+      -- default for adder
+      addr_add_2 := (others=>'0');
+      addr_add_cin := '0';
+      eight_bit_flag := '0';
+      
+      if done=MC_DONE then
+        --addr_out <= pc;
+        addr_add_1 := pc;
+      elsif state=FETCH then
+        --addr_out <= pc + 1;
+        addr_add_1 := pc;
+        addr_add_cin := '1';
+      else      
+        case addr_op is
+          when MC_NOP =>
+            --addr_out <= pc;
+            addr_add_1 := pc;
+          when MC_PC_P =>
+            --addr_out <= pc + 1;
+            addr_add_1 := pc;
+            addr_add_cin := '1';
+          when MC_SPLIT =>
+            --addr_out <= data_in & dint1;
+            addr_add_1 := data_in & dint1;
+          when MC_SPLIT_P =>
+            --addr_out <= (data_in & dint1) + 1;
+            addr_add_1 := data_in & dint1;
+            addr_add_cin := '1';
+          when MC_SPLIT_X =>
+            --addr_out <= (data_in & dint1) + x_reg;
+            addr_add_1 := data_in & dint1;
+            addr_add_2 := x_reg;
+          when MC_SPLIT_Y =>
+            --addr_out <= (data_in & dint1) + y_reg;
+            addr_add_1 := data_in & dint1;
+            addr_add_2 := y_reg;
+          when MC_DIN_Z =>
+            --addr_out <= ("00000000" & data_in);
+            addr_add_1 := "00000000" & data_in;
+          when MC_DIN_ZP =>
+            --addr_out <= ("00000000" & data_in) + 1;
+            addr_add_1 := "00000000" & data_in;
+            addr_add_cin := '1';
+          when MC_DIN_ZX =>
+            --addr_out <= ("00000000" & data_in) + x_reg;
+            addr_add_1 := "00000000" & data_in;
+            addr_add_2 := x_reg;
+            eight_bit_flag := '1';
+          when MC_DIN_ZXP =>
+            --addr_out <= ("00000000" & data_in) + x_reg + 1;
+            addr_add_1 := "00000000" & data_in;
+            addr_add_2 := x_reg;
+            addr_add_cin := '1';
+            eight_bit_flag := '1';
+          when MC_DIN_ZY =>
+            --addr_out <= ("00000000" & data_in) + y_reg;
+            addr_add_1 := "00000000" & data_in;
+            addr_add_2 :=  y_reg;
+	    eight_bit_flag := '1';
+          when MC_DINT16 =>
+            --addr_out <= dint2 & dint1;
+            addr_add_1 := dint2 & dint1;
+          when MC_DINT16_X =>
+            --addr_out <= dint2 & dint1 + x_reg;
+            addr_add_1 := dint2 & dint1;
+            addr_add_2 := x_reg;
+          when MC_DINT1_Z =>
+            --addr_out_d <= ("00000000" & dint1);
+            addr_add_1 := ("00000000" & dint1);
+          when MC_DINT1_ZX =>
+            --addr_out <= ("00000000" & dint1) + x_reg;
+            addr_add_1 := "00000000" & dint1;
+            addr_add_2 := x_reg;
+          when MC_SP =>
+            --addr_out <= stack_page & sp;
+            addr_add_1 := stack_page & sp;
+          when MC_V_NMI1 =>
+            --addr_out <= vect_nmi1;
+            addr_add_1 := vect_nmi1;
+          when MC_V_NMI2 =>
+            --addr_out <= vect_nmi2;
+            addr_add_1 := vect_nmi2;
+          when MC_V_RESET1 =>
+            --addr_out <= vect_reset1;
+            addr_add_1 := vect_reset1;
+          when MC_V_RESET2 =>
+            --addr_out <= vect_reset2;
+            addr_add_1 := vect_reset2;
+          when MC_V_IRQ1 =>
+            --addr_out <= vect_irq1;
+            addr_add_1 := vect_irq1;
+          when MC_V_IRQ2 =>
+            --addr_out <= vect_irq2;
+            addr_add_1 := vect_irq2;
+          when others =>
+            --addr_out <= pc;
+            addr_add_1 := pc;
+        end case;
+      end if;
+
+      --addr_out <= addr_add_1 + addr_add_2 + addr_add_cin;      
+      addr_out_low  := ("0" & addr_add_1(7 downto 0)) + ("0" & addr_add_2) + addr_add_cin;
+      addr_out_high := addr_add_1(15 downto 8) + (addr_out_low(8) and not eight_bit_flag);
+      addr_out <= addr_out_high(7 downto 0) & addr_out_low (7 downto 0);
+
+    end if;
+  end process;
+
+  addr_pin <= addr_out;
+
+
+  -- The DINT registers
+  process (clk, reset)
+  begin
+    if reset='1' then
+      dint1 <= "00000000";
+    elsif clk'event and clk='1' then
+      if dint1_op=MC_DIN then
+        dint1 <= data_in;
+      end if;
+    end if;
+  end process;
+
+  process (clk, reset)
+  begin
+    if reset='1' then
+      dint2 <= "00000000";
+    elsif clk'event and clk='1' then
+      if dint2_op=MC_DIN then
+        dint2 <= data_in;
+      end if;
+    end if;
+  end process;
+
+  process (clk, reset)
+  begin
+    if reset='1' then
+      dint3 <= "00000000";
+    elsif clk'event and clk='1' then
+      if dint3_op=MC_ALU then
+        dint3 <= alu_out (7 downto 0);
+      end if;
+    end if;
+  end process;
+
+
+  -- The stack pointer
+  process (clk, reset)
+  begin
+    if reset='1' then
+      sp <= "11111111";
+    elsif clk'event and clk='1' then
+      case sp_op is
+          when MC_NOP =>	-- Do nothing
+          when MC_PUSH =>	sp <= sp - 1;
+          when MC_POP =>	sp <= sp + 1;
+          when MC_X_REG =>      sp <= x_reg;
+          when others =>	-- Do nothing
+      end case;
+    end if;
+  end process;
+
+
+  -- The registers
+  process (clk, reset)
+  begin
+    if reset='1' then
+      a_reg <= "00000000";
+    elsif clk'event and clk='1' then
+      if a_le=MC_LE then
+        a_reg <= alu_out (7 downto 0);
+      end if;
+    end if;
+  end process;
+
+  process (clk, reset)
+  begin
+    if reset='1' then
+      x_reg <= "00000000";
+    elsif clk'event and clk='1' then
+      if x_le=MC_LE then
+        x_reg <= alu_out (7 downto 0);
+      end if;
+    end if;
+  end process;
+
+  process (clk, reset)
+  begin
+    if reset='1' then
+      y_reg <= "00000000";
+    elsif clk'event and clk='1' then
+      if y_le=MC_LE then
+        y_reg <= alu_out (7 downto 0);
+      end if;
+    end if;
+  end process;
+
+
+  -- The ALU input muxes
+  process(a_reg, alu1, data_in, x_reg, y_reg)
+  begin  -- process
+    case alu1 is
+      when MC_A_REG => alu_in1 <= ("0" & a_reg);
+      when MC_x_REG => alu_in1 <= ("0"  & x_reg);
+      when MC_Y_REG => alu_in1 <= ("0"  & y_reg);
+      when others =>   alu_in1 <= ("0"  & data_in);
+    end case;
+  end process;
+
+  process (alu2, data_in, sp)
+  begin  -- process
+    case alu2 is
+      when MC_ONE =>    alu_in2 <= "000000001";
+      when MC_SP_REG => alu_in2 <= ("0" & sp);
+      when others =>    alu_in2 <= ("0" & data_in);
+    end case;
+  end process;
+
+  -- The ALU adder
+  alu_add <= alu_in1 + alu_add_in2 + alu_add_cin;  
+
+  -- The ALU itself    This is purely combinatorial logic
+  process (alu_add, alu_in1, alu_in2, alu_op, c_flag)
+  begin
+    -- default for alu_add inputs
+    alu_add_in2 <= alu_in2;
+    alu_add_cin <= c_flag;
+      
+    case alu_op is
+      when MC_PASS1 =>  	alu_out <= alu_in1;
+      when MC_PASS2 =>          alu_out <= alu_in2;
+      when MC_ADD =>
+        --alu_out <= alu_in1 + alu_in2;
+        alu_add_in2 <= alu_in2;
+        alu_add_cin <= '0';
+        alu_out <= alu_add;
+      when MC_ADDC =>
+        --alu_out <= alu_in1 + alu_in2 + ("00000000" & c_flag);
+        alu_add_in2 <= alu_in2;
+        alu_add_cin <= c_flag;
+        alu_out <= alu_add;
+      when MC_SUB =>
+        --alu_out <= alu_in1 - alu_in2;
+        alu_add_in2 <= not alu_in2;
+        alu_add_cin <= '1';
+        alu_out <= (not alu_add(8)) & alu_add(7 downto 0);
+      when MC_SUBB =>
+        --alu_out <= alu_in1 - alu_in2 - ("00000000" & c_flag);
+        alu_add_in2 <= not alu_in2;
+        alu_add_cin <= c_flag;
+        alu_out <= (not alu_add(8)) & alu_add(7 downto 0);
+      when MC_BIT_AND =>        alu_out <= alu_in1 and alu_in2;
+      when MC_BIT_OR =>         alu_out <= alu_in1 or  alu_in2;
+      when MC_BIT_XOR =>        alu_out <= alu_in1 xor alu_in2;
+      when MC_BIT_ASL =>        alu_out <= alu_in1(7 downto 0) & "0";
+      when MC_BIT_LSR =>        alu_out <= alu_in1(0) & "0" & alu_in1(7 downto 1);
+      when MC_BIT_ROL =>        alu_out <= alu_in1(7 downto 0) & c_flag;
+      when MC_BIT_ROR =>        alu_out <= alu_in1(0) & c_flag & alu_in1(7 downto 1);
+      when others =>            alu_out <= alu_in1;
+    end case;
+  end process;
+
+
+  -- The flag stuff
+  process (reset, clk)
+  begin
+    if reset='1' then
+      n_flag <= '0';
+    elsif clk'event and clk='1' then
+      case flag_op is
+        when MC_NOP =>		-- Do nothing
+        when MC_NVZC =>		n_flag <= alu_out(7);
+        when MC_NZ =>		n_flag <= alu_out(7);
+        when MC_NZC =>          n_flag <= alu_out(7);
+        when MC_BIT =>          n_flag <= alu_out(7);
+        when MC_DIN =>          n_flag <= data_in(7);
+        when others =>		-- Do nothing
+      end case;
+    end if;
+  end process;
+
+  process (reset, clk)
+  begin
+    if reset='1' then
+      v_flag <= '0';
+    elsif clk'event and clk='1' then
+      case flag_op is
+        when MC_NOP =>		-- Do nothing
+        when MC_NVZC =>
+             if alu_op=MC_ADD or alu_op=MC_ADDC then
+               if alu_in1(7)=alu_in2(7) and alu_in1(7)/=alu_add(7) then
+                 v_flag <= '1';
+               else
+                 v_flag <= '0';
+               end if;
+             elsif alu_op=MC_SUB or alu_op=MC_SUBB then
+               if alu_in1(7)/=alu_in2(7) and alu_in1(7)/=alu_add(7)then
+                 v_flag <= '1';
+               else
+                 v_flag <= '0';
+               end if;
+             end if;
+        when MC_CLEARV =>       v_flag <= '0';
+        when MC_DIN =>          v_flag <= data_in(6);
+        when MC_BIT =>          v_flag <= data_in(6);
+        when others =>		-- Do nothing
+      end case;
+    end if;
+  end process;
+
+
+  process (reset, clk)
+  begin
+    if reset='1' then
+      b_flag <= '0';
+    elsif clk'event and clk='1' then
+      case flag_op is
+        when MC_NOP =>		-- Do nothing
+        when MC_SETB =>         b_flag <= '1';
+        when MC_DIN =>          b_flag <= data_in(4);
+        when others =>		-- Do nothing
+      end case;
+    end if;
+  end process;
+
+  process (reset, clk)
+  begin
+    if reset='1' then
+      d_flag <= '0';
+    elsif clk'event and clk='1' then
+      case flag_op is
+        when MC_NOP =>		-- Do nothing
+        when MC_CLEARD =>       d_flag <= '0';
+        when MC_DIN =>          d_flag <= data_in(3);
+        when MC_SETD =>         d_flag <= '1';
+        when others =>		-- Do nothing
+      end case;
+    end if;
+  end process;
+
+  process (reset, clk)
+  begin
+    if reset='1' then
+      i_flag <= '1';
+    elsif clk'event and clk='1' then
+      case flag_op is
+        when MC_NOP =>		-- Do nothing
+        when MC_SETI =>         i_flag <= '1';
+        when MC_CLEARI =>       i_flag <= '0';
+        when MC_DIN =>          i_flag <= data_in(2);
+        when others =>		-- Do nothing
+      end case;
+    end if;
+  end process;
+
+  process (reset, clk)
+  begin
+    if reset='1' then
+      z_flag <= '1';
+    elsif clk'event and clk='1' then
+      case flag_op is
+        when MC_NOP =>		-- Do nothing
+        when MC_NVZC =>
+            if alu_out(7 downto 0)="00000000" then
+              z_flag <='1';
+            else
+              z_flag <= '0';
+            end if;
+        when MC_NZ =>
+            if alu_out(7 downto 0)="00000000" then
+              z_flag <='1';
+            else
+              z_flag <= '0';
+            end if;
+        when MC_NZC =>
+            if alu_out(7 downto 0)="00000000" then
+              z_flag <='1';
+            else
+              z_flag <='0';
+            end if;
+        when MC_BIT =>
+            if alu_out(7 downto 0)="00000000" then
+              z_flag <='1';
+            else
+              z_flag <='0';
+            end if;
+        when MC_DIN =>          z_flag <= data_in(1);
+        when others =>		-- Do nothing
+      end case;
+    end if;
+  end process;
+
+  process (reset, clk)
+  begin
+    if reset='1' then
+      c_flag <= '0';
+    elsif clk'event and clk='1' then
+      case flag_op is
+        when MC_NOP =>		-- Do nothing
+        when MC_NVZC =>		c_flag <= alu_out(8);
+        when MC_NZC =>          c_flag <= alu_out(8);
+        when MC_CLEARC =>       c_flag <= '0';
+        when MC_DIN =>          c_flag <= data_in(0);
+        when MC_SETC =>         c_flag <= '1';
+        when others =>		-- Do nothing
+      end case;
+    end if;
+  end process;
+
+end core_6502_arch_debug;
+
+
+----------------------------------------------------------------------------
+----------------------------------------------------------------------------
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_arith.all;
+use ieee.std_logic_unsigned.all;
+library work;
+use work.microcode.all;
+use work.free_6502.all;
+
+
+entity core_6502 is
+  port (clk	 :in std_logic;
+        reset	 :in std_logic;
+        irq_in	 :in std_logic;
+        nmi_in	 :in std_logic;
+        addr_pin :out std_logic_vector (15 downto 0);
+        din	 :in  std_logic_vector (7 downto 0);
+        dout	 :out std_logic_vector (7 downto 0);
+        dout_oe  :out std_logic;
+        we_pin	 :out std_logic;
+        rd_pin	 :out std_logic;
+        sync	 :out std_logic
+       );
+end core_6502;
+
+
+architecture arch_core_6502 of core_6502 is
+  signal stack_page	:std_logic_vector (7 downto 0);
+  signal reg_a_out	:std_logic_vector (7 downto 0);
+  signal reg_x_out	:std_logic_vector (7 downto 0);
+  signal reg_y_out	:std_logic_vector (7 downto 0);
+  signal reg_sr_out	:std_logic_vector (7 downto 0);
+  signal reg_sp_out	:std_logic_vector (7 downto 0);
+  signal reg_pc_out	:std_logic_vector (15 downto 0);
+begin
+  stack_page <= "00000001";
+
+  U6502: core_6502_debug port map
+    (clk, reset, irq_in, nmi_in, addr_pin, din, dout, dout_oe, we_pin, 
+     rd_pin, sync, stack_page, reg_a_out, reg_x_out, reg_y_out,
+     reg_sr_out, reg_sp_out, reg_pc_out);
+
+end arch_core_6502;

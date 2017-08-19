@@ -1,0 +1,1101 @@
+module PewPew where
+
+import PewPew.Input (input)
+import PewPew.Model (defaultGame)
+import PewPew.Level as Level
+import PewPew.Step as Step
+import PewPew.View as View
+import Window
+
+game  = { defaultGame | enemies <- Level.create()}
+state = foldp Step.next game input
+main  = View.display <~ Window.dimensions ~ state
+
+module PewPew.Model where
+import PewPew.Utils as Utils
+
+(gameWidth,gameHeight) = (600,400)
+(halfWidth,halfHeight) = (gameWidth/2,gameHeight/2)
+
+data State = Play | Win | Lose
+
+type Object a = { a | x:Float, y:Float, vx:Float, vy:Float}
+
+type Ship = Object {}
+
+type Enemy = Object {
+    lastFired: Time
+}
+
+type Explosion = Object {
+    time: Time
+}
+
+type Projectile = Object {}
+
+type Game = {
+    score: Int,
+    duration: Time,
+    state: State,
+    ship: Ship,
+    projectiles: [Projectile],
+    enemies: [Enemy],
+    explosions: [Explosion],
+    enemyProjectiles: [Projectile]
+}
+
+enemyVelocity: Int -> Int -> Float
+enemyVelocity dir enemiesRemaining =
+    let velocity = 200 - Utils.cubicEasing 34 0 175 enemiesRemaining
+    in velocity * (toFloat dir)
+
+
+makeEnemy: Int -> Int -> Float -> Enemy
+makeEnemy row col vx=
+   let enemySize = 30
+       y =  halfHeight - (toFloat row * enemySize) - 20.0
+       x = (toFloat col * enemySize) - halfWidth
+
+   in { x=x, y=y, vx=vx, vy=0.0, lastFired=0 }
+
+
+defaultGame : Game
+defaultGame = {
+    score            = 0,
+    duration         = 0,
+    state            = Play,
+    ship             = { x=-halfWidth, y=20-halfHeight, vx = 0, vy=0 },
+    projectiles      = [],
+    enemies          = [],
+    explosions       = [],
+    enemyProjectiles = []}
+
+	module PewPew.Level where
+
+import String
+import PewPew.Model as Model
+import PewPew.Utils as Utils
+
+
+parseLine: (Int, String) -> [(Int,Int)]
+parseLine (row, chars) =
+   let nonBlank c = c /= " "
+       withRow col = (row,col)
+
+   in chars
+       |> String.split ""
+       |> Utils.withIndex
+       |> filter (nonBlank << snd)
+       |> map (withRow << fst)
+
+
+asciiToEnemies: String -> [Model.Enemy]
+asciiToEnemies string =
+    let lines = String.split "\n" string
+        positions = lines
+            |> Utils.withIndex
+            |> concatMap parseLine
+        count = length positions
+        initialVelocity = Model.enemyVelocity 1 count
+        makeEnemy (row,col) = Model.makeEnemy row col initialVelocity
+
+    in map makeEnemy positions
+
+
+level = """
+  *      **   *
+  * *   *  *  * *
+  * *   *  *  * *
+  ****  *  *  ****
+    *   *  *    *
+    *    **     *
+"""
+
+
+create : () -> [Model.Enemy]
+create () =
+    asciiToEnemies level
+
+	module PewPew.Input where
+
+import Keyboard
+import Touch
+import PewPew.Utils as Utils
+
+type Input = {
+    firing:Bool,
+    direction:Int,
+    delta:Time
+}
+
+touchFire: [Touch.Touch] -> Bool
+touchFire touches =
+    (length touches) > 1 ||
+    any (\ {x,x0} -> (x0-x)==0 ) touches
+
+
+touchMove: [Touch.Touch] -> Int
+touchMove touches =
+    let directionSignals = touches
+        |> filter (\{x,x0} -> abs (x0-x) > 2)
+        |> map (\{x,x0} -> if x<x0 then -1 else 1 )
+    in case directionSignals of
+        h::t -> h
+        []   -> 0
+
+delta = inSeconds <~ fps 60
+firing = merge Keyboard.space (touchFire <~ Touch.touches)
+direction = merge (.x <~ Keyboard.arrows) (touchMove <~ Touch.touches)
+
+input =
+    sampleOn delta (Input <~
+        Utils.throttle firing (350 * millisecond)
+       ~ direction
+       ~ delta)
+
+	   module PewPew.View where
+
+import String
+import Text
+import PewPew.Model (..)
+
+
+txt fn message =
+    (leftAligned << (typeface ["helvetica", "sans-serif"]) << (Text.color (rgb 255 255 255)) << fn) (toText message)
+
+displayProjectile : Projectile -> Form
+displayProjectile {x,y} =
+    move (x,y) (filled white (rect 2 6))
+
+
+displayShip: State -> Ship -> Form
+displayShip state ship =
+    case state of
+    Lose -> toForm (fittedImage 30 30 "assets/explosion.png") |> move (ship.x, ship.y)
+    _    -> toForm (fittedImage 40 40 "assets/ship.png") |> move (ship.x, ship.y)
+
+
+displayEnemy: Enemy -> Form
+displayEnemy enemy =
+    toForm (fittedImage 30 30 "assets/red-2.png")
+        |> move (enemy.x, enemy.y)
+        |> rotate (degrees 180)
+
+
+displayExplosion: Explosion -> Form
+displayExplosion boom =
+    toForm (fittedImage 30 30 "assets/explosion.png")
+        |> move (boom.x, boom.y)
+        |> scale (1.2 * boom.time/0.15)
+
+
+displayPlay : (Int,Int) -> Game -> Element
+displayPlay (w,h) ({state, score, ship, projectiles, enemies, explosions, enemyProjectiles} as game) =
+    let objs = [
+       filled (rgb 0 0 0) (rect gameWidth gameHeight)
+    ] ++
+    (map displayProjectile projectiles) ++
+    (map displayEnemy enemies) ++
+    (map displayExplosion explosions) ++
+    (map displayProjectile enemyProjectiles) ++
+    [displayShip state ship]
+
+    in
+        layers [
+            container w h topLeft <| collage gameWidth gameHeight objs,
+            container w 20 topLeft <| (flow down [txt (Text.height 16) (String.append "SCORE: "  (show score))])
+        ]
+
+
+tweetLink: Int -> String
+tweetLink score =
+    let base = "https://twitter.com/intent/tweet?text="
+        --HACK: pre-encoded
+        text = String.join " " [
+            "I%20scored",
+            show score,
+            "on%20the%20%40FireflyLogic%20404%20game!%20http%3A%2F%2Ffireflylogic.com%2F404%20%23pewpew"
+        ]
+    in String.append base text
+
+
+displayGameOver : String -> (Int,Int) -> Game -> Element
+displayGameOver message (w,h) ({score} as game) =
+    layers [
+        displayPlay (w,h) game,
+        container w h topLeft <|
+            collage gameWidth gameHeight [
+                filled (rgba 0 0 0 0.5)  (rect gameWidth gameHeight),
+                toForm (txt (Text.height 50) message) |> move (0, 30),
+                toForm (txt ((Text.height 20) << (Text.line Text.Under)) "Tweet My Score" |> link (tweetLink score)) |> move (0, -30)
+            ]
+    ]
+
+
+display : (Int,Int) -> Game -> Element
+display dimensions ({state} as game) =
+    case state of
+        Play -> displayPlay dimensions game
+        Win  -> displayGameOver "You Win!" dimensions game
+        Lose -> displayGameOver "Good try!" dimensions game
+
+		module Svg exposing
+  ( Svg, Attribute, text, node, map
+  , svg, foreignObject
+  , circle, ellipse, image, line, path, polygon, polyline, rect, use
+  , animate, animateColor, animateMotion, animateTransform, mpath, set
+  , desc, metadata, title
+  , a, defs, g, marker, mask, pattern, switch, symbol
+  , altGlyph, altGlyphDef, altGlyphItem, glyph, glyphRef, textPath, text_
+  , tref, tspan
+  , font
+  , linearGradient, radialGradient, stop
+  , feBlend, feColorMatrix, feComponentTransfer, feComposite
+  , feConvolveMatrix, feDiffuseLighting, feDisplacementMap, feFlood, feFuncA
+  , feFuncB, feFuncG, feFuncR, feGaussianBlur, feImage, feMerge, feMergeNode
+  , feMorphology, feOffset, feSpecularLighting, feTile, feTurbulence
+  , feDistantLight, fePointLight, feSpotLight
+  , clipPath, colorProfile, cursor, filter, script, style, view
+  )
+
+{-|
+
+# SVG Nodes
+@docs Svg, Attribute, text, node, map
+
+# HTML Embedding
+@docs svg, foreignObject
+
+# Graphics elements
+@docs circle, ellipse, image, line, path, polygon, polyline, rect, use
+
+# Animation elements
+@docs animate, animateColor, animateMotion, animateTransform, mpath, set
+
+# Descriptive elements
+@docs desc, metadata, title
+
+# Containers
+@docs a, defs, g, marker, mask, pattern, switch, symbol
+
+# Text
+@docs altGlyph, altGlyphDef, altGlyphItem, glyph, glyphRef, textPath, text_,
+  tref, tspan
+
+# Fonts
+@docs font
+
+# Gradients
+@docs linearGradient, radialGradient, stop
+
+# Filters
+@docs feBlend, feColorMatrix, feComponentTransfer, feComposite,
+  feConvolveMatrix, feDiffuseLighting, feDisplacementMap, feFlood, feFuncA,
+  feFuncB, feFuncG, feFuncR, feGaussianBlur, feImage, feMerge, feMergeNode,
+  feMorphology, feOffset, feSpecularLighting, feTile, feTurbulence
+
+# Light source elements
+@docs feDistantLight, fePointLight, feSpotLight
+
+# Miscellaneous
+@docs clipPath, colorProfile, cursor, filter, script, style, view
+-}
+
+import Html
+import VirtualDom
+import Json.Encode as Json
+
+
+
+{-| The core building block to create SVG. This library is filled with helper
+functions to create these `Svg` values.
+
+This is backed by `VirtualDom.Node` in `evancz/virtual-dom`, but you do not
+need to know any details about that to use this library!
+-}
+type alias Svg msg =
+  VirtualDom.Node msg
+
+
+{-| Set attributes on your `Svg`.
+-}
+type alias Attribute msg =
+  VirtualDom.Property msg
+
+
+svgNamespace : Attribute msg
+svgNamespace =
+  VirtualDom.property "namespace" (Json.string "http://www.w3.org/2000/svg")
+
+
+{-| Create any SVG node. To create a `<rect>` helper function, you would write:
+
+    rect : List (Attribute msg) -> List (Svg msg) -> Svg msg
+    rect attributes children =
+        node "rect" attributes children
+
+You should always be able to use the helper functions already defined in this
+library though!
+-}
+node : String -> List (Attribute msg) -> List (Svg msg) -> Svg msg
+node name =
+  \attributes children ->
+    VirtualDom.node name (svgNamespace :: attributes) children
+
+
+{-| A simple text node, no tags at all.
+
+Warning: not to be confused with `text_` which produces the SVG `<text>` tag!
+-}
+text : String -> Svg msg
+text =
+  VirtualDom.text
+
+
+{-| Transform the messages produced by some `Svg`.
+-}
+map : (a -> msg) -> Svg a -> Svg msg
+map =
+  VirtualDom.map
+
+
+{-| The root `<svg>` node for any SVG scene. This example shows a scene
+containing a rounded rectangle:
+
+    import Html
+    import Svg exposing (..)
+    import Svg.Attributes exposing (..)
+
+    roundRect : Html.Html msg
+    roundRect =
+        svg
+          [ width "120", height "120", viewBox "0 0 120 120" ]
+          [ rect [ x "10", y "10", width "100", height "100", rx "15", ry "15" ] [] ]
+-}
+svg : List (Html.Attribute msg) -> List (Svg msg) -> Html.Html msg
+svg =
+  node "svg"
+
+
+{-|-}
+foreignObject : List (Attribute msg) -> List (Html.Html msg) -> Svg msg
+foreignObject =
+  node "foreignObject"
+
+
+-- Animation elements
+
+
+{-|-}
+animate : List (Attribute msg) -> List (Svg msg) -> Svg msg
+animate =
+  node "animate"
+
+
+{-|-}
+animateColor : List (Attribute msg) -> List (Svg msg) -> Svg msg
+animateColor =
+  node "animateColor"
+
+
+{-|-}
+animateMotion : List (Attribute msg) -> List (Svg msg) -> Svg msg
+animateMotion =
+  node "animateMotion"
+
+
+{-|-}
+animateTransform : List (Attribute msg) -> List (Svg msg) -> Svg msg
+animateTransform =
+  node "animateTransform"
+
+
+{-|-}
+mpath : List (Attribute msg) -> List (Svg msg) -> Svg msg
+mpath =
+  node "mpath"
+
+
+{-|-}
+set : List (Attribute msg) -> List (Svg msg) -> Svg msg
+set =
+  node "set"
+
+
+
+-- Container elements
+
+
+{-| The SVG Anchor Element defines a hyperlink.
+-}
+a : List (Attribute msg) -> List (Svg msg) -> Svg msg
+a =
+  node "a"
+
+
+{-|-}
+defs : List (Attribute msg) -> List (Svg msg) -> Svg msg
+defs =
+  node "defs"
+
+
+{-|-}
+g : List (Attribute msg) -> List (Svg msg) -> Svg msg
+g =
+  node "g"
+
+
+{-|-}
+marker : List (Attribute msg) -> List (Svg msg) -> Svg msg
+marker =
+  node "marker"
+
+
+{-|-}
+mask : List (Attribute msg) -> List (Svg msg) -> Svg msg
+mask =
+  node "mask"
+
+
+{-|-}
+pattern : List (Attribute msg) -> List (Svg msg) -> Svg msg
+pattern =
+  node "pattern"
+
+
+{-|-}
+switch : List (Attribute msg) -> List (Svg msg) -> Svg msg
+switch =
+  node "switch"
+
+
+{-|-}
+symbol : List (Attribute msg) -> List (Svg msg) -> Svg msg
+symbol =
+  node "symbol"
+
+
+
+-- Descriptive elements
+
+
+{-|-}
+desc : List (Attribute msg) -> List (Svg msg) -> Svg msg
+desc =
+  node "desc"
+
+
+{-|-}
+metadata : List (Attribute msg) -> List (Svg msg) -> Svg msg
+metadata =
+  node "metadata"
+
+
+{-|-}
+title : List (Attribute msg) -> List (Svg msg) -> Svg msg
+title =
+  node "title"
+
+
+
+-- Filter primitive elements
+
+
+{-|-}
+feBlend : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feBlend =
+  node "feBlend"
+
+
+{-|-}
+feColorMatrix : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feColorMatrix =
+  node "feColorMatrix"
+
+
+{-|-}
+feComponentTransfer : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feComponentTransfer =
+  node "feComponentTransfer"
+
+
+{-|-}
+feComposite : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feComposite =
+  node "feComposite"
+
+
+{-|-}
+feConvolveMatrix : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feConvolveMatrix =
+  node "feConvolveMatrix"
+
+
+{-|-}
+feDiffuseLighting : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feDiffuseLighting =
+  node "feDiffuseLighting"
+
+
+{-|-}
+feDisplacementMap : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feDisplacementMap =
+  node "feDisplacementMap"
+
+
+{-|-}
+feFlood : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feFlood =
+  node "feFlood"
+
+
+{-|-}
+feFuncA : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feFuncA =
+  node "feFuncA"
+
+
+{-|-}
+feFuncB : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feFuncB =
+  node "feFuncB"
+
+
+{-|-}
+feFuncG : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feFuncG =
+  node "feFuncG"
+
+
+{-|-}
+feFuncR : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feFuncR =
+  node "feFuncR"
+
+
+{-|-}
+feGaussianBlur : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feGaussianBlur =
+  node "feGaussianBlur"
+
+
+{-|-}
+feImage : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feImage =
+  node "feImage"
+
+
+{-|-}
+feMerge : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feMerge =
+  node "feMerge"
+
+
+{-|-}
+feMergeNode : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feMergeNode =
+  node "feMergeNode"
+
+
+{-|-}
+feMorphology : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feMorphology =
+  node "feMorphology"
+
+
+{-|-}
+feOffset : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feOffset =
+  node "feOffset"
+
+
+{-|-}
+feSpecularLighting : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feSpecularLighting =
+  node "feSpecularLighting"
+
+
+{-|-}
+feTile : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feTile =
+  node "feTile"
+
+
+{-|-}
+feTurbulence : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feTurbulence =
+  node "feTurbulence"
+
+
+
+-- Font elements
+
+
+{-|-}
+font : List (Attribute msg) -> List (Svg msg) -> Svg msg
+font =
+  node "font"
+
+
+
+-- Gradient elements
+
+
+{-|-}
+linearGradient : List (Attribute msg) -> List (Svg msg) -> Svg msg
+linearGradient =
+  node "linearGradient"
+
+
+{-|-}
+radialGradient : List (Attribute msg) -> List (Svg msg) -> Svg msg
+radialGradient =
+  node "radialGradient"
+
+
+{-|-}
+stop : List (Attribute msg) -> List (Svg msg) -> Svg msg
+stop =
+  node "stop"
+
+
+
+-- Graphics elements
+
+
+{-| The circle element is an SVG basic shape, used to create circles based on
+a center point and a radius.
+
+    circle [ cx "60", cy "60", r "50" ] []
+-}
+circle : List (Attribute msg) -> List (Svg msg) -> Svg msg
+circle =
+  node "circle"
+
+
+{-|-}
+ellipse : List (Attribute msg) -> List (Svg msg) -> Svg msg
+ellipse =
+  node "ellipse"
+
+
+{-|-}
+image : List (Attribute msg) -> List (Svg msg) -> Svg msg
+image =
+  node "image"
+
+
+{-|-}
+line : List (Attribute msg) -> List (Svg msg) -> Svg msg
+line =
+  node "line"
+
+
+{-|-}
+path : List (Attribute msg) -> List (Svg msg) -> Svg msg
+path =
+  node "path"
+
+
+{-|-}
+polygon : List (Attribute msg) -> List (Svg msg) -> Svg msg
+polygon =
+  node "polygon"
+
+
+{-| The polyline element is an SVG basic shape, used to create a series of
+straight lines connecting several points. Typically a polyline is used to
+create open shapes.
+
+    polyline [ fill "none", stroke "black", points "20,100 40,60 70,80 100,20" ] []
+-}
+polyline : List (Attribute msg) -> List (Svg msg) -> Svg msg
+polyline =
+  node "polyline"
+
+
+{-|-}
+rect : List (Attribute msg) -> List (Svg msg) -> Svg msg
+rect =
+  node "rect"
+
+
+{-|-}
+use : List (Attribute msg) -> List (Svg msg) -> Svg msg
+use =
+  node "use"
+
+
+
+-- Light source elements
+
+
+{-|-}
+feDistantLight : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feDistantLight =
+  node "feDistantLight"
+
+
+{-|-}
+fePointLight : List (Attribute msg) -> List (Svg msg) -> Svg msg
+fePointLight =
+  node "fePointLight"
+
+
+{-|-}
+feSpotLight : List (Attribute msg) -> List (Svg msg) -> Svg msg
+feSpotLight =
+  node "feSpotLight"
+
+
+-- Text content elements
+
+
+{-|-}
+altGlyph : List (Attribute msg) -> List (Svg msg) -> Svg msg
+altGlyph =
+  node "altGlyph"
+
+
+{-|-}
+altGlyphDef : List (Attribute msg) -> List (Svg msg) -> Svg msg
+altGlyphDef =
+  node "altGlyphDef"
+
+
+{-|-}
+altGlyphItem : List (Attribute msg) -> List (Svg msg) -> Svg msg
+altGlyphItem =
+  node "altGlyphItem"
+
+
+{-|-}
+glyph : List (Attribute msg) -> List (Svg msg) -> Svg msg
+glyph =
+  node "glyph"
+
+
+{-|-}
+glyphRef : List (Attribute msg) -> List (Svg msg) -> Svg msg
+glyphRef =
+  node "glyphRef"
+
+
+{-|-}
+textPath : List (Attribute msg) -> List (Svg msg) -> Svg msg
+textPath =
+  node "textPath"
+
+
+{-|-}
+text_ : List (Attribute msg) -> List (Svg msg) -> Svg msg
+text_ =
+  node "text"
+
+
+{-|-}
+tref : List (Attribute msg) -> List (Svg msg) -> Svg msg
+tref =
+  node "tref"
+
+
+{-|-}
+tspan : List (Attribute msg) -> List (Svg msg) -> Svg msg
+tspan =
+  node "tspan"
+
+
+-- Uncategorized elements
+
+
+{-|-}
+clipPath : List (Attribute msg) -> List (Svg msg) -> Svg msg
+clipPath =
+  node "clipPath"
+
+
+{-|-}
+colorProfile : List (Attribute msg) -> List (Svg msg) -> Svg msg
+colorProfile =
+  node "colorProfile"
+
+
+{-|-}
+cursor : List (Attribute msg) -> List (Svg msg) -> Svg msg
+cursor =
+  node "cursor"
+
+
+{-|-}
+filter : List (Attribute msg) -> List (Svg msg) -> Svg msg
+filter =
+  node "filter"
+
+
+{-|-}
+script : List (Attribute msg) -> List (Svg msg) -> Svg msg
+script =
+  node "script"
+
+
+{-|-}
+style : List (Attribute msg) -> List (Svg msg) -> Svg msg
+style =
+  node "style"
+
+
+{-|-}
+view : List (Attribute msg) -> List (Svg msg) -> Svg msg
+view =
+  node "view"
+
+
+
+module Froggy.Grid where
+
+type Position = {
+  x: Int,
+  y: Int
+}
+
+equals : Position -> Position -> Bool
+equals a b = (a.x == b.x) && (a.y == b.y)
+
+translate : Position -> Position -> Position
+translate a b =
+  {
+    x = a.x + b.x,
+    y = a.y + b.y
+  }
+
+  module Froggy.Main where
+
+import Window
+import Froggy.Model (..)
+import Froggy.State (..)
+import Froggy.View (..)
+import Froggy.TransitionUtil (..)
+
+main = lift3 (view fontName) Window.dimensions time mainState
+
+mainState = game loadedGame
+
+port loadedGame : Signal (Maybe Game)
+
+port savedGame : Signal Game
+port savedGame = mainState
+
+port fontName : String
+
+-- Copyright (c) 2013 Grzegorz Balcerek; see the LICENSE.txt file
+
+module Preselm (presentation,emptyFrame) where
+
+import Maybe (justs, maybe)
+
+-- util
+
+ithmod n (h:t) =
+  let nmod = n `mod` (length (h:t))
+  in if nmod == 0 then h else (ithmod (nmod-1) t)
+
+isEmpty lst = case lst of { [] -> True; _ -> False }
+
+maybe_map f m = case m of { Just x -> Just (f x); Nothing -> Nothing }
+
+-- signals
+
+data Transition = NoTransition | ForwardTransition | BackwardTransition
+
+lastKeysDownSignal = sampleOn (dropIf isEmpty [] Keyboard.Raw.keysDown) Keyboard.Raw.keysDown
+
+currentFrameIndexSignal =
+  let step (t,keys) indexes =
+    let (nextIndex,trans) = 
+        if | keys == [39] || keys == [78] || keys == [13] -> (indexes.current+1,ForwardTransition)
+           | keys == [37] || keys == [80] -> (indexes.current-1,BackwardTransition)
+           | keys == [35] || keys == [69] -> (0-1,NoTransition)
+           | keys == [36] || keys == [72] -> (0,NoTransition)
+           | otherwise -> (indexes.current,NoTransition)
+    in { current = nextIndex, previous = indexes.current, indexChangeTime = t, transition = trans }
+  in foldp step { current=0, previous=0, indexChangeTime=0, transition = NoTransition } (timestamp lastKeysDownSignal)
+
+-- this signal has the elapsed time since the last frame index change, updated with the frequency of fps 10, 
+timeSinceIndexChangeSignal = timeOf (fpsWhen 10 (since second currentFrameIndexSignal))
+
+-- context
+
+makeContextRecord w h i tsic md mpd mp =
+  { windowWidth = w
+  , windowHeight = h
+  , currentFrameIndex = i.current
+  , previousFrameIndex = i.previous
+  , timeSinceIndexChange = tsic-i.indexChangeTime
+  , transition = i.transition
+  , mouseIsDown = md
+  , mousePositionOnDown = mpd
+  , mousePosition = mp
+  }
+
+contextSignal = makeContextRecord <~ Window.width
+                                   ~ Window.height
+                                   ~ currentFrameIndexSignal
+                                   ~ timeSinceIndexChangeSignal
+                                   ~ Mouse.isDown
+                                   ~ sampleOn Mouse.isDown Mouse.position
+                                   ~ Mouse.position
+
+-------------------------------------- FRAME BUILDERS --------------------
+
+
+contextDebugBuilder =
+  let contextDebugElement frame context = Just $ container context.windowWidth context.windowHeight midBottom (asText context)
+  in [ contextDebugElement ]
+
+
+backgroundBuilders =
+  let backgroundColorElement frame context =
+    let f x = collage context.windowWidth context.windowHeight [
+                filled x $ rect context.windowWidth context.windowHeight
+                             ((toFloat context.windowWidth)/2.0,(toFloat context.windowHeight)/2.0) ]
+    in maybe_map f frame.backgroundColor
+  in [ backgroundColorElement ]
+
+headerBuilders =
+  let titleElement frame context =
+        let headerHeight = context.windowHeight * (maybe 0.0 id frame.headerHeight)
+            f x = container context.windowWidth headerHeight middle (text . header . toText $ x)
+        in maybe_map f frame.title
+      headerBackgroundElement frame context =
+        let headerHeight = context.windowHeight * (maybe 0.0 id frame.headerHeight)
+            f x = collage context.windowWidth headerHeight [
+                     filled x $ rect context.windowWidth headerHeight
+                             ((toFloat context.windowWidth)/2.0,(headerHeight)/2.0) ]
+        in maybe_map f frame.headerBackgroundColor
+  in  [ headerBackgroundElement, titleElement ]
+
+
+contentBuilders =
+  let contentElement frame context =
+    let floatWidth = toFloat context.windowWidth
+        leftMargin = maybe 0.0 id frame.leftMargin
+        topMargin = maybe 0.0 id frame.topMargin
+        contentWidth = maybe 1.0 id frame.contentWidth
+        f x = container context.windowWidth context.windowHeight
+                 (topLeftAt (relative leftMargin)(relative topMargin))
+                 (width (truncate (floatWidth * contentWidth)) x)
+    in maybe_map f frame.content
+  in  [ contentElement ]
+
+middleBuilders =
+  let middleElement frame context =
+    let f x = container context.windowWidth context.windowHeight middle x
+    in maybe_map f frame.middle
+  in  [ middleElement ]
+
+
+twoColumnsBuilders =
+  let column1Element frame context =
+        let leftMargin = maybe 0.0 id frame.leftMargin
+            topMargin = maybe 0.0 id frame.topMargin
+            floatWidth = toFloat context.windowWidth
+            columnWidth = maybe 0.5 id frame.columnWidth
+            f x = container context.windowWidth context.windowHeight
+                                             (topLeftAt (relative leftMargin)(relative topMargin))
+                                             (width (truncate (floatWidth * columnWidth)) x)
+        in maybe_map f frame.column1
+      column2Element frame context =
+        let rightMargin = maybe 0.0 id frame.rightMargin
+            topMargin = maybe 0.0 id frame.topMargin
+            floatWidth = toFloat context.windowWidth
+            columnWidth = maybe 0.5 id frame.columnWidth
+            f x = container context.windowWidth context.windowHeight
+                                             (topRightAt (relative rightMargin)(relative topMargin))
+                                             (width (truncate (floatWidth * columnWidth)) x)
+        in maybe_map f frame.column2
+  in  [ column1Element, column2Element ]
+
+selectionBoxBuilder =
+  let selectionBoxElement frame context =
+    if Maybe.isJust frame.selectionBoxColor
+    then
+      if context.mouseIsDown
+      then let (x0,y0) = context.mousePosition
+               (x1,y1) = context.mousePositionOnDown
+               (xL,xR) = if x0 < x1 then (x0,x1) else (x1,x0)
+               (yU,yD) = if y0 < y1 then (y0,y1) else (y1,y0)
+               w = xR - xL
+               h = yD - yU
+               center = ((xR+xL)/2, (yD+yU)/2)
+               color = maybe white id frame.selectionBoxColor
+           in Just $ collage context.windowWidth context.windowHeight [
+                       outlined color $ rect (w-4) (h-4) center ,
+                       outlined color $ rect (w-2) (h-2) center ,
+                       outlined color $ rect w h center ]
+      else Nothing
+    else Nothing
+  in [ selectionBoxElement ]
+
+coreFrameBuilders = concat [ backgroundBuilders, headerBuilders, contentBuilders, middleBuilders, twoColumnsBuilders, selectionBoxBuilder]
+frameBuilders = coreFrameBuilders -- ++ [contextDebugBuilder]
+buildFrame frame context = layers (justs $ map (\f -> f frame context) frameBuilders)
+
+----------------------------- HANDLERS
+
+slidingTransitionSelectors = 
+  let twoFramesElement leftFrame rightFrame context = (buildFrame leftFrame context) `beside` (buildFrame rightFrame context)
+      moveFramesLeftToRight frames context =
+              let leftFrame = ithmod context.previousFrameIndex frames
+                  rightFrame = ithmod context.currentFrameIndex frames
+                  deltaX = context.windowWidth * context.timeSinceIndexChange `div` 1000
+                  twoFrames = twoFramesElement leftFrame rightFrame context
+                  position = topLeftAt (absolute (0-deltaX)) (absolute 0)
+              in container context.windowWidth context.windowHeight position twoFrames
+      moveFramesRightToLeft frames context =
+              let leftFrame = ithmod context.currentFrameIndex frames
+                  rightFrame = ithmod context.previousFrameIndex frames
+                  deltaX = context.windowWidth * context.timeSinceIndexChange `div` 1000
+                  twoFrames = twoFramesElement leftFrame rightFrame context
+                  position = topLeftAt (absolute (deltaX-context.windowWidth)) (absolute 0)
+              in container context.windowWidth context.windowHeight position twoFrames
+      selectLTR context =
+        if context.transition == ForwardTransition && context.timeSinceIndexChange < 1000
+        then Just moveFramesLeftToRight
+        else Nothing
+      selectRTL context =
+        if context.transition == BackwardTransition && context.timeSinceIndexChange < 1000
+        then Just moveFramesRightToLeft
+        else Nothing
+  in  [ selectLTR, selectRTL ]
+
+defaultHandlerSelector =
+  let showCurrentFrame frames context = buildFrame (ithmod context.currentFrameIndex frames) context
+      selectShowFrame context = Just showCurrentFrame
+  in [ selectShowFrame ] 
+
+handlerSelectors = concat [slidingTransitionSelectors, defaultHandlerSelector]
+      
+-- presentation
+
+emptyFrame = {
+ backgroundColor = Nothing,
+ column1 = Nothing,
+ column2 = Nothing,
+ columnWidth = Just 0.35,
+ content = Nothing,
+ contentWidth = Just 0.8,
+ headerBackgroundColor = Nothing,
+ headerHeight = Just 0.1,
+ leftMargin = Just 0.1,
+ middle = Nothing,
+ rightMargin = Just 0.1,
+ selectionBoxColor = Nothing,
+ title = Nothing,
+ topMargin = Just 0.15}
+
+presentation frames =
+  let showPresentation frames context = 
+        let handlers = justs $ map (\f -> f context) handlerSelectors
+            theHandler = head handlers
+        in theHandler frames context
+  in lift (showPresentation frames) contextSignal

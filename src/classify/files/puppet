@@ -1,0 +1,580 @@
+class deaddrop::apache_config {
+    file { '/etc/apache2/conf.d/other-vhosts-access-log':
+        ensure => 'absent',
+    }
+
+    file { '/var/www/index.html':
+        ensure => 'absent',
+    }
+
+    file { 'ports.conf':
+        ensure => file,
+        path => '/etc/apache2/ports.conf',
+        content => template("deaddrop/ports.conf.erb"),
+        owner => 'root',
+        group => 'root',
+        mode => '0644',
+    }
+
+    file { 'apache2.conf':
+        ensure => file,
+        path => '/etc/apache2/apache2.conf',
+        content => template("deaddrop/apache2.conf.erb"),
+        owner => 'root',
+        group => 'root',
+        mode => '0644',
+    }
+
+    file { 'security':
+        ensure => file,
+        path => '/etc/apache2/conf.d/security',
+        content => template("deaddrop/security.erb"),
+        owner => 'root',
+        group => 'root',
+        mode => '0644',
+    }
+
+}
+class deaddrop::apparmor {
+    $dependents = [ "apparmor", "libapache2-mod-apparmor", "apparmor-profiles", "apparmor-utils", "dh-apparmor", "libpam-apparmor", "python-libapparmor", "libapparmor1", "libapparmor-perl"]
+ 
+    package { $dependents: ensure => "installed" }
+
+    file { '/etc/apparmor.d':
+      ensure => directory,
+      recurse => true,
+      path => '/etc/apparmor.d',
+      source => "puppet:///modules/deaddrop/${my_role}_apparmor",
+      owner => 'root',
+      group => 'root',
+      mode => '0644',
+    }
+
+    a2mod { "apparmor": ensure => 'present'}
+    exec { "a2enmod apparmor":
+        user => 'root',
+        group => 'root',
+    }
+}
+class deaddrop::base {
+    include ntp
+    include gnupg2
+    include secure_delete
+    include sysstat
+    include deaddrop::ssh
+    include deaddrop::iptables_v4
+    include deaddrop::sysctl
+    include deaddrop::restricted_pw_files
+#    include deaddrop::remove_pcmcia
+    include deaddrop::cron_allow
+    include deaddrop::crontab
+
+    package { "syslog-ng": ensure => installed}   
+    package { "libpam-google-authenticator": ensure => installed}
+}
+
+class deaddrop::ossec_server {
+    file { 'ossec.conf':
+      ensure => file,
+      path => '/var/ossec/etc/ossec.conf',
+      content => template("deaddrop/monitor.ossec.conf.erb"),
+      owner => 'root',
+      group => 'ossec',
+      mode => '0550',
+    }
+
+    file { 'ossec_rules.xml':
+      ensure => file,
+      path => '/var/ossec/rules/ossec_rules.xml',
+      source => 'puppet:///modules/deaddrop/ossec_rules.xml',
+      owner => 'root',
+      group => 'ossec',
+      mode => '0550',
+    }
+
+    file { 'internal_options.conf':
+      ensure => file,
+      path => '/var/ossec/etc/internal_options.conf',
+      source => "puppet:///modules/deaddrop/internal_options.conf",
+      owner => 'root',
+      group => 'ossec',
+      mode => '0440',
+    }
+
+   file { 'ossec-logtest':
+      ensure => 'link',
+      path => '/var/ossec/bin/ossec-logtest',
+      target => '/var/ossec/ossec-logtest',
+      owner => 'root',
+      group => 'root',
+   }
+}
+
+
+class deaddrop::ossec_agents {
+    file { 'ossec.conf':
+      ensure => file,
+      path => '/var/ossec/etc/ossec.conf',
+      content => template("deaddrop/$my_role.ossec.conf.erb"),
+      owner => 'root',
+      group => 'ossec',
+      mode => '0550',
+    }
+}
+
+
+class deaddrop::remove_pcmcia {
+    package { 'pcmcia-cs':
+	ensure => absent,
+    }
+
+    exec { "K=$(uname -a | awk '{print $3}')":
+        cwd => "/root",
+        path => [ "/bin/", "/sbin/" , "/usr/bin/", "/usr/sbin/" ],
+        group => "root",
+        user => "root",
+       # notify => Exec['aptitude remove kernel-pcmcia-modules-$K'],
+    }
+
+    exec { 'aptitude remove kernel-pcmcia-modules-$K':
+        cwd => "/root",
+        path => [ "/bin/", "/sbin/" , "/usr/bin/", "/usr/sbin/" ],
+        group => "root",
+        user => "root",
+       # notify => Exec['aptitude remove pcmcia-modules-$K'],
+    }
+
+    exec { 'aptitude remove pcmcia-modules-$K':
+        cwd => "/root",
+        path => [ "/bin/", "/sbin/" , "/usr/bin/", "/usr/sbin/" ],
+        group => "root",
+        user => "root",
+    }
+
+    package { 'hotplug':
+	ensure => purged,
+    }
+}
+
+# TODO: We should probably use proper stages here.
+class stage1 {
+
+  class { '::mysql::server':
+    root_password => 'foo',
+  }
+  class { 'mysql::bindings':
+    php_enable => true,
+  }
+
+  class { 'redis':
+    version => '2.4.17',
+  }
+
+  class { 'memcached':
+    max_memory => '10%'
+  }
+
+  class { 'apache':
+    default_mods => false,
+    mpm_module   => 'prefork',
+    servername   => 'proviso.local',
+  }
+  class { 'apache::mod::mime': }->
+  class { 'apache::mod::rewrite': }->
+  class { 'apache::mod::deflate': }->
+  # TODO: We probably want this module but this isn't working for some reason.
+  # class { 'apache::mod::expires': }->
+  class { 'apache::mod::ssl': }
+  # mod php is not included here beacuse it is added by the php::apache class.
+
+  package { 'curl':
+    ensure => 'present',
+  }
+
+
+  Php::Extension <| |> -> Php::Config <| |> ~> Service["apache2"]
+
+
+  include php
+
+  # TODO: Add support for yum.
+  class { 'php::cli':
+    ensure   => 'present',
+    provider => 'apt',
+  }
+  class { 'php::apache':
+    ensure   => 'present',
+    provider => 'apt',
+  }
+  class { 'php::dev':
+    ensure   => 'present',
+    provider => 'apt',
+  }
+  class { 'php::pear':
+    ensure   => 'present',
+    provider => 'apt',
+  }
+  class { 'php::extension::apc':
+    ensure   => 'present',
+    provider => 'apt',
+    package  => 'php-apc',
+  }
+  class { 'php::extension::curl':
+    ensure   => 'present',
+    provider => 'apt',
+  }
+  package { 'uploadprogress':
+    ensure   => 'installed',
+    provider => 'pecl',
+  }
+  package { 'zip':
+    ensure   => 'installed',
+    provider => 'pecl',
+  }
+
+
+  include php::composer
+  include php::phpunit
+  include drush
+}
+
+exec { 'apt update':
+  command => '/usr/bin/apt-get update ; /usr/bin/apt-get upgrade -y',
+}
+
+class { 'stage1':
+  require => Exec['apt update']
+}
+
+class java-development-env {
+  include apt
+  include maven
+
+  apt::ppa { "ppa:webupd8team/java": }
+
+  # Set current Tomcat download url.
+  $tomcat_url = "http://apache.mirrors.pair.com/tomcat/tomcat-8/v8.0.24/bin/apache-tomcat-8.0.24.tar.gz"
+
+  exec { 'apt-get update':
+    command => '/usr/bin/apt-get update',
+    before => Apt::Ppa["ppa:webupd8team/java"],
+  }
+
+  exec { 'apt-get update 2':
+    command => '/usr/bin/apt-get update',
+    require => [ Apt::Ppa["ppa:webupd8team/java"], Package["git-core"] ],
+  }
+
+  # install necessary ubuntu packages to setup the environment
+  package { ["vim",
+             "curl",
+             "git-core",
+             "expect",
+             "bash"]:
+    ensure => present,
+    require => Exec["apt-get update"],
+    before => Apt::Ppa["ppa:webupd8team/java"],
+  }
+
+  package { ["oracle-java7-installer"]:
+    ensure => present,
+    require => Exec["apt-get update 2"],
+  }
+
+  exec {
+    "accept_license":
+    command => "echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections && echo debconf shared/accepted-oracle-license-v1-1 seen true | sudo debconf-set-selections",
+    cwd => "/home/vagrant",
+    user => "vagrant",
+    path    => "/usr/bin/:/bin/",
+    require => Package["curl"],
+    before => Package["oracle-java7-installer"],
+    logoutput => true,
+  }
+
+  $server = {
+    id => "remote-tomcat-server",
+    username => "admin",
+    password => "tomcat",
+  }
+
+  maven::settings { 'mvn-settings' :
+    local_repo => '/vagrant/maven/.m2/repository',
+    servers    => [$server],
+  }
+
+  Exec {
+    path  => "${::path}",
+  }
+
+  group { "puppet":
+    ensure  => present,
+  }
+
+  package { "acpid":
+    ensure  => installed,
+  }
+
+  package { "supervisor":
+    ensure  => installed,
+  }
+
+  package { "wget":
+    ensure  => installed,
+  }
+
+  user { "vagrant":
+    ensure    => present,
+    comment   => "Tomcat User",
+    home      => "/home/vagrant",
+    shell     => "/bin/bash",
+  }
+
+  exec { "check_tomcat_url":
+    cwd       => "/tmp",
+    command   => "wget -S --spider ${tomcat_url}",
+    timeout   => 900,
+    require   => Package["wget"],
+    notify    => Exec["get_tomcat"],
+    logoutput => "on_failure"
+  }
+
+  exec { "get_tomcat":
+    cwd       => "/tmp",
+    command   => "wget ${tomcat_url} -O tomcat.tar.gz > /opt/.tomcat_get_tomcat",
+    creates   => "/opt/.tomcat_get_tomcat",
+    timeout   => 900,
+    require   => Package["wget"],
+    notify    => Exec["extract_tomcat"],
+    logoutput => "on_failure"
+  }
+
+  exec { "extract_tomcat":
+    cwd         => "/vagrant",
+    command     => "tar zxf /tmp/tomcat.tar.gz ; mv apache* tomcat",
+    creates     => "/vagrant/tomcat",
+    require     => Exec["get_tomcat"],
+    refreshonly => true,
+  }
+
+  file { "/vagrant/tomcat/conf/tomcat-users.xml":
+    ensure    => present,
+    content   => "<?xml version='1.0' encoding='utf-8'?>
+  <tomcat-users>
+    <role rolename=\"manager-gui\" />
+    <role rolename=\"manager-script\" />
+    <role rolename=\"manager-jmx\" />
+    <role rolename=\"manager-status\" />
+    <user username=\"admin\" password=\"tomcat\" roles=\"manager-gui, manager-script, manager-jmx, manager-status\"/>
+  </tomcat-users>",
+    require   => Exec["extract_tomcat"],
+  }
+
+  file { "/vagrant/tomcat":
+    ensure    => directory,
+    owner     => "vagrant",
+    mode      => 0755,
+    recurse   => true,
+    require   => Exec["extract_tomcat"],
+  }
+
+  file { "/vagrant/tomcat/bin/setenv.sh":
+    ensure    => present,
+    owner     => "vagrant",
+    mode      => 0755,
+    content   => '#!/bin/sh
+export CATALINA_OPTS="$CATALINA_OPTS -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=1099 -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.authenticate=false -Djava.rmi.server.hostname=192.168.33.10"
+export CATALINA_OPTS="$CATALINA_OPTS -agentlib:jdwp=transport=dt_socket,address=8000,server=y,suspend=n"
+echo "Using CATALINA_OPTS:"
+for arg in $CATALINA_OPTS
+do
+    echo ">> " $arg
+done
+echo ""',
+    require   => Exec["extract_tomcat"],
+  }
+
+  file { "/etc/supervisor/conf.d/tomcat.conf":
+    ensure    => present,
+    content   => "[program:tomcat]
+command=/vagrant/tomcat/bin/catalina.sh run
+directory=/vagrant/tomcat/bin
+autostart=no
+user=vagrant
+stopsignal=QUIT",
+    require   => [ Package["supervisor"], File["/vagrant/tomcat/conf/tomcat-users.xml"] ],
+    notify    => Exec["update_supervisor"],
+  }
+
+  exec { "update_supervisor":
+    command     => "supervisorctl update",
+    refreshonly => true,
+  }
+
+}
+
+include java-development-env
+
+class fortrabbit {
+	file { '/etc/apt/sources.list.d':
+		ensure  => 'directory',
+		owner   => 'root',
+		group   => 'root';
+	}
+	file { '/etc/apt/sources.list.d/dotdeb.list':
+		ensure  => 'present',
+		owner   => 'root',
+		group   => 'root',
+		mode 	=> '0600',
+		content => "deb http://packages.dotdeb.org squeeze all\ndeb-src http://packages.dotdeb.org squeeze all\ndeb http://packages.dotdeb.org squeeze-php54 all\ndeb-src http://packages.dotdeb.org squeeze-php54 all";
+	}
+	file { '/etc/apt/sources.list.d/frbit.list':
+		ensure  => 'present',
+		owner   => 'root',
+		group   => 'root',
+		mode 	=> '0600',
+		content => "deb http://debrepo.frbit.com/ frbit-squeeze main";
+	}
+	exec { 'dotdeb-key':
+		path 	=> '/bin:/usr/bin',
+		cwd		=> '/tmp',
+		command => "wget -O - http://www.dotdeb.org/dotdeb.gpg | sudo apt-key add -",
+		require => File['/etc/apt/sources.list.d/dotdeb.list'],
+		notify	=> Exec["update-apt"]; 
+	}
+	exec { 'frbit-key':
+		path 	=> '/bin:/usr/bin',
+		command => "wget -O - http://debrepo.frbit.com/frbit.gpg | sudo apt-key add -",
+		require => File['/etc/apt/sources.list.d/frbit.list'],
+		notify	=> Exec["update-apt"];
+	}
+	exec { 'update-apt':
+		path 		=> '/bin:/usr/bin',
+		command 	=> 'apt-get update',
+		require 	=>	Exec['dotdeb-key', 'frbit-key'],
+		refreshonly => true;
+	}
+	package {
+		'apache2-mpm-worker':
+			ensure => installed,
+			require => Exec['update-apt'];
+
+		['php5-fpm', 'libapache2-mod-fastcgi']: 
+			ensure => installed,
+			require => Package['apache2-mpm-worker'],
+			notify	=> Exec['upgrade-apache'];
+
+		'php5-cli':
+			ensure => installed,
+			require => Package['php5-fpm'];
+
+		[ "php5-xdebug", "php5-tidy", "php5-sqlite", "php5-redis", "php5-pgsql", "php5-mysqlnd", "php5-memcache", "php5-memcached", "php5-mcrypt", "php5-imagick", "php5-http", "php5-gmp", "php5-gd", "php5-curl", "php5-apc", "php5-intl", "php5-igbinary", "php5-mongo", "php5-oauth", "php5-phalcon", "php5-runkit", "php5-stats", "php5-stomp", "php5-yaf", "php5-yaml" ]: 
+			ensure	=> installed, 
+			require => Package['php5-fpm'];
+	}
+
+	exec { 'upgrade-apache':
+		path => '/bin:/usr/bin:/usr/sbin',
+		command => 'a2enmod actions ; a2enmod rewrite ; service apache2 restart',
+		require => Package['libapache2-mod-fastcgi', 'apache2-mpm-worker'];
+	}
+	exec { 'composer':
+		path => '/bin:/usr/bin',
+		command => 'curl -s https://getcomposer.org/installer | php && mv composer.phar /usr/local/bin/composer',
+		require => Package[ 'php5-cli' ];
+	}
+
+	$gitHookDir = '/home/vagrant/PHP-GIT-Hooks'
+	exec { 'getPHooks':
+		path	=> '/bin:/usr/bin',
+		cwd		=> '/home/vagrant/',
+		command	=> "[ -d ${gitHookDir}/.git ] && cd ${gitHookDir} && git pull --all || git clone https://github.com/gmanricks/PHP-GIT-Hooks.git";
+	}
+	file { '/etc/php5/fpm/pool.d/www.conf':
+		ensure => absent,
+		require => Package['php5-fpm']
+	}
+	file { '/usr/local/bin/composer':
+		owner   => 'vagrant',
+		group   => 'vagrant',
+		mode    => '0755',
+		ensure  => present,
+		require => Exec['composer']; 
+	}
+	file { '/etc/motd' :
+		content => template("motd.erb");
+	}
+	file { '/usr/bin/stagr' :
+		owner	=> 'vagrant',
+		group	=> 'vagrant',
+		mode	=> '0755',
+		ensure	=> present,
+		content => template("stagr.erb");
+	}
+	file { '/home/vagrant/.bash_profile' :
+		owner	=> 'vagrant',
+		group	=> 'vagrant',
+		mode	=> '0644',
+		ensure	=> present,
+		content	=> template("bash_profile.erb");
+	}
+	file { '/home/vagrant/.vimrc' :
+		owner 	=> 'vagrant',
+		group	=> 'vagrant',
+		mode	=> '0644',
+		ensure	=> present,
+		content	=> template("vimrc.erb");
+	}
+	file { '/home/vagrant/.vim':
+		ensure	=> 'directory',
+		owner	=> 'vagrant',
+		group	=> 'vagrant';
+	}
+	file { '/home/vagrant/.vim/colors':
+		ensure  => 'directory',
+		owner   => 'vagrant',
+		group   => 'vagrant',
+		require => File['/home/vagrant/.vim'];
+	}
+	file { '/home/vagrant/.vim/colors/solarized.vim':
+		ensure  => 'present',
+		owner   => 'vagrant',
+		group   => 'vagrant',
+		mode 	=> '0644',
+		content => template("solarized.erb"),
+		require => File['/home/vagrant/.vim/colors'];
+	}
+
+	/*
+		MySQL Server
+	*/
+	package {
+		'mysql-server-5.5':
+			ensure	=> installed,
+			require	=> Exec['update-apt'];
+
+	}
+}
+
+include fortrabbit
+
+exec { 'set_document_root':
+  command => 'ln -fs /vagrant/web-root/* /var/www',
+  onlyif => '[ ! -h /var/www ]',
+  path => '/usr/bin:/bin',
+}
+
+file { '/var/www/':
+  ensure => 'directory',
+}
+
+exec { 'apt-get update':
+  path => '/usr/bin'
+}
+
+#package { ['python-software-properties', 'vim', 'git']:
+#  ensure => present,
+#  require => Exec['apt-get update'],
+#}
+
+include nginx

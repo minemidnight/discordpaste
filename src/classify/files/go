@@ -1,0 +1,1635 @@
+package agent
+
+import (
+	"encoding/json"
+	"strings"
+	"sync"
+
+	"github.com/coreos/go-etcd/etcd"
+)
+
+// KeyPrefix is used to create the full service path.
+const KeyPrefix = "/discover"
+
+// EtcdBackend for service discovery.
+type EtcdBackend struct {
+	Client *etcd.Client
+}
+
+func servicePath(name, addr string) string {
+	if addr == "" {
+		return KeyPrefix + "/services/" + name
+	}
+	return KeyPrefix + "/services/" + name + "/" + addr
+}
+
+// Subscribe to changes in services of a given name.
+func (b *EtcdBackend) Subscribe(name string) (UpdateStream, error) {
+	stream := &etcdStream{ch: make(chan *ServiceUpdate), stop: make(chan bool)}
+	watch := b.getStateChanges(name, stream.stop)
+	response, _ := b.getCurrentState(name)
+	go func() {
+		if response != nil {
+			for _, n := range response.Node.Nodes {
+				if update := b.responseToUpdate(response, n); update != nil {
+					stream.ch <- update
+				}
+			}
+		}
+		stream.ch <- &ServiceUpdate{}
+		for resp := range watch {
+			if update := b.responseToUpdate(resp, resp.Node); update != nil {
+				stream.ch <- update
+			}
+		}
+	}()
+	return stream, nil
+}
+
+type etcdStream struct {
+	ch       chan *ServiceUpdate
+	stop     chan bool
+	stopOnce sync.Once
+}
+
+func (s *etcdStream) Chan() chan *ServiceUpdate { return s.ch }
+
+func (s *etcdStream) Close() { s.stopOnce.Do(func() { close(s.stop) }) }
+
+func (b *EtcdBackend) responseToUpdate(resp *etcd.Response, node *etcd.Node) *ServiceUpdate {
+	// expected key structure: /PREFIX/services/NAME/ADDR
+	splitKey := strings.SplitN(node.Key, "/", 5)
+	if len(splitKey) < 5 {
+		return nil
+	}
+	serviceName := splitKey[3]
+	serviceAddr := splitKey[4]
+	if "get" == resp.Action || ("set" == resp.Action || "update" == resp.Action) && (resp.PrevNode == nil || node.Value != resp.PrevNode.Value) {
+		// GET is because getCurrentState returns responses of Action GET.
+		// some SETs are heartbeats, so we ignore SETs where value didn't change.
+		var serviceAttrs map[string]string
+		err := json.Unmarshal([]byte(node.Value), &serviceAttrs)
+		if err != nil {
+			return nil
+		}
+		return &ServiceUpdate{
+			Name:    serviceName,
+			Addr:    serviceAddr,
+			Online:  true,
+			Attrs:   serviceAttrs,
+			Created: uint(node.CreatedIndex),
+		}
+	} else if "delete" == resp.Action || "expire" == resp.Action {
+		return &ServiceUpdate{
+			Name: serviceName,
+			Addr: serviceAddr,
+		}
+	} else {
+		return nil
+	}
+}
+
+func (b *EtcdBackend) getCurrentState(name string) (*etcd.Response, error) {
+	return b.Client.Get(servicePath(name, ""), false, true)
+}
+
+func (b *EtcdBackend) getStateChanges(name string, stop chan bool) chan *etcd.Response {
+	watch := make(chan *etcd.Response)
+	go b.Client.Watch(servicePath(name, ""), 0, true, watch, stop)
+	return watch
+}
+
+// Register a service with etcd.
+func (b *EtcdBackend) Register(name, addr string, attrs map[string]string) error {
+	attrsJSON, err := json.Marshal(attrs)
+	if err != nil {
+		return err
+	}
+	attrsString := string(attrsJSON)
+	path := servicePath(name, addr)
+	ttl := uint64(HeartbeatIntervalSecs + MissedHearbeatTTL)
+
+	_, err = b.Client.Update(path, attrsString, ttl)
+	if e, ok := err.(*etcd.EtcdError); ok && e.ErrorCode == 100 {
+		// This is a workaround for etcd issue #407: https://github.com/coreos/etcd/issues/407
+		// If we just do a Set and don't try to Update first, createdIndex will get incremented
+		// on each heartbeat, breaking leader election.
+		_, err = b.Client.Set(path, attrsString, ttl)
+	}
+	return err
+}
+
+// Unregister a service with etcd.
+func (b *EtcdBackend) Unregister(name, addr string) error {
+	_, err := b.Client.Delete(servicePath(name, addr), false)
+	return err
+}
+package gobatsd
+
+import (
+	"fmt"
+	"math/rand"
+	"strconv"
+	"time"
+)
+
+type Counter struct {
+	Key      string
+	Values   []float64
+	channels []chan float64
+	Paths    []string
+}
+
+const counterInternalBufferSize = 10
+
+func NewCounter(name string) Metric {
+	c := &Counter{}
+	c.Key = name
+	c.Values = make([]float64, len(Config.Retentions))
+	c.channels = make([]chan float64, len(Config.Retentions))
+	for i := range c.channels {
+		c.channels[i] = make(chan float64, counterInternalBufferSize)
+	}
+	c.Paths = make([]string, len(Config.Retentions))
+	for i := range c.Paths {
+		c.Paths[i] = CalculateFilename(fmt.Sprintf("counters:%v:%v", c.Key, Config.Retentions[i].Interval), Config.Root)
+	}
+	datastore.RecordMetric(fmt.Sprintf("counters:%v", c.Key))
+	c.Start()
+	return c
+}
+
+func (c *Counter) Start() {
+	for i := range Config.Retentions {
+		go func(retention Retention) {
+			ticker := NewTickerWithOffset(time.Duration(retention.Interval)*time.Second,
+				time.Duration(rand.Intn(int(retention.Interval)))*time.Second)
+			for {
+				select {
+				case now := <-ticker:
+					//fmt.Printf("%v: Time to save %v at retention %v\n", now, c.Key, retention)
+					c.save(retention, now)
+				case val := <-c.channels[retention.Index]:
+					c.Values[retention.Index] += val
+				}
+			}
+		}(Config.Retentions[i])
+
+	}
+}
+
+func (c *Counter) Update(value float64) {
+	for i := range c.channels {
+		c.channels[i] <- value
+	}
+}
+
+func (c *Counter) save(retention Retention, now time.Time) {
+	aggregateValue := c.Values[retention.Index]
+	c.Values[retention.Index] = 0
+	timestamp := now.Unix() - now.Unix()%retention.Interval
+	//fmt.Printf("%v: Ready to store %v, value now %v, retention #%v\n", timestamp, aggregateValue, c.Values[retention.Index], retention.Index)
+	if aggregateValue == 0 {
+		return
+	}
+
+	if retention.Index == 0 {
+		observation := AggregateObservation{Name: "counters:" + c.Key, Content: fmt.Sprintf("%d<X>%v", timestamp, aggregateValue), Timestamp: timestamp, RawName: "counters:" + c.Key, Path: ""}
+		StoreInRedis(observation)
+	} else {
+		observation := AggregateObservation{Name: "counters:" + c.Key + ":" + strconv.FormatInt(retention.Interval, 10), Content: fmt.Sprintf("%d %v\n", timestamp, aggregateValue),
+			Timestamp: timestamp, RawName: "counters:" + c.Key, Path: c.Paths[retention.Index], SummaryValues: map[string]float64{"value": aggregateValue}, Interval: retention.Interval}
+		StoreOnDisk(observation)
+	}
+}
+
+package gobatsd
+
+import (
+	"math"
+)
+
+func SortedMin(a []float64) float64 {
+	return a[0]
+}
+
+func SortedMax(a []float64) float64 {
+	return a[len(a)-1]
+}
+
+func Sum(a []float64) float64 {
+	sum := 0.0
+	for i := range a {
+		sum += a[i]
+	}
+	return sum
+}
+
+func Mean(a []float64) float64 {
+	return Sum(a) / float64(len(a))
+}
+
+func MeanSquared(a []float64) float64 {
+	ms := 0.0
+	mean := Mean(a)
+	for i := range a {
+		ms += math.Pow(a[i]-mean, 2.0)
+	}
+	return ms
+
+}
+
+func SortedMedian(a []float64) float64 {
+	return a[len(a)/2]
+}
+
+func Stddev(a []float64) float64 {
+	stddev := 0.0
+	if len(a) > 1 {
+		stddev = math.Pow(MeanSquared(a)/float64(len(a)-1), 0.5)
+	}
+	return stddev
+}
+
+func SortedPercentile(a []float64, p float64) float64 {
+	return a[int(float64(len(a))*p)]
+}
+
+package gobatsd
+
+import (
+	"encoding/json"
+	"math/rand"
+	"strconv"
+	"testing"
+	"time"
+)
+
+func TestJSONEncoding(t *testing.T) {
+	values := make([]map[string]string, 0)
+	for i := 0; i < 100; i++ {
+		values = append(values, map[string]string{"Timestamp": strconv.FormatInt(time.Now().Unix(), 10), "Value": strconv.FormatFloat(rand.Float64()*1000, 'f', 0, 64)})
+	}
+
+	packageJSON, _ := json.Marshal(values)
+	artisinalJSON := ArtisinallyMarshallDatapointJSON(values)
+	if string(artisinalJSON) != string(packageJSON) {
+		t.Errorf("Expected artisinal JSON to match package JSON; artisinal was\n\n%v\n\npackage was \n\n%v ", string(artisinalJSON), string(packageJSON))
+	}
+}
+
+func BenchmarkJSONPackageEncoding(b *testing.B) {
+	values := make([]map[string]string, 0)
+	for i := 0; i < 1000; i++ {
+		values = append(values, map[string]string{"Timestamp": strconv.FormatInt(time.Now().Unix(), 10), "Value": strconv.FormatFloat(rand.Float64()*1000, 'f', 0, 64)})
+	}
+	for j := 0; j < b.N; j++ {
+		json.Marshal(values)
+	}
+}
+
+func BenchmarkJSONArtisinalEncoding(b *testing.B) {
+	values := make([]map[string]string, 0)
+	for i := 0; i < 1000; i++ {
+		values = append(values, map[string]string{"Timestamp": strconv.FormatInt(time.Now().Unix(), 10), "Value": strconv.FormatFloat(rand.Float64()*1000, 'f', 0, 64)})
+	}
+	for j := 0; j < b.N; j++ {
+		ArtisinallyMarshallDatapointJSON(values)
+	}
+}
+
+package pongo
+
+// TODO: Add context-sensitive filters (so they know their location, e.g. for 
+// context-sensitive escaping within javascript <-> normal body html.)
+
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type FilterFunc func(interface{}, []interface{}, *FilterChainContext) (interface{}, error)
+
+type FilterChainContext struct {
+	// Store what you want along the filter chain. Every filter has access to this store.
+	Store           map[string]interface{}
+	applied_filters []string
+}
+
+func (ctx *FilterChainContext) HasVisited(names ...string) bool {
+	for _, filter := range ctx.applied_filters {
+		for _, name := range names {
+			if filter == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (ctx *FilterChainContext) visitFilter(name string) {
+	ctx.applied_filters = append(ctx.applied_filters, name)
+}
+
+var Filters = map[string]FilterFunc{
+	"safe":        filterSafe,
+	"unsafe":      nil, // It will not be called, just added to visited filters (applied_filters)
+	"lower":       filterLower,
+	"upper":       filterUpper,
+	"capitalize":  filterCapitalize,
+	"default":     filterDefault,
+	"trim":        filterTrim,
+	"length":      filterLength,
+	"join":        filterJoin,
+	"striptags":   filterStriptags,
+	"time_format": filterTimeFormat,
+	"floatformat": filterFloatFormat,
+
+	/* TODO:
+	- verbatim
+	- ...
+	*/
+}
+
+func newFilterChainContext() *FilterChainContext {
+	return &FilterChainContext{
+		applied_filters: make([]string, 0, 5),
+	}
+}
+
+func filterSafe(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	if ctx.HasVisited("unsafe", "safe") {
+		// If "unsafe" or "safe" were already applied to the value
+		// don't do it (again, in case of "safe")
+		return value, nil
+	}
+
+	str, is_str := value.(string)
+	if !is_str {
+		// We don't have to safe non-strings
+		return value, nil
+	}
+
+	output := strings.Replace(str, "&", "&amp;", -1)
+	output = strings.Replace(output, ">", "&gt;", -1)
+	output = strings.Replace(output, "<", "&lt;", -1)
+
+	return output, nil
+}
+
+func filterLower(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	str, is_str := value.(string)
+	if !is_str {
+		return nil, errors.New(fmt.Sprintf("%v (%T) is not of type string", value, value))
+	}
+	return strings.ToLower(str), nil
+}
+
+func filterTimeFormat(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	t, is_time := value.(time.Time)
+	if !is_time {
+		return nil, errors.New(fmt.Sprintf("%v (%T) is not of type string", value, value))
+	}
+
+	arg := args[0]
+	if arg == nil {
+		return nil, errors.New("time_format requires you pass a format.")
+	}
+
+	format, is_string := arg.(string)
+	if !is_string {
+		return nil, errors.New(fmt.Sprintf("time_format's format must be a string. %v (%T) passed.", format, format))
+	}
+
+	return t.Format(format), nil
+}
+
+func filterUpper(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	str, is_str := value.(string)
+	if !is_str {
+		return nil, errors.New(fmt.Sprintf("%v (%T) is not of type string", value, value))
+	}
+	return strings.ToUpper(str), nil
+}
+
+func filterCapitalize(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	str, is_str := value.(string)
+	if !is_str {
+		return nil, errors.New(fmt.Sprintf("%v (%T) is not of type string", value, value))
+	}
+	return strings.Title(str), nil
+}
+
+func filterTrim(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	str, is_str := value.(string)
+	if !is_str {
+		return nil, errors.New(fmt.Sprintf("%v (%T) is not of type string", value, value))
+	}
+	return strings.TrimSpace(str), nil
+}
+
+func filterLength(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array, reflect.String, reflect.Map:
+		return rv.Len(), nil
+	default:
+		return nil, errors.New(fmt.Sprintf("Cannot determine length from type %T ('%v').", value, value))
+	}
+	panic("unreachable")
+}
+
+func filterJoin(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	if len(args) != 1 {
+		return nil, errors.New("Please provide a separator")
+	}
+	sep, is_string := args[0].(string)
+	if !is_string {
+		return nil, errors.New(fmt.Sprintf("Separator must be of type string, not %T ('%v')", args[0], args[0]))
+	}
+
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		items := make([]string, 0, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			items = append(items, fmt.Sprintf("%v", rv.Index(i).Interface()))
+		}
+		return strings.Join(items, sep), nil
+	default:
+		return nil, errors.New(fmt.Sprintf("Cannot join variable of type %T ('%v').", value, value))
+	}
+	panic("unreachable")
+}
+
+func filterStriptags(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	str, is_str := value.(string)
+	if !is_str {
+		return nil, errors.New(fmt.Sprintf("%v is not of type string", value))
+	}
+
+	if len(args) > 1 {
+		return nil, errors.New("Please provide a comma-seperated string with tags (or no string to remove all tags).")
+	}
+
+	if len(args) == 1 {
+		taglist, is_string := args[0].(string)
+		if !is_string {
+			return nil, errors.New(fmt.Sprintf("Taglist must be a string, not %T ('%v')", args[0], args[0]))
+		}
+
+		tags := strings.Split(taglist, ",")
+
+		for _, tag := range tags {
+			re := regexp.MustCompile(fmt.Sprintf("</?%s/?>", tag))
+			str = re.ReplaceAllString(str, "")
+		}
+	} else {
+		re := regexp.MustCompile("<[^>]*?>")
+		str = re.ReplaceAllString(str, "")
+	}
+
+	return strings.TrimSpace(str), nil
+}
+
+func filterDefault(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+	// Use reflect to check against zero() of type
+
+	if len(args) != 1 {
+		return nil, errors.New("Default filter takes only one argument")
+	}
+
+	if reflect.Zero(reflect.TypeOf(value)).Interface() == value {
+		return args[0], nil
+	}
+
+	return value, nil
+}
+
+/*
+	Filter for formatting floats. The filter closely follows Django's implementation.
+
+	Examples:
+
+		When used without an argument, it rounds the float to 1 decimal place, but only if there's a decimal point to be displayed:
+
+		{{ 34.23234|floatformat }} displays 34.2
+		{{ 34.00000|floatformat }} displays 34
+		{{ 34.26000|floatformat }} displays 34.3
+
+		When used with an integer parameter, it rounds the float to that number of decimals. No trimming of zeros occurs.
+
+		{{ 34.23234|floatformat:3 }} displays 34.232
+		{{ 34.00000|floatformat:3 }} displays 34.000
+		{{ 34.26000|floatformat:3 }} displays 34.260
+
+		"0" rounds to the nearest integer.
+
+		{{ 34.23234|floatformat:"0" }} displays 34
+		{{ 34.00000|floatformat:"0" }} displays 34
+		{{ 39.56000|floatformat:"0" }} displays 40
+
+		A negative parameter rounds to that number of decimals, but only if necessary.
+
+		{{ 34.23234|floatformat:"-3" }} displays 34.232
+		{{ 34.00000|floatformat:"-3" }} displays 34
+		{{ 34.26000|floatformat:"-3" }} displays 34.260
+
+*/
+func filterFloatFormat(value interface{}, args []interface{}, ctx *FilterChainContext) (interface{}, error) {
+
+	// Value to format
+	var floatValue float64
+	switch val := value.(type) {
+	case float32:
+		floatValue = float64(val)
+	case float64:
+		floatValue = val
+	default:
+		return nil, errors.New("Illegal type for floatformat (only float32 and float64 are acceptable)")
+	}
+
+	// Default parameters
+	decimals, trim := 1, true
+	if len(args) > 1 {
+		return nil, errors.New("Floatformat filter takes at most one argument")
+	} else if len(args) == 1 {
+		switch val := args[0].(type) {
+		case int:
+			decimals = val
+			trim = false
+		case string:
+			var err error
+			decimals, err = strconv.Atoi(val)
+			if err != nil {
+				return nil, errors.New(fmt.Sprintf("Illegal floatformat argument: %v", val))
+			}
+			if decimals <= 0 {
+				decimals = -decimals
+			} else {
+				trim = false
+			}
+		default:
+			return nil, errors.New(fmt.Sprintf("%v (%T) is not of type int or string", val, val))
+		}
+	}
+
+	fmtFloat := strconv.FormatFloat(floatValue, 'f', decimals, 64)
+
+	// Remove zeroes if they are unnecessary
+	if trim {
+		intVal := int(floatValue)
+		if floatValue-float64(intVal) == 0 {
+			fmtFloat = strconv.Itoa(intVal)
+		}
+	}
+	return fmtFloat, nil
+}
+
+package pongo
+
+import (
+	"strings"
+)
+
+func splitArgs(in *string, sep string) *[]string {
+	if in == nil {
+		panic("Implementation error; parseArgs got a nil string as input. Please report this issue.")
+	}
+	if len(sep) != 1 {
+		panic("Separator must be exactly one char (string of length 1).")
+	}
+
+	res := make([]string, 0, strings.Count(*in, sep)+1) // approx count(sep)+1 args
+
+	escaped := false
+	in_string := false
+	pos := 0
+	buf := *in
+	argbuf := ""
+	pc := ""
+
+	for pos < len(buf) {
+		c := buf[pos : pos+1]
+		if pos > 0 {
+			pc = buf[pos-1 : pos]
+		}
+
+		// TODO: Handle string escape correctly (e. g. "this is \"nice\""), still too lazy to do
+		if pc == "\\" {
+			escaped = true
+		} else {
+			escaped = false
+		}
+
+		if c == "\"" && !escaped {
+			if in_string {
+				// String end
+				in_string = false
+
+				// We go a string, now add it to res
+				argbuf += buf[:pos+1]
+				buf = buf[pos+1:]
+				pos = 0
+			} else {
+				// String found
+				in_string = true
+				pos++
+			}
+			continue
+		}
+
+		if in_string {
+			pos++
+			continue
+		}
+
+		if c == sep {
+			// seperator found, add new arg
+			res = append(res, argbuf)
+			argbuf = ""
+			buf = buf[pos+1:]
+			pos = 0
+			continue
+		}
+
+		argbuf += c
+		pos++
+	}
+
+	// Is there a last argument?
+	if len(argbuf) > 0 {
+		res = append(res, argbuf)
+	}
+
+	return &res
+}
+
+package pongo
+
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+)
+
+type TagHandler struct {
+	Execute func(*string, *executionContext, *Context) (*string, error)
+	Ignore  func(*string, *executionContext) error
+	Prepare func(*tagNode, *Template) error
+}
+
+var Tags = map[string]*TagHandler{
+	"if":        &TagHandler{Execute: tagIf, Ignore: tagIfIgnore},
+	"else":      nil, // Only a placeholder for the (if|for)-statement
+	"endif":     nil, // Only a placeholder for the if-statement
+	"for":       &TagHandler{Execute: tagFor, Ignore: tagForIgnore},
+	"endfor":    nil,
+	"block":     &TagHandler{Execute: tagBlock}, // Needs no Ignore-function because nested-blocks aren't allowed
+	"endblock":  nil,
+	"extends":   &TagHandler{},
+	"include":   &TagHandler{},
+	"trim":      &TagHandler{Execute: tagTrim, Ignore: tagTrimIgnore},
+	"endtrim":   nil,
+	"remove":    &TagHandler{Execute: tagRemove, Ignore: tagRemoveIgnore},
+	"endremove": nil,
+	/*"catch": tagCatch, // catches any panics and prints them
+	"endcatch": nil,*/
+
+	/*"while":    tagWhile,
+	"endwhile": nil,
+	"set":      tagSet,*/
+}
+
+func init() {
+	// Workaround, to fix the 'initialization loop' compiler error
+	// First check whether there is any extends/include entry in Tags
+	// since it could be removed by the user.
+	if tag, has_extends := Tags["extends"]; has_extends && tag.Execute == nil && tag.Prepare == nil {
+		Tags["extends"].Prepare = tagExtendsPrepare
+		Tags["extends"].Execute = tagExtends
+	}
+	if tag, has_include := Tags["include"]; has_include && tag.Execute == nil && tag.Prepare == nil {
+		Tags["include"].Prepare = tagIncludePrepare
+		Tags["include"].Execute = tagInclude
+	}
+}
+
+type compareFunc func(interface{}, interface{}) bool
+
+var compMap = map[string]compareFunc{
+	"==": func(a, b interface{}) bool {
+		return a == b
+	},
+	"!=": func(a, b interface{}) bool {
+		return a != b
+	},
+	"<>": func(a, b interface{}) bool {
+		return a != b
+	},
+	"&&": func(a, b interface{}) bool {
+		ab, is_bool := a.(bool)
+		if !is_bool {
+			fmt.Printf("Warning: %v (%T) is not a bool!\n", a, a)
+			return false
+		}
+		bb, is_bool := b.(bool)
+		if !is_bool {
+			fmt.Printf("Warning: %v (%T) is not a bool!\n", b, b)
+			return false
+		}
+		res := ab && bb
+		return res
+	},
+	"||": func(a, b interface{}) bool {
+		ab, is_bool := a.(bool)
+		if !is_bool {
+			fmt.Printf("Warning: %v (%T) is not a bool!\n", a, a)
+			return false
+		}
+		bb, is_bool := b.(bool)
+		if !is_bool {
+			fmt.Printf("Warning: %v (%T) is not a bool!\n", b, b)
+			return false
+		}
+		return ab || bb
+	},
+	">=": func(a, b interface{}) bool {
+		switch av := a.(type) {
+		case int:
+			switch bv := b.(type) {
+			case int:
+				return av >= bv
+			case float64:
+				return float64(av) >= bv
+			}
+		case float64:
+			switch bv := b.(type) {
+			case int:
+				return av >= float64(bv)
+			case float64:
+				return av >= bv
+			}
+		default:
+			fmt.Printf("Warning! Invalid (type) comparison between '%v' (%T) and '%v' (%T).\n", a, a, b, b)
+		}
+		return false
+	},
+	"<=": func(a, b interface{}) bool {
+		switch av := a.(type) {
+		case int:
+			switch bv := b.(type) {
+			case int:
+				return av <= bv
+			case float64:
+				return float64(av) <= bv
+			}
+		case float64:
+			switch bv := b.(type) {
+			case int:
+				return av <= float64(bv)
+			case float64:
+				return av <= bv
+			}
+		default:
+			fmt.Printf("Warning! Invalid (type) comparison between '%v' (%T) and '%v' (%T).\n", a, a, b, b)
+		}
+		return false
+	},
+	"<": func(a, b interface{}) bool {
+		switch av := a.(type) {
+		case int:
+			switch bv := b.(type) {
+			case int:
+				return av < bv
+			case float64:
+				return float64(av) < bv
+			}
+		case float64:
+			switch bv := b.(type) {
+			case int:
+				return av < float64(bv)
+			case float64:
+				return av < bv
+			}
+		default:
+			fmt.Printf("Warning! Invalid (type) comparison between '%v' (%T) and '%v' (%T).\n", a, a, b, b)
+		}
+		return false
+	},
+	">": func(a, b interface{}) bool {
+		switch av := a.(type) {
+		case int:
+			switch bv := b.(type) {
+			case int:
+				return av > bv
+			case float64:
+				return float64(av) > bv
+			default:
+				fmt.Printf("Warning! Invalid (type) comparison between '%v' (%T) and '%v' (%T).\n", a, a, b, b)
+			}
+		case float64:
+			switch bv := b.(type) {
+			case int:
+				return av > float64(bv)
+			case float64:
+				return av > bv
+			default:
+				fmt.Printf("Warning! Invalid (type) comparison between '%v' (%T) and '%v' (%T).\n", a, a, b, b)
+			}
+		default:
+			fmt.Printf("Warning! Invalid (type) comparison between '%v' (%T) and '%v' (%T).\n", a, a, b, b)
+		}
+		return false
+	},
+}
+
+func containsAnyOperator(where string, ops ...string) bool {
+	// TODO: Respect strings which contains operators/comparables. :D I've to 
+	// develop a more intelligent way of "strings.Contains" and have to
+	// replace this function.
+	for _, op := range ops {
+		if strings.Contains(where, op) {
+			return true
+		}
+	}
+	return false
+}
+
+func evalOperation(where string, ctx *Context, ops ...string) (bool, error) {
+	// Determine which operation to execute
+	var op string
+
+	// TODO: Respect strings which contains operators/comparables. :D I've to 
+	// develop a more intelligent way of "strings.Contains" and have to
+	// replace this function.
+	for _, _op := range ops {
+		if strings.Contains(where, _op) {
+			op = _op
+			break
+		}
+	}
+
+	args := strings.SplitN(where, op, 2)
+	if len(args) != 2 {
+		return false, errors.New(fmt.Sprintf("%s-operator must have 2 operands (like X and Y).", op))
+	}
+
+	e1, err1 := evalCondArg(ctx, &args[0])
+	if err1 != nil {
+		return false, err1
+	}
+
+	e2, err2 := evalCondArg(ctx, &args[1])
+	if err2 != nil {
+		return false, err2
+	}
+
+	op_func, has_op := compMap[op]
+	if !has_op {
+		return false, errors.New(fmt.Sprintf("Operator-handler for '%s' not found.", op))
+	}
+
+	return op_func(e1, e2), nil
+}
+
+func evalCondArg(ctx *Context, in *string) (interface{}, error) {
+	switch {
+	// and/or operator (1st class)
+	case containsAnyOperator(*in, "&&", "||"):
+		result, err := evalOperation(*in, ctx, "&&", "||")
+		if err != nil {
+			return false, err
+		}
+		return result, nil
+
+	// ==, !=, <>, >=, <= operator (2nd class)
+	case containsAnyOperator(*in, "==", "!=", "<>", ">=", "<=", ">", "<"):
+		result, err := evalOperation(*in, ctx, "==", "!=", "<>", ">=", "<=", ">", "<")
+		if err != nil {
+			return false, err
+		}
+		return result, nil
+
+	default:
+		e, err := newExpr(in)
+		if err != nil {
+			return false, err
+		}
+		return e.evalValue(ctx)
+	}
+
+	panic("unreachable")
+}
+
+func tagIf(args *string, execCtx *executionContext, ctx *Context) (*string, error) {
+	renderedStrings := make([]string, 0, len(execCtx.template.nodes)-execCtx.node_pos)
+
+	*args = strings.TrimSpace(*args)
+	if len(*args) == 0 {
+		return nil, errors.New("If-argument is empty.")
+	}
+
+	evaled, err := evalCondArg(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+
+	res_bool, is_bool := evaled.(bool)
+	if !is_bool {
+		// {% if x %}
+		// Anything evals to TRUE which is DIFFER from the type's default value!
+		res_bool = reflect.Zero(reflect.TypeOf(evaled)).Interface() != evaled
+	}
+
+	if res_bool {
+		node, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "else", "endif")
+		if err != nil {
+			return nil, err
+		}
+		renderedStrings = append(renderedStrings, (*str_items)...)
+
+		if node.tagname == "else" { // There's an else-block, skip it
+			_, err := execCtx.ignoreUntilAnyTagNode("endif")
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		node, err := execCtx.ignoreUntilAnyTagNode("else", "endif")
+		if err != nil {
+			return nil, err
+		}
+
+		if node.tagname == "else" {
+			_, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "endif")
+			if err != nil {
+				return nil, err
+			}
+			renderedStrings = append(renderedStrings, (*str_items)...)
+		}
+	}
+
+	outputString := strings.Join(renderedStrings, "")
+	return &outputString, nil
+}
+
+func tagIfIgnore(args *string, execCtx *executionContext) error {
+	tn, err := execCtx.ignoreUntilAnyTagNode("else", "endif")
+	if err != nil {
+		return err
+	}
+	if tn.tagname == "else" {
+		_, err := execCtx.ignoreUntilAnyTagNode("endif")
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type forContext struct {
+	Counter  int
+	Counter1 int
+	Max      int
+	Max1     int
+	First    bool
+	Last     bool
+}
+
+func tagFor(args *string, execCtx *executionContext, ctx *Context) (*string, error) {
+	var renderedStrings []string
+
+	// TODO: Replace strings.Contains by a more intelligent function (see comment above as well)
+	if strings.Contains(*args, "in") {
+		// <varname> in <slice/array/string/map>
+		// TODO: Update context with "forloop"-struct every loop round
+		args := strings.SplitN(*args, "in", 2)
+		if len(args) != 2 {
+			return nil, errors.New("When using 'in' in for-loop, it must use the following syntax: <varname> in <array/slice/string/map>")
+		}
+		varname := strings.TrimSpace(args[0])
+		e, err := newExpr(&args[1])
+		if err != nil {
+			return nil, err
+		}
+		value, err := e.evalValue(ctx)
+		if err != nil {
+			return nil, err
+		}
+		rv := reflect.ValueOf(value)
+		switch rv.Kind() {
+		case reflect.Slice, reflect.Array, reflect.String, reflect.Map:
+			// Iterate through slice/array
+
+			if rv.Len() > 0 {
+				// Prepare renderedStrings
+				renderedStrings = make([]string, 0, (len(execCtx.template.nodes)-execCtx.node_pos)*rv.Len())
+
+				// If map, get all keys
+				var map_items []reflect.Value
+				if rv.Kind() == reflect.Map {
+					map_items = rv.MapKeys()
+				}
+
+				// Create for-context
+				forCtx := &forContext{
+					Max:      rv.Len() - 1,
+					Max1:     rv.Len(),
+					Counter1: 1,
+					First:    true,
+				}
+
+				// Check if this is a nested loop (3rd grade)
+				// If so, add to forloops.
+				forloops, has_forloops := (*ctx)["forloops"]
+				if has_forloops {
+					forloops = append(forloops.([]*forContext), forCtx)
+					(*ctx)["forloops"] = forloops // Pointer might have been changed, this is why we set it again 
+				} else {
+					// Check if this is a nested loop (2nd grade)
+					// If so, populate forloops.
+					_forloop, has_forloop := (*ctx)["forloop"]
+					if has_forloop {
+						// Create forloops and add prev and current context to it
+						has_forloops = true
+						forloops = []*forContext{_forloop.(*forContext), forCtx}
+						(*ctx)["forloops"] = forloops
+					}
+				}
+
+				// Do the loops
+				starter_pos := execCtx.node_pos
+				for i := 0; i < rv.Len(); i++ {
+					// Handle each type separately
+					var item interface{}
+					switch rv.Kind() {
+					case reflect.Slice, reflect.Array:
+						item = rv.Index(i).Interface()
+						(*ctx)[varname] = item
+					case reflect.Map:
+						// Create special Context struct for a map
+						(*ctx)[varname] = struct {
+							Key   interface{}
+							Value interface{}
+						}{
+							Key:   map_items[i].Interface(),
+							Value: rv.MapIndex(map_items[i]).Interface(),
+						}
+					case reflect.String:
+						item = rv.Interface().(string)[i : i+1]
+						(*ctx)[varname] = item
+					}
+					execCtx.node_pos = starter_pos
+
+					// Populate and update for-context
+					if i == 1 {
+						forCtx.First = false
+					}
+					if i == rv.Len()-1 {
+						// Last item reached
+						forCtx.Last = true
+					}
+
+					(*ctx)["forloop"] = forCtx
+					(*ctx)["forcounter"] = i
+					(*ctx)["forcounter1"] = i + 1
+
+					// Execute for-body
+					tn, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "else", "endfor")
+					if err != nil {
+						return nil, err
+					}
+					if tn.tagname == "else" {
+						// Skip else since it's not relevant
+						execCtx.ignoreUntilAnyTagNode("endfor")
+					}
+					renderedStrings = append(renderedStrings, (*str_items)...)
+
+					// Increase counters
+					forCtx.Counter++
+					forCtx.Counter1++
+				}
+
+				// Remove for-context
+				delete(*ctx, varname)
+				delete(*ctx, "forloop")
+				delete(*ctx, "forcounter")
+				delete(*ctx, "forcounter1")
+
+				// Check for nested, if so, remove myself from forloops
+				if has_forloops {
+					forloops = (forloops.([]*forContext))[:len(forloops.([]*forContext))-1]
+					(*ctx)["forloops"] = forloops
+				}
+
+				// Check whether forloops can be removed
+				if has_forloops && len(forloops.([]*forContext)) == 0 {
+					delete(*ctx, "forloops")
+				}
+			} else {
+				// Zero executions, directly execute else or go to endfor
+				tn, err := execCtx.ignoreUntilAnyTagNode("else", "endfor")
+				if err != nil {
+					return nil, err
+				}
+				if tn.tagname == "else" {
+					// Execute empty block
+					_, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "endfor")
+					if err != nil {
+						return nil, err
+					}
+					renderedStrings = append(renderedStrings, (*str_items)...)
+				}
+			}
+		default:
+			return nil, errors.New("For-loop 'in'-operator can onl be used for slices/arrays/strings/maps.")
+		}
+	} else {
+		// try to evaluate the argument, and run in X times if it evaluates to an integer
+		e, err := newExpr(args)
+		if err != nil {
+			return nil, err
+		}
+		value, err := e.evalValue(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		// If value is an integer, iterate X times.
+		if rng, is_int := value.(int); is_int {
+			if rng > 0 {
+				// Prepare renderedStrings
+				renderedStrings = make([]string, 0, (len(execCtx.template.nodes)-execCtx.node_pos)*rng)
+
+				// Create for-context
+				forCtx := &forContext{
+					Max:      rng - 1,
+					Max1:     rng,
+					Counter1: 1,
+					First:    true,
+				}
+
+				// Check if this is a nested loop (3rd grade)
+				// If so, add to forloops.
+				forloops, has_forloops := (*ctx)["forloops"]
+				if has_forloops {
+					forloops = append(forloops.([]*forContext), forCtx)
+					(*ctx)["forloops"] = forloops // Pointer might have been changed, this is why we set it again 
+				} else {
+					// Check if this is a nested loop (2nd grade)
+					// If so, populate forloops.
+					_forloop, has_forloop := (*ctx)["forloop"]
+					if has_forloop {
+						// Create forloops and add prev and current context to it
+						has_forloops = true
+						forloops = []*forContext{_forloop.(*forContext), forCtx}
+						(*ctx)["forloops"] = forloops
+					}
+				}
+
+				// Do the loops
+				starter_pos := execCtx.node_pos
+				for i := 0; i < rng; i++ {
+					execCtx.node_pos = starter_pos
+
+					// Populate and update for-context
+					if i == 1 {
+						forCtx.First = false
+					}
+					if i == rng-1 {
+						// Last item reached
+						forCtx.Last = true
+					}
+
+					(*ctx)["forloop"] = forCtx // overwrite current forloop-context
+					(*ctx)["forcounter"] = i
+					(*ctx)["forcounter1"] = i + 1
+
+					// Execute for-body
+					tn, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "else", "endfor")
+					if err != nil {
+						return nil, err
+					}
+					if tn.tagname == "else" {
+						// Skip else since it's not relevant
+						execCtx.ignoreUntilAnyTagNode("endfor")
+					}
+					renderedStrings = append(renderedStrings, (*str_items)...)
+
+					// Increase counters
+					forCtx.Counter++
+					forCtx.Counter1++
+				}
+
+				// Remove for-context
+				delete(*ctx, "forloop")
+				delete(*ctx, "forcounter")
+				delete(*ctx, "forcounter1")
+
+				// Check for nested, if so, remove myself from forloops
+				if has_forloops {
+					forloops = (forloops.([]*forContext))[:len(forloops.([]*forContext))-1]
+					(*ctx)["forloops"] = forloops
+				}
+
+				// Check whether forloops can be removed
+				if has_forloops && len(forloops.([]*forContext)) == 0 {
+					delete(*ctx, "forloops")
+				}
+			} else {
+				// Zero executions, directly execute else or go to endfor
+				tn, err := execCtx.ignoreUntilAnyTagNode("else", "endfor")
+				if err != nil {
+					return nil, err
+				}
+				if tn.tagname == "else" {
+					// Execute empty block
+					_, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "endfor")
+					if err != nil {
+						return nil, err
+					}
+					renderedStrings = append(renderedStrings, (*str_items)...)
+				}
+			}
+		} else {
+			return nil, errors.New(fmt.Sprintf("For-loop error: Cannot iterate over '%v'.", *args))
+		}
+	}
+
+	outputString := strings.Join(renderedStrings, "")
+	return &outputString, nil
+}
+
+func tagForIgnore(args *string, execCtx *executionContext) error {
+	tn, err := execCtx.ignoreUntilAnyTagNode("else", "endfor")
+	if err != nil {
+		return err
+	}
+	if tn.tagname == "else" {
+		_, err := execCtx.ignoreUntilAnyTagNode("endfor")
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func tagBlock(args *string, execCtx *executionContext, ctx *Context) (*string, error) {
+	renderedStrings := make([]string, 0, len(execCtx.template.nodes)-execCtx.node_pos)
+
+	// TODO: Prevent nested block-tags
+
+	// Check whether we replace this block by a internal Context or 
+	// if we render the default content
+	child_block, has_childblock := execCtx.internal_context[fmt.Sprintf("block_%s", *args)]
+	if has_childblock {
+		// Use the prerendered child's data as output
+		str, is_string := child_block.(*string)
+		if !is_string {
+			panic("Internal error; internal block string is NOT a string. Please report this issue.")
+		}
+		// Now we have to ignore the default block
+		_, err := execCtx.ignoreUntilAnyTagNode("endblock")
+		if err != nil {
+			return nil, err
+		}
+
+		// Return the prerendered data
+		return str, nil
+	}
+
+	// Execute default nodes
+	_, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "endblock")
+	if err != nil {
+		return nil, err
+	}
+	renderedStrings = append(renderedStrings, (*str_items)...)
+
+	outputString := strings.Join(renderedStrings, "")
+	return &outputString, nil
+}
+
+func tagTrim(args *string, execCtx *executionContext, ctx *Context) (*string, error) {
+	renderedStrings := make([]string, 0, len(execCtx.template.nodes)-execCtx.node_pos)
+
+	// Execute content
+	_, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "endtrim")
+	if err != nil {
+		return nil, err
+	}
+	renderedStrings = append(renderedStrings, (*str_items)...)
+
+	outputString := strings.TrimSpace(strings.Join(renderedStrings, ""))
+	return &outputString, nil
+}
+
+func tagTrimIgnore(args *string, execCtx *executionContext) error {
+	_, err := execCtx.ignoreUntilAnyTagNode("endtrim")
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func tagRemove(args *string, execCtx *executionContext, ctx *Context) (*string, error) {
+	renderedStrings := make([]string, 0, len(execCtx.template.nodes)-execCtx.node_pos)
+
+	// Execute content
+	_, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "endremove")
+	if err != nil {
+		return nil, err
+	}
+	renderedStrings = append(renderedStrings, (*str_items)...)
+	outputString := strings.Join(renderedStrings, "")
+
+	// Parse args {% remove "abc","def","ghj" %}
+	patterns := *splitArgs(args, ",")
+	if len(patterns) == 0 {
+		// default patterns (spaces, tabs, new lines)
+		patterns = []string{"\" \"", "\"\t\"", "\"\n\"", "\"\r\""}
+	}
+
+	// Do remove all the patterns
+	for _, pattern := range patterns {
+		e, err := newExpr(&pattern)
+		if err != nil {
+			return nil, err
+		}
+		evaledPattern, err := e.evalString(ctx)
+		if err != nil {
+			return nil, err
+		}
+		outputString = strings.Replace(outputString, *evaledPattern, "", -1)
+	}
+
+	return &outputString, nil
+}
+
+func tagRemoveIgnore(args *string, execCtx *executionContext) error {
+	_, err := execCtx.ignoreUntilAnyTagNode("endremove")
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func createBaseTplForExtendInclude(args string, tpl *Template, ctx *Context) (*Template, error) {
+	// Skip an optional static flag at the beginning
+	if strings.HasPrefix(args, "static ") {
+		args = args[len("static "):]
+	}
+
+	// Example: {% extends/include "base.html" abc=<expr> ghi=<expr> ... %}
+	_args := strings.Split(args, " ")
+	if len(_args) <= 0 {
+		return nil, errors.New("Please provide at least a filename to extend from.")
+	}
+	e, err := newExpr(&_args[0])
+	if err != nil {
+		return nil, err
+	}
+	name, err := e.evalString(ctx)
+	if err != nil {
+		return nil, err
+	}
+	//raw_context := _args[1:] // TODO
+	if strings.TrimSpace(*name) == "" {
+		return nil, errors.New("Please provide a propper template filename (empty or an expression evaluating to an empty string is not allowed).")
+	}
+
+	// Create new template
+	if tpl.locator == nil {
+		panic(fmt.Sprintf("Please provide a template locator to lookup template '%v'.", *name))
+	}
+
+	base_tpl_content, err := tpl.locator(name)
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO: Do the pre-rendering (FromString) in the parent's FromString(), just do the execution here.
+	base_tpl, err := FromString(*name, base_tpl_content, tpl.locator)
+	if err != nil {
+		return nil, err
+	}
+
+	return base_tpl, nil
+}
+
+func tagExtendsPrepare(tn *tagNode, tpl *Template) error {
+	// Only prepare, if args starts with "static "
+	if !strings.HasPrefix(tn.tagargs, "static ") {
+		return nil
+	}
+
+	// In preparation-phase we have no Context, so create an empty one.
+	base_tpl, err := createBaseTplForExtendInclude(tn.tagargs, tpl, &Context{})
+	if err != nil {
+		return err
+	}
+
+	// Save base_tpl
+	tpl.cache[fmt.Sprintf("extends_%s", tn.tagargs)] = base_tpl
+
+	return nil
+}
+
+func tagExtends(args *string, execCtx *executionContext, ctx *Context) (*string, error) {
+	// Extends executes the base template and passes the blocks via Context 
+
+	// Example: {% extends "base.html" abc=<expr> ghi=<expr> ... %}
+	var base_tpl *Template
+	_base_tpl, has_precached := execCtx.template.cache[fmt.Sprintf("extends_%s", *args)]
+	if has_precached {
+		base_tpl = _base_tpl.(*Template)
+	} else {
+		// Get dynamic
+		_base_tpl, err := createBaseTplForExtendInclude(*args, execCtx.template, ctx)
+		if err != nil {
+			return nil, err
+		}
+		base_tpl = _base_tpl
+	}
+
+	// Execute every 'block' and store it's result as "block_%s" in the internal Context
+	for {
+		node, err := execCtx.ignoreUntilAnyTagNode("block")
+		if err != nil {
+			// No block left
+			break
+		}
+		blockname := node.tagargs
+		node, str_items, err := execCtx.executeUntilAnyTagNode(ctx, "endblock")
+		if err != nil {
+			return nil, err
+		}
+		rendered_string := strings.Join(*str_items, "")
+		execCtx.internal_context[fmt.Sprintf("block_%s", blockname)] = &rendered_string
+	}
+
+	// Share our internal context with the base template
+	return base_tpl.execute(ctx, newExecutionContext(base_tpl, &execCtx.internal_context))
+}
+
+func tagIncludePrepare(tn *tagNode, tpl *Template) error {
+	// Only prepare, if args starts with "static "
+	if !strings.HasPrefix(tn.tagargs, "static ") {
+		return nil
+	}
+
+	// In preparation-phase we have no Context, so create an empty one.
+	base_tpl, err := createBaseTplForExtendInclude(tn.tagargs, tpl, &Context{})
+	if err != nil {
+		return err
+	}
+
+	// Save base_tpl
+	tpl.cache[fmt.Sprintf("include_%s", tn.tagargs)] = base_tpl
+
+	return nil
+}
+
+func tagInclude(args *string, execCtx *executionContext, ctx *Context) (*string, error) {
+	// Includes a template and executes it 
+
+	var base_tpl *Template
+	_base_tpl, has_precached := execCtx.template.cache[fmt.Sprintf("include_%s", *args)]
+	if has_precached {
+		base_tpl = _base_tpl.(*Template)
+	} else {
+		// Get dynamic
+		_base_tpl, err := createBaseTplForExtendInclude(*args, execCtx.template, ctx)
+		if err != nil {
+			return nil, err
+		}
+		base_tpl = _base_tpl
+	}
+
+	return base_tpl.Execute(ctx)
+}
+
+package main
+
+import (
+	"flag"
+	"io/ioutil"
+	"log"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+var (
+	path      string                //path to be watched
+	command   string                //command to be run
+	ext       string                //file extension to be watched. right now only supporting one.
+	pid       int                   //pid of the process being run
+	polling   bool                  // should we poll or not
+	pollList  map[string]polledFile //list of files to poll
+	ignoreDir map[string]bool       //list of directories to ignore. not really working now
+)
+
+func init() {
+	flag.StringVar(&path, "watch", ".", "path to be watched")
+	flag.StringVar(&command, "command", "echo", "process to be run")
+	flag.StringVar(&ext, "ext", "go", "extension to be watched")
+	flag.BoolVar(&polling, "polling", false, "use polling")
+	flag.BoolVar(&polling, "p", false, "use polling")
+	flag.Parse()
+	ignoreDir := make(map[string]bool, 256)
+	ignoreDir[".git"] = true
+}
+
+//struct to hold the information on files being polled.
+//for now we keep the minimum information necessary for the job.
+type polledFile struct {
+	path    string
+	modTime time.Time
+}
+
+//Starts the process specified in the command line
+//keeps track of the process pid for restart
+func startProc() {
+	log.Print("Starting Process...")
+	commandArray := strings.Split(command, " ")
+	paramArray := commandArray[1:]
+	cmd := exec.Command(commandArray[0], paramArray...)
+	err := cmd.Start()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Print("Process Started Successfuly: ", cmd.Process.Pid)
+	pid = cmd.Process.Pid
+}
+
+//Restart the process with pid value in the global variable pid
+//If it cannot find the process to kill assume the process is
+//already dead and start a new instance
+func restartProc() {
+	log.Print("Killing Process:  ", pid)
+	if proc, err := os.FindProcess(pid); err != nil {
+		log.Print("error: ", err)
+		startProc()
+	} else {
+		err := proc.Kill()
+		if err != nil {
+			log.Print("error: ", err)
+		}
+		_, err = proc.Wait()
+		if err != nil {
+			log.Print("error: ", err)
+		}
+		startProc()
+	}
+}
+
+//Add files and directories to the polling list
+func addFilesToPoll(filePath string) {
+	fileList, err := ioutil.ReadDir(filePath)
+	if err != nil {
+		log.Fatal("ReadDir failed: ", err)
+	}
+	for _, file := range fileList {
+		newPath := filePath + "/" + file.Name()
+		if file.IsDir() && file.Name() != ".git" {
+			pollList[newPath] = polledFile{path: newPath, modTime: file.ModTime()}
+			addFilesToPoll(newPath)
+		} else {
+			fileName := file.Name()
+			if len(strings.Split(fileName, ".")) > 1 {
+				fileExt := strings.Split(fileName, ".")[1]
+				if fileExt == ext {
+					pollList[newPath] = polledFile{path: newPath, modTime: file.ModTime()}
+					log.Print(fileName, " - ", file.ModTime())
+				}
+			}
+		}
+	}
+}
+
+//starts poll-based tracking
+func runPolling() {
+	pollList = make(map[string]polledFile)
+	addFilesToPoll(path)
+	for {
+		for path, pollFile := range pollList {
+			fileInfo, err := os.Stat(path)
+			if err != nil {
+				log.Fatal("Stat error: ", err)
+			}
+			if pollFile.modTime.Before(fileInfo.ModTime()) {
+				restartProc()
+			}
+			pollList[path] = polledFile{path: path, modTime: fileInfo.ModTime()}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}

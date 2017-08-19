@@ -1,0 +1,812 @@
+unit fDirections;
+
+interface
+
+uses
+  Windows, Messages, SysUtils, Variants, Classes, Graphics, Controls, Forms,
+  Dialogs, StdCtrls, OleCtrls, SHDocVw, MSHTML,
+  Automation, uWBGoogleMaps, uSimpleDirections, ExtCtrls;
+
+const
+   WM_ONSHOWCALLBACK = WM_USER + 565;
+
+type
+  TfrmDirections = class(TForm)
+    WebBrowser1: TWebBrowser;
+    lblFrom: TLabel;
+    eFrom: TEdit;
+    lblTo: TLabel;
+    eTo: TEdit;
+    btnDirections: TButton;
+    ListBox1: TListBox;
+    eTo2: TEdit;
+    lblTo2: TLabel;
+    lblDirections: TLabel;
+    pnlRight: TPanel;
+    Splitter1: TSplitter;
+    procedure FormResize(Sender: TObject);
+    procedure btnDirectionsClick(Sender: TObject);
+    procedure FormShow(Sender: TObject);
+    procedure FormCreate(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
+    procedure ListBox1Click(Sender: TObject);
+  private
+    { Private declarations }
+    done, fAllowResizeHandler, fCreatedGDirections: Boolean;
+    fWBGoogleMaps: TWBGoogleMaps;
+    fSimpleDirections: TSimpleDirections;
+
+    function WBOnGetExternal(out ppDispatch: IDispatch): HResult; stdcall;
+  public
+    { Public declarations }
+    procedure OnShowCallback(var aMsg: TMessage); message WM_ONSHOWCALLBACK;
+  end;
+
+  TExtJavaScript = class(TObjectWrapper)
+  public
+    DirectionsForm: TfrmDirections;
+  published
+    procedure NewDirections;
+    procedure AddWaypoint(const aLocation, aAddress, aRouteDistanceHTML, aRouteDurationHTML: String);
+    procedure AddStep(const aLocation, aStepDescriptionHTML, aStepDistanceHTML: String);
+
+    procedure CopyRight(const aValue: String);
+  end;
+
+
+var
+  frmDirections: TfrmDirections;
+
+implementation
+
+{$R *.dfm}
+
+procedure TfrmDirections.FormCreate(Sender: TObject);
+begin
+   fWBGoogleMaps := TWBGoogleMaps.Create(WebBrowser1);
+   fWBGoogleMaps.OnGetExternal := WBOnGetExternal;
+
+   fSimpleDirections := TSimpleDirections.Create;
+end;
+
+procedure TfrmDirections.FormDestroy(Sender: TObject);
+begin
+   fSimpleDirections.Free;
+   fWBGoogleMaps.Free;
+end;
+
+procedure TfrmDirections.FormShow(Sender: TObject);
+begin
+   if not done then
+   begin
+      // I want to have the application show its window, then start loading the webpage.
+      PostMessage(Handle, WM_ONSHOWCALLBACK, 0, 0);
+
+      done := true;
+   end;
+end;
+
+procedure TfrmDirections.ListBox1Click(Sender: TObject);
+var
+   id: Integer;
+   step: TSimpleStep;
+   waypoint: TSimpleWaypoint;
+begin
+   if (Sender as TListbox).ItemIndex > -1 then
+   begin
+      id := Integer(TListbox(Sender).Items.Objects[TListbox(Sender).ItemIndex]);
+
+      if id > 0 then
+      begin
+         step := fSimpleDirections.FindStep(id);
+         if Assigned(step) then
+         begin
+            fWBGoogleMaps.ExecJS(
+               'map.showMapBlowup(new GLatLng(' + step.Location + '));'
+            );
+         end;
+      end
+      // id = 0 is for the last waypoint, which doesn't have any steps
+      else if (id = 0) and (fSimpleDirections.Count > 0) then
+      begin
+         waypoint := fSimpleDirections.Waypoints[fSimpleDirections.Count - 1];
+         if Assigned(waypoint) then
+         begin
+            fWBGoogleMaps.ExecJS(
+               'map.showMapBlowup(new GLatLng(' + waypoint.Location + '));'
+            );
+         end;
+      end;
+   end;
+end;
+
+procedure TfrmDirections.OnShowCallback(var aMsg: TMessage);
+begin
+   fWBGoogleMaps.LoadDefaultGoogleMapsDocument;
+   fAllowResizeHandler := true;
+   FormResize(nil);
+end;
+
+procedure TfrmDirections.FormResize(Sender: TObject);
+begin
+   if fAllowResizeHandler then
+   begin
+      if fWBGoogleMaps.LoadedGoogleMaps then
+      begin
+         while WebBrowser1.ReadyState < READYSTATE_COMPLETE do
+            Forms.Application.ProcessMessages;
+
+         fWBGoogleMaps.ExecJS(
+            'if (document) { ' +
+            '  if (document.body) { ' +
+            '    var m = document.getElementById("map"); ' +
+            '    if (typeof(m) != "undefined") { ' +
+            '      m.style.height = ' + IntToStr(WebBrowser1.ClientHeight) + '; ' +
+            '    } ' +
+            '  } ' +
+            '} '
+         );
+      end;
+   end;
+end;
+
+procedure TfrmDirections.btnDirectionsClick(Sender: TObject);
+var
+   sFrom, sTo, sTo2: String;
+begin
+   if not fCreatedGDirections then
+   begin
+      fWBGoogleMaps.ExecJS('var dirn = new GDirections(map);');
+      fWBGoogleMaps.ExecJS(
+         'function onGDirectionsLoad() {' +
+         '  if (dirn.getNumRoutes() > 0) {                                                                                    ' +
+         '    external.NewDirections();                                                                                       ' +
+         '    /* set option preserveViewport because it does not zoom correctly in the TWebBrowser */                         ' +
+         '    map.setCenter(dirn.getRoute(0).getStep(0).getLatLng());                                                         ' +
+         '  }                                                                                                                 ' +
+         '                                                                                                                    ' +
+         '  var route = "";                                                                                                   ' +
+         '  var geocode = "";                                                                                                 ' +
+         '  for (var i=0; i < dirn.getNumRoutes(); ++i) {                                                                     ' +
+         '    route = dirn.getRoute(i);                                                                                       ' +
+         '    geocode = route.getStartGeocode();                                                                              ' +
+         '    var point = route.getStep(0).getLatLng();                                                                       ' +
+         '                                                                                                                    ' +
+         '    external.AddWaypoint(point.toUrlValue(6), geocode.address, route.getDistance().html, route.getDuration().html); ' +
+         '                                                                                                                    ' +
+         '    for (var j=0; j < route.getNumSteps(); ++j) {                                                                   ' +
+         '      var step = route.getStep(j);                                                                                  ' +
+         '                                                                                                                    ' +
+         '      var latlng = "";                                                                                              ' +
+         '      var descr  = "";                                                                                              ' +
+         '      var dist   = "";                                                                                              ' +
+         '                                                                                                                    ' +
+         '      if (step.getLatLng())                                                                                         ' +
+         '        latlng = step.getLatLng().toUrlValue(6);                                                                    ' +
+         '      if (step.getDescriptionHtml())                                                                                ' +
+         '        descr  = step.getDescriptionHtml();                                                                         ' +
+         '      if (step.getDistance())                                                                                       ' +
+         '        dist   = step.getDistance().html;                                                                           ' +
+         '                                                                                                                    ' +
+         '      external.AddStep(latlng, descr, dist);                                                                        ' +
+         '    }                                                                                                               ' +
+         '  }                                                                                                                 ' +
+         '                                                                                                                    ' +
+         '  geocode = route.getEndGeocode();                                                                                  ' +
+         '  external.AddWaypoint(route.getEndLatLng().toUrlValue(6), geocode.address, "", "");                                ' +
+         '                                                                                                                    ' +
+         '  external.CopyRight(dirn.getCopyrightsHtml());                                                                     ' +
+         '}'
+      );
+      fWBGoogleMaps.ExecJS('GEvent.addListener(dirn, "load", onGDirectionsLoad);');
+   end;
+
+   sFrom := Trim(StringReplace(eFrom.Text, '"', '\"', [rfReplaceAll]));
+   sTo   := Trim(StringReplace(eTo.Text,   '"', '\"', [rfReplaceAll]));
+   // optional third waypoint
+   sTo2  := Trim(StringReplace(eTo2.Text,  '"', '\"', [rfReplaceAll]));
+   if sTo2 <> '' then
+      sTo2 := ' to: ' + sTo2;
+
+   fWBGoogleMaps.ExecJS('dirn.load("from: ' + sFrom + ' to: ' + sTo + sTo2 + '", {getSteps:true,preserveViewport:true});');
+end;
+
+function TfrmDirections.WBOnGetExternal(out ppDispatch: IDispatch): HResult;
+var
+   W: TExtJavaScript;
+begin
+   ///   This allows javascript on the webpage (or injected from Delphi)
+   ///   to call Delphi functions using "external.procedure()"
+
+   W := TExtJavaScript.Connect(Forms.Application);
+   W.DirectionsForm := Self;
+   ppDispatch := TAutoObjectDispatch.Create(W) as IDispatch;
+   Result := S_OK;
+end;
+
+{ TExtJavaScript }
+
+procedure TExtJavaScript.NewDirections;
+begin
+   DirectionsForm.Listbox1.Clear;
+   DirectionsForm.fSimpleDirections.Clear;
+end;
+
+procedure TExtJavaScript.AddStep(const aLocation, aStepDescriptionHTML, aStepDistanceHTML: String);
+begin
+   DirectionsForm.fSimpleDirections.AddStep(aLocation, aStepDescriptionHTML, aStepDistanceHTML);
+end;
+
+procedure TExtJavaScript.AddWaypoint(const aLocation, aAddress, aRouteDistanceHTML, aRouteDurationHTML: String);
+begin
+   DirectionsForm.fSimpleDirections.AddWaypoint(aLocation, aAddress, aRouteDistanceHTML, aRouteDurationHTML);
+end;
+
+function RemoveHTML(const s: String): String;
+var
+   i: Integer;
+   inBraces: Boolean;
+begin
+   Result := '';
+   i := 1;
+
+   inBraces := false;
+   while i <= Length(s) do
+   begin
+      if s[i] = '<' then
+         inBraces := true
+      else if s[i] = '>' then
+         inBraces := false
+      else if not inBraces then
+      begin
+         if s[i] = '&' then
+         begin
+            if SameText(Copy(s, i, 6), '&nbsp;') then
+            begin
+               Result := Result + ' ';
+               Inc(i, 5);
+            end;
+         end
+         else
+            Result := Result + s[i];
+      end;
+
+      Inc(i);
+   end;
+end;
+
+procedure TExtJavaScript.CopyRight(const aValue: String);
+var
+   i, j: Integer;
+   waypointLetter: Char;
+   wp: TSimpleWaypoint;
+   s: TSimpleStep;
+   UniqueStepID: Integer;
+   routeDistance: String;
+begin
+   waypointLetter := 'A';
+
+   for i := 0 to DirectionsForm.fSimpleDirections.Count - 1 do
+   begin
+      wp := DirectionsForm.fSimpleDirections.Waypoints[i];
+
+      if wp.Count > 0 then
+         UniqueStepID := wp.Steps[0].UniqueStepID
+      else // UniqueStepID = 0 is for the last waypoint, which doesn't have any steps
+         UniqueStepID := 0;
+
+      if wp.RouteDistanceHTML = '' then
+         routeDistance := ''
+      else
+         routeDistance := ' [' + wp.RouteDistanceHTML + ']';
+
+      DirectionsForm.ListBox1.AddItem(
+         waypointLetter + ': ' + RemoveHTML(wp.Address + routeDistance),
+         Pointer(UniqueStepID)
+      );
+
+      for j := 0 to wp.Count - 1 do
+      begin
+         s := wp.Steps[j];
+
+         DirectionsForm.ListBox1.AddItem(
+            '  ' + IntToStr(j+1) + ': ' + RemoveHTML(s.DescriptionHTML),
+            Pointer(s.UniqueStepID) // put a unique ID in the Item's Object for the callback.
+         );
+      end;
+
+      Inc(waypointLetter);
+   end;
+
+   DirectionsForm.ListBox1.AddItem(
+      ' ** ' + StringReplace(aValue, '&#169;', '�', [rfReplaceAll]) + ' ** ',
+      Pointer(-2)
+   );
+end;
+
+end.
+
+unit CacheFile;
+
+(*
+    OpenAcoon - An OpenSource Internet-Search-Engine
+    Copyright (C) 1999-2014 Acoon GmbH
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License version 2 as
+    published by the Free Software Foundation.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+*)
+
+interface
+
+uses
+    Classes;
+
+type
+    TCacheFile = class
+        procedure Assign(fNam: string);
+        procedure Reset;
+        procedure Close;
+        procedure Read(var x; len: int64);
+        function FileSize: int64;
+        function FilePos: int64;
+        procedure Seek(Po: int64);
+        function Eof: boolean;
+    private
+        F: tFileStream;
+        Posi: int64;
+        Size: int64;
+        BufStart: int64;
+        BufLen: int64;
+        Buf: array [0 .. 64 * 1024 - 1] of byte;
+        FileName: string;
+    end;
+
+    TBufWriteFile = class
+        procedure Assign(fNam: string);
+        procedure ReWrite;
+        procedure Reset;
+        procedure Close;
+        procedure Write(var x; len: int64);
+        function FileSize: int64;
+    private
+        BufLen: int64;
+        Buf: array [0 .. 16 * 1024 * 1024 - 1] of byte;
+        FSize: int64;
+        FileName: string;
+        F: tFileStream;
+
+        procedure FlushBuffer;
+    end;
+
+
+    TPreloadedFile = class { Klassendeklaration f�r die TPreloadedFile Klasse }
+        constructor Create;
+        procedure Assign(fNam: string); // Die folgenden Namen sprechen f�r sich
+        procedure OpenRead;
+        procedure OpenReadWrite;
+        procedure Close;
+        procedure Read(var x; len: int64);
+        procedure Write(var x; len: int64);
+        function FileSize: int64;
+        function FilePos: int64;
+        procedure Seek(Po: int64);
+        function Eof: boolean;
+        procedure Preload;
+        procedure UnloadCache;
+        function IsPreloaded: boolean;
+    private
+        F: tFileStream;
+        FileName: string;
+        CacheSize: int64;
+        CacheData: array of byte;
+        Posi: int64;
+    end;
+
+
+implementation
+
+uses
+    SysUtils;
+
+type
+    tBufArr = array [0 .. 1000000000] of byte;
+    pBufArr = ^tBufArr;
+
+
+procedure TBufWriteFile.Assign;
+begin
+    FileName := fNam;
+end;
+
+
+
+procedure TBufWriteFile.ReWrite;
+begin
+    F := tFileStream.Create(FileName, fmCreate or fmShareDenyNone);
+    BufLen := 0;
+    FSize := 0;
+end;
+
+
+
+procedure TBufWriteFile.Reset;
+begin
+    F := tFileStream.Create(FileName, fmOpenReadWrite or fmShareDenyNone);
+    BufLen := 0;
+    FSize := 0;
+end;
+
+
+procedure TBufWriteFile.FlushBuffer;
+begin
+    if BufLen > 0 then
+    begin
+        F.Write(Buf, BufLen);
+        BufLen := 0;
+    end;
+end;
+
+
+procedure TBufWriteFile.Close;
+begin
+    FlushBuffer;
+    F.Free;
+end;
+
+
+
+procedure TBufWriteFile.Write;
+begin
+    if ((BufLen + len) > SizeOf(Buf)) and (BufLen > 0) then
+    begin
+        FlushBuffer;
+    end;
+
+    if len <= SizeOf(Buf) then
+    begin
+        Move(x, Buf[BufLen], len);
+        Inc(BufLen, len);
+    end
+    else
+    begin
+        F.Write(x, len);
+    end;
+
+    Inc(FSize, len);
+end;
+
+
+
+function TBufWriteFile.FileSize;
+begin
+    Result := FSize;
+end;
+
+
+{ ----------------------------------------------- }
+
+
+procedure TCacheFile.Assign;
+begin
+    FileName := fNam;
+end;
+
+
+
+procedure TCacheFile.Reset;
+begin
+    F := tFileStream.Create(FileName, fmOpenRead or fmShareDenyNone);
+    Size := F.Size;
+
+    Posi := 0;
+    BufStart := -1;
+    BufLen := -1;
+end;
+
+
+
+procedure TCacheFile.Close;
+begin
+    F.Free;
+end;
+
+
+
+procedure TCacheFile.Read;
+var
+    pBuffer: pBufArr;
+    startAt: integer;
+    le: int64;
+begin
+    if (len = 1) and (Posi >= BufStart) and (Posi < BufStart + BufLen) then
+    begin
+        Move(Buf[Posi - BufStart], x, 1);
+        Posi := Posi + 1;
+        exit;
+    end;
+
+    pBuffer := @x;
+    startAt := 0;
+
+    while len > 0 do
+    begin
+        if (BufStart = -1) or (Posi < BufStart) or (Posi >= (BufStart + BufLen)) then
+        begin
+            BufStart := Posi;
+            BufLen := Size - BufStart;
+            if BufLen > SizeOf(Buf) then
+            begin
+                BufLen := SizeOf(Buf);
+            end;
+
+            // F.Seek(BufStart, soFromBeginning);
+            F.Position := BufStart;
+            F.Read(Buf, BufLen);
+        end;
+
+        le := BufLen + BufStart - Posi;
+        if le > len then
+        begin
+            le := len;
+        end;
+
+        Move(Buf[Posi - BufStart], pBuffer^[startAt], le);
+        Inc(Posi, le);
+        Inc(startAt, le);
+        Dec(len, le);
+    end;
+end;
+
+
+
+function TCacheFile.FileSize;
+begin
+    Result := Size;
+end;
+
+
+
+function TCacheFile.FilePos;
+begin
+    Result := Posi;
+end;
+
+
+
+procedure TCacheFile.Seek;
+begin
+    Posi := Po;
+end;
+
+
+
+function TCacheFile.Eof;
+begin
+    if Size > 0 then
+    begin
+        Result := Posi >= Size;
+    end
+    else
+    begin
+        Result := Posi = Size;
+    end;
+end;
+
+
+{ -------------------------------------------- }
+
+
+
+constructor TPreloadedFile.Create;
+begin
+    inherited Create;
+    FileName := '';
+end;
+
+
+
+procedure TPreloadedFile.Assign;
+begin
+    FileName := fNam;
+    CacheSize := 0;
+    SetLength(CacheData, 1);
+end;
+
+
+
+procedure TPreloadedFile.OpenRead;
+begin
+    CacheSize := 0;
+    SetLength(CacheData, 1);
+    Posi := 0;
+
+    if FileExists(FileName) then
+        F := tFileStream.Create(FileName, fmOpenRead or fmShareDenyNone)
+    else
+        F := tFileStream.Create(FileName, fmCreate or fmOpenRead, fmShareDenyNone)
+end;
+
+
+
+procedure TPreloadedFile.OpenReadWrite;
+begin
+    CacheSize := 0;
+    SetLength(CacheData, 1);
+    Posi := 0;
+    if FileExists(FileName) then
+        F := tFileStream.Create(FileName, fmOpenReadWrite, fmShareDenyNone)
+    else
+        F := tFileStream.Create(FileName, fmCreate or fmOpenReadWrite, fmShareDenyNone)
+end;
+
+
+
+procedure TPreloadedFile.Close;
+begin
+    UnloadCache;
+    F.Free;
+end;
+
+
+
+procedure TPreloadedFile.UnloadCache;
+begin
+    if IsPreloaded then
+    begin
+        if CacheSize <> 0 then
+        begin
+            CacheSize := 0;
+            SetLength(CacheData, 1);
+        end;
+    end;
+end;
+
+
+
+procedure TPreloadedFile.Preload;
+var
+    oldFilePos: int64;
+    // s: string;
+    Po, len, Bytes: int64;
+begin
+    UnloadCache;
+    { Sicherheitshalber eventuell bereits vorhandenen Cache leeren }
+
+    CacheSize := FileSize;
+    // WriteLn('CacheSize=',CacheSize);
+    try
+        SetLength(CacheData, CacheSize);
+        // WriteLn('Cache has ',High(CacheData)+1,' bytes');
+        // ReadLn(s);
+    except
+        CacheSize := 0;
+        SetLength(CacheData, 1);
+        WriteLn(#13'Memory allocation in TPreloadedFile.Preload failed.');
+        exit;
+    end;
+    if (High(CacheData) + 1) <> CacheSize then
+    begin
+        CacheSize := 0;
+        SetLength(CacheData, 1);
+        WriteLn(#13'Memory allocation in TPreloadedFile.Preload failed.');
+        exit;
+    end;
+
+
+    oldFilePos := FilePos; { Alte Dateiposition merken }
+    try
+        // F.Seek(0, soFromBeginning);
+        F.Position := 0;
+        Po := 0;
+        Bytes := CacheSize;
+        while Bytes > 0 do
+        begin
+            len := Bytes;
+            if len > 1048576 then len := 1048576;
+            // WriteLn('Po=',Po);
+            try
+                CacheData[Po] := 0;
+            except
+                WriteLn('Oopsie... #1  High(CacheData)=', High(CacheData));
+            end;
+            try
+                F.Read(CacheData[Po], len);
+            except
+                WriteLn('Oopsie... #2');
+            end;
+            Inc(Po, len);
+            Dec(Bytes, len);
+        end;
+    except
+        WriteLn(#13'Cache Preload in TPreloadedFile.Preload failed.');
+        WriteLn('ReadFile caused an exception.');
+        UnloadCache;
+    end;
+
+    Seek(oldFilePos); { Zur�ck zur urspr�nglichen Dateiposition }
+end;
+
+
+
+procedure TPreloadedFile.Read;
+begin
+    if IsPreloaded and ((Posi + len) <= CacheSize) then
+    { Ist der Bereich im Cache ? }
+    begin
+        Move(CacheData[Posi], x, len) { Ja, Daten aus Cache lesen }
+    end
+    else
+    begin
+        if F.Read(x, len) <> len then System.Write('Uh-oh... Read failed...');
+        { Nein, Lesezugriff an Windows weiterreichen }
+    end;
+    Inc(Posi, len); { Dateipointer mitbewegen }
+end;
+
+
+
+procedure TPreloadedFile.Write;
+begin
+    if IsPreloaded and ((Posi + len) <= CacheSize) then
+    { Ist der Bereich im Cache ? }
+    begin
+        Move(x, CacheData[Posi], len);
+        { Ja, ge�nderte Daten im Cache aktualisieren }
+        { Achtung!! Der Fall, da� die zu schreibenden Daten teilweise das Cache-Ende
+          �berlappen, wird NICHT abgefangen. Dies d�rfte aufgrund der Benutzung in
+          ImportUrls aber auch nicht vorkommen. Damit dies passieren k�nnte, m��ten
+          die Datenstrukturen in der URL-Datenbank bereits besch�digt sein,
+          und dann kommt eh jede Hilfe zu sp�t. }
+    end;
+
+    F.Write(x, len);
+    { Schreibzugriff an Windows weiterreichen }
+    Inc(Posi, len); { Dateipointer mitbewegen }
+end;
+
+
+
+function TPreloadedFile.FileSize;
+begin
+    Result := F.Size; { Dateigr��e ermitteln }
+end;
+
+
+
+function TPreloadedFile.IsPreloaded: boolean;
+begin
+    Result := High(CacheData) > 0;
+end;
+
+
+
+function TPreloadedFile.FilePos;
+begin
+    Result := Posi; { Dateiposition ermitteln }
+end;
+
+
+
+procedure TPreloadedFile.Seek;
+begin
+    // F.Seek(po, soFromBeginning);
+    F.Position := Po;
+    Posi := Po;
+end;
+
+
+
+function TPreloadedFile.Eof;
+begin
+    Result := FilePos >= FileSize; { Sind wir am Ende der datei angelangt ? }
+end;
+
+
+
+end.

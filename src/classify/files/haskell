@@ -1,0 +1,1127 @@
+htabdata = {};
+
+hshow = function(elem, show) {
+  if (show) {elem.removeAttribute('style');}
+  else {elem.setAttribute('style', 'display:none');}}
+
+htabupdate = function(ntab) {
+  var bodyvis = document.getElementById('htabrows-'+ntab);
+  var bodyhid = document.getElementById('htabrows-hid-'+ntab);
+  var rowsvis = bodyvis.childNodes;
+  var d = htabdata[ntab];
+  while (rowsvis.length > 0) {
+    bodyhid.appendChild(rowsvis[0]);}
+  for (var i = d.from; i < d.to; i++) {
+    var j = d.asc ? i : d.rows - 1 - i;
+    var row=bodyhid.getElementsByClassName('htab-srt'+d.srt+'-'+ntab+'-'+j)[0];
+    bodyvis.appendChild(row);}
+  if (d.rows > hdevrows) {
+    hshow(document.getElementById('htabprev-disabled-'+ntab), d.from == 0);
+    hshow(document.getElementById('htabprev-'+ntab), d.from > 0);
+    hshow(document.getElementById('htabnext-disabled-'+ntab), d.to == d.rows);
+    hshow(document.getElementById('htabnext-'+ntab), d.to < d.rows);
+    document.getElementById('htabfrom-'+ntab).innerHTML = d.from+1;
+    document.getElementById('htabto-'+ntab).innerHTML = d.to;}}
+
+htabtouch = function(ntab, rows) {
+  if (!(ntab in htabdata)) {htabdata[ntab] = {
+      from: 0, to: Math.min(hdevrows, rows),
+      asc: false, srt: 'date', rows: rows};}}
+
+htabprev = function(ntab, rows) {
+  htabtouch(ntab, rows);
+  var d = htabdata[ntab];
+  d.from = Math.max(0, d.from - hdevrows);
+  d.to = d.from + hdevrows;
+  htabupdate(ntab);}
+
+htabnext = function(ntab, rows) {
+  htabtouch(ntab, rows);
+  var d = htabdata[ntab];
+  d.to = Math.min(d.rows, d.to + hdevrows);
+  d.from = d.to - hdevrows;
+  htabupdate(ntab);}
+
+htabsrt = function(ntab, srt, rows) {
+  htabtouch(ntab, rows);
+  var d = htabdata[ntab];
+  d.asc = srt == d.srt ? !d.asc : true;
+  d.srt = srt;
+  htabupdate(ntab);}
+
+  module Parser (parse) where
+
+import Prelude hiding (lex, exp)
+import qualified Text.Parsec as P
+import qualified Text.Parsec.Token as P
+import qualified Data.Char as Char
+import qualified DeBruijn as DB
+import qualified Data.Map as Map
+import qualified Data.Set as Set
+import Control.Applicative
+import Control.Monad.Trans.Reader
+import Data.Traversable (sequenceA)
+
+data Exp 
+    = Lambda String Exp
+    | App Exp Exp
+    | Var String
+    deriving (Show)
+
+type Parser = P.Parsec String ()
+
+preds = P.satisfy . (result or . sequenceA)
+    where result = (.)
+
+opchar = P.oneOf "`~!@#$%^&*=+|;:,<.>/?"
+
+lex = P.makeTokenParser P.LanguageDef {
+    P.commentStart    = "{-",
+    P.commentEnd      = "-}",
+    P.commentLine     = "--",
+    P.nestedComments  = True,
+    P.identStart      = preds [ Char.isAlpha, (`elem` "_") ],
+    P.identLetter     = preds [ Char.isAlphaNum, (`elem` "_-'") ],
+    P.opStart         = opchar,
+    P.opLetter        = opchar,
+    P.reservedNames   = [ "quote" ],
+    P.reservedOpNames = [ "\\", "->" ],
+    P.caseSensitive   = True
+}
+
+opExp :: Parser Exp
+opExp = go <$> exp <*> P.many (liftA2 (,) (P.operator lex) exp)
+    where
+    go x0 [] = x0
+    go x0 ((op, x1):xs) = go (App (App (Var op) x0) x1) xs
+
+ident :: Parser String
+ident = P.identifier lex <|> P.parens lex (P.operator lex)
+
+exp :: Parser Exp
+exp = foldl1 App <$> P.many1 term
+    where
+    term = quotation <|> var <|> lambda <|> parenExp
+    quotation = quote <$> (P.reserved lex "quote" *> term)
+    var = Var <$> P.identifier lex
+    lambda = flip (foldr Lambda)
+           <$> (P.reservedOp lex "\\" *> P.many1 ident) 
+           <*> (P.reservedOp lex "->" *> opExp)
+    parenExp = P.parens lex opExp
+
+usedVars :: Exp -> Set.Set String
+usedVars (Lambda s e) = Set.insert s (Set.delete s (usedVars e))
+usedVars (App f x) = usedVars f `Set.union` usedVars x
+usedVars (Var x) = Set.singleton x
+
+makeFresh :: Set.Set String -> String -> String
+makeFresh set x0 = head [ r | n <- "":map show [0..], let r = x0 ++ n, not (r `Set.member` set) ] 
+
+quote :: Exp -> Exp
+quote e = Lambda lam $ Lambda app $ Lambda inj $ go Set.empty e
+    where
+    used = usedVars e
+    lam = makeFresh used "lam"
+    app = makeFresh used "app"
+    inj = makeFresh used "inj"
+
+    go seen (Lambda v body) = App (Var lam) (Lambda v (go (Set.insert v seen) body))
+    go seen (App f x)       = App (App (Var app) (go seen f)) (go seen x)
+    go seen (Var v)
+        | v `Set.member` seen = Var v
+        | otherwise           = App (Var inj) (Var v)
+
+toDeBruijn :: Exp -> DB.Exp a
+toDeBruijn = flip runReader Map.empty . go
+    where
+    go (Lambda v body) = DB.ELam <$> local (Map.insert v 0 . Map.map succ) (go body)
+    go (App t u) = liftA2 DB.EApp (go t) (go u)
+    go (Var v) = DB.EVar <$> get v
+
+    get v = asks (maybe (error ("Unbound variable: " ++ v)) id . Map.lookup v)
+        
+
+parse :: String -> Either P.ParseError (DB.Exp a)
+parse = fmap toDeBruijn . P.parse opExp "<input>"
+
+{-# LANGUAGE PatternGuards, TupleSections #-}
+
+module Main where
+
+import HOAS
+import DeBruijn
+import qualified Runtime.BUBS as BUBS
+import qualified Runtime.Reference as Reference
+import qualified Runtime.Thyer as Thyer
+import qualified Runtime.Naive as Naive
+import System.Environment (getArgs)
+import qualified Data.Char as Char
+import qualified Parser
+import Data.List (intercalate)
+import Control.Applicative
+
+data Value
+    = VSucc
+    | VInt !Integer
+    deriving Show
+
+instance Primitive Value where
+    apply VSucc (VInt x) = VInt (x+1)
+    apply x y = error $ "Type error when applying (" ++ show x ++ ") to (" ++ show y ++ ")"
+    
+interpreters :: [ (String, DeBruijn.Exp Value -> IO Value) ]
+interpreters = [ "bubs"  --> BUBS.eval . toHOAS
+               , "thyer" --> Thyer.eval . toHOAS
+               , "ref"   --> return . Reference.eval . toHOAS
+               , "naive" --> return . Naive.eval . toHOAS
+               ]
+    where
+    infix 0 -->
+    (-->) = (,)
+
+main :: IO ()
+main = do
+    args <- getArgs
+    (interp, source) <- case args of
+        [i, file] | Just interp <- lookup i interpreters -> (interp,) <$> readFile file
+        [i]       | Just interp <- lookup i interpreters -> (interp,) <$> getContents
+        _   -> fail $ "Usage: InterpreterStack <interp> [source], <interp> is one of " 
+                   ++ intercalate "," (map fst interpreters)
+    case Parser.parse source of
+        Left err -> fail (show err)
+        Right x -> print =<< interp (EApp (EApp x (EPrim (VInt 0))) (EPrim VSucc))
+
+{-# OPTIONS_GHC -funbox-strict-fields #-}
+
+-- A heap reference with transparent indirection.  I'm not convinced
+-- that this does anything different than a dumb IORef.  The IORefRef
+-- module implements the same interface but simply delegates to IORef.
+-- Currently there does not seem to be an asymptotic difference.
+
+module IndirRef 
+    ( Ref, new, read, write, link )
+where
+
+import Prelude hiding (read)
+import Data.IORef
+
+data RefData a
+    = Concrete a
+    | Indirect !(Ref a)
+
+newtype Ref a = Ref (IORef (RefData a))
+    deriving (Eq)
+
+new :: a -> IO (Ref a)
+new = fmap Ref . newIORef . Concrete
+
+squashRead :: Ref a -> IO (a, Ref a)
+squashRead ref@(Ref ioref) = do
+    dat <- readIORef ioref
+    case dat of
+        Concrete x -> return (x, ref)
+        Indirect ref -> do
+            (x,ref') <- squashRead ref
+            writeIORef ioref (Indirect ref')
+            return (x,ref')
+
+read :: Ref a -> IO a
+read = fmap fst . squashRead
+
+write :: Ref a -> a -> IO ()
+write (Ref ioref) = writeIORef ioref . Concrete
+
+link :: Ref a -> Ref a -> IO ()
+link (Ref old) = writeIORef old . Indirect
+
+module IORefRef
+    ( Ref, new, read, write, link )
+where
+
+import Prelude hiding (read)
+import Data.IORef
+
+newtype Ref a = Ref (IORef a)
+
+new :: a -> IO (Ref a)
+new = fmap Ref . newIORef
+
+read :: Ref a -> IO a
+read (Ref ioref) = readIORef ioref
+
+write :: Ref a -> a -> IO ()
+write (Ref ioref) = writeIORef ioref
+
+link :: Ref a -> Ref a -> IO ()
+link old new = write old =<< read new
+
+{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies #-}
+
+-- A simple typeclass for terms in HOAS.
+-- Also some scott encodings.
+
+module HOAS 
+    ( Primitive(..)
+    , Term(..)
+    , PrimTerm(..)
+    , scottTuple
+    , scottUntuple
+    , scottProj
+    , scottCoprod
+    , scottUncoprod
+    ) where
+
+class (Show a) => Primitive a where
+    apply :: a -> a -> a
+
+infixl 9 %
+class Term t where
+    (%) :: t -> t -> t
+    fun :: (t -> t) -> t
+
+    let_ :: t -> (t -> t) -> t
+    let_ defn body = fun body % defn
+
+    fix :: t
+    fix = fun (\f -> fun (\x -> x % x) % fun (\x -> f % (x % x)))
+    
+    letrec :: ([t] -> ([t], t)) -> t
+    letrec defns = scottProj 2 1 % dsd
+        where
+        dsd = fix % fun (\dsd -> 
+            let_ (scottProj 2 0 % dsd) $ \ds ->
+            let (rs,r) = defns (map (\i -> scottProj n i % ds) [0..n-1])
+                n      = length rs
+            in listToScottTuple [listToScottTuple rs, r])
+
+
+-- scottTuple 4 = \a b c d -> \elim -> elim a b c d
+scottTuple :: (Term t) => Int -> t
+scottTuple n = nestedFun n (\xs -> fun (\elim -> nestedApp elim xs))
+
+-- scottUntuple 4 p = \t -> t (\a b c d -> p [a,b,c,d])
+scottUntuple :: (Term t) => Int -> ([t] -> t) -> t
+scottUntuple n f = fun (\t -> t % nestedFun n f)
+
+-- scottProj 4 1 = \f -> f (\a b c d -> b)
+scottProj :: (Term t) => Int -> Int -> t
+scottProj n i = scottUntuple n (!! i)
+
+listToScottTuple :: (Term t) => [t] -> t
+listToScottTuple xs = nestedApp (scottTuple (length xs)) xs
+
+-- scottCoprod 4 1 = \x -> \a b c d -> b x
+scottCoprod :: (Term t) => Int -> Int -> t
+scottCoprod n i = fun (\x -> nestedFun n (\ps -> (ps !! i) % x))
+
+-- scottUncoprod [f,g,h,i] = \p -> p f g h i
+scottUncoprod :: (Term t) => [t -> t] -> t
+scottUncoprod fs = fun (\p -> nestedApp p (map fun fs))
+
+
+nestedApp :: (Term t) => t -> [t] -> t
+nestedApp = foldl (%)
+
+nestedFun :: (Term t) => Int -> ([t] -> t) -> t
+nestedFun 0 f = f []
+nestedFun n f = fun (\x -> nestedFun (n-1) (f . (x:)))
+
+class (Term t) => PrimTerm a t | t -> a where
+    prim :: a -> t
+
+	module DeBruijn (Exp(..), DeBruijn, getDeBruijn, toHOAS) where
+
+import HOAS
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Reader
+import Control.Monad.Trans.State
+import qualified Data.Map as Map
+import Control.Applicative
+
+data Exp a
+    = ELam (Exp a)
+    | EApp (Exp a) (Exp a)
+    | EVar Int
+    | EPrim a
+
+showExp lp ap (ELam e) = parens lp $ "\\. " ++ showExp False False e
+showExp lp ap (EApp t u) = parens ap $ showExp True False t ++ " " ++ showExp True True u
+showExp lp ap (EVar z) = show z
+showExp lp ap (EPrim a) = "[" ++ show a ++ "]"
+
+parens False x = x
+parens True x = "(" ++ x ++ ")"
+
+instance (Show a) => Show (Exp a) where
+    show = showExp False False
+
+newtype DeBruijn a = DeBruijn { rundB :: ReaderT (Map.Map Int Int) (State Int) (Exp a) }
+
+instance Term (DeBruijn a) where
+    DeBruijn t % DeBruijn u = DeBruijn $ liftA2 EApp t u
+    fun f = DeBruijn $ do
+        varid <- lift get
+        lift $ put (succ varid)
+        local (Map.insert varid 0 . Map.map succ) $ do
+            fmap ELam . rundB . f . DeBruijn $ do
+                EVar <$> asks (Map.! varid)
+
+getDeBruijn :: DeBruijn a -> Exp a
+getDeBruijn dB = evalState (runReaderT (rundB dB) Map.empty) 0
+
+toHOAS :: (Term t, PrimTerm a t) => Exp a -> t
+toHOAS = go []
+    where
+    go env (ELam body) = fun (\x -> go (x:env) body)
+    go env (EApp t u)  = go env t % go env u
+    go env (EVar z)    = env !! z
+    go env (EPrim p)   = prim p
+
+	module Depth 
+    ( Exp(..), ExpNode, Depth, prim, getDepth )
+where
+
+import HOAS
+import qualified Data.Map as Map
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Reader
+import Control.Monad.Trans.State
+import Control.Applicative
+import Control.Arrow
+
+type ExpNode a = (Int, Exp a)
+
+data Exp a
+    = Lambda (ExpNode a)
+    | Apply (ExpNode a) (ExpNode a)
+    | Var
+    | Prim a
+    deriving Show
+
+newtype Depth a = Depth { runDepth :: ReaderT Int (State Int) (ExpNode a) }
+
+instance Term (Depth a) where
+    Depth t % Depth u = Depth $ liftA2 ap t u
+        where
+        ap tt@(dt,_) tu@(du,_) = (max dt du, Apply tt tu)
+    fun f = Depth $ do
+        varid <- lift get
+        lift $ put (succ varid)
+        depth <- ask
+        local succ . fmap ((depth,) . Lambda) . runDepth . f . Depth . return $ (succ depth, Var)
+
+instance PrimTerm a (Depth a) where
+    prim = Depth . return . (0,) . Prim
+
+getDepth :: Depth a -> ExpNode a
+getDepth d = evalState (runReaderT (runDepth d) 0) 0
+
+module HsenvMonadUtils (runInTmpDir) where
+
+import System.Directory
+import Util.IO
+import HsenvMonad
+
+runInTmpDir :: Hsenv a -> Hsenv a
+runInTmpDir m = do
+  tmp <- liftIO getTemporaryDirectory
+  tmpDir <- liftIO $ createTemporaryDirectory tmp "hsenv"
+  oldCwd <- liftIO getCurrentDirectory
+  liftIO $ setCurrentDirectory tmpDir
+  let cleanup = do
+        liftIO $ setCurrentDirectory oldCwd
+        liftIO $ removeDirectoryRecursive tmpDir
+  m `finally` cleanup
+
+  module CabalBootstrap (bootstrapCabal) where
+
+import qualified System.Directory as Dir
+import System.FilePath ((</>))
+import Network.URI (URI(..), URIAuth(..))
+import Network.HTTP
+import Codec.Compression.GZip (decompress)
+import qualified Data.ByteString.Lazy as BS
+import Distribution.Hackage.DB hiding (map, foldr)
+import Prelude hiding (filter)
+import qualified Codec.Archive.Tar as Tar
+
+import Types
+import HsenvMonad
+import HsenvMonadUtils
+import Paths
+import Process (insideProcess, insideProcess', externalGhcPkgDb)
+import PackageManagement (insideGhcPkg, getHighestVersion)
+import Util.Cabal (prettyVersion, executableMatchesCabal)
+
+hackageDomain :: String
+hackageDomain = "hackage.haskell.org"
+
+indexURI :: URI
+indexURI = URI { uriScheme    = "http:"
+               , uriAuthority = Just URIAuth { uriUserInfo = ""
+                                             , uriRegName  = hackageDomain
+                                             , uriPort     = ""
+                                             }
+               , uriPath      = "/packages/index.tar.gz"
+               , uriQuery     = ""
+               , uriFragment  = ""
+               }
+
+getCIBURI :: Version -> URI
+getCIBURI version = indexURI {uriPath = cibpath}
+    where cibpath = concat [ "/package/cabal-install-bundle-"
+                           , ver
+                           , "/cabal-install-bundle-"
+                           , ver
+                           , ".tar.gz"
+                           ]
+          ver = prettyVersion version
+
+downloadHTTPUncompress :: URI -> Hsenv BS.ByteString
+downloadHTTPUncompress uri = do
+  result <- liftIO $ simpleHTTP $ mkRequest GET uri
+  case result of
+    Left err -> throwError $ HsenvException $ show err
+    Right response -> return $ decompress $ rspBody response
+
+fetchHackageIndex :: Hsenv ()
+fetchHackageIndex = do
+  debug "Checking if Hackage index is already downloaded"
+  noSharingFlag <- asks noSharing
+  dirStructure  <- hseDirStructure
+  hackageCache  <- indentMessages $
+      if noSharingFlag then
+          return $ cabalDir dirStructure </> "packages"
+      else do
+          cabalInstallDir <- liftIO $ Dir.getAppUserDataDirectory "cabal"
+          return $ cabalInstallDir </> "packages"
+  let cacheDir = hackageCache </> hackageDomain
+      hackageData = cacheDir </> "00-index.tar"
+  dataExists <- liftIO $ Dir.doesFileExist hackageData
+  if dataExists then
+    indentMessages $ debug "It is"
+   else do
+    indentMessages $ debug "It's not"
+    info "Downloading Hackage index"
+    liftIO $ Dir.createDirectoryIfMissing True cacheDir
+    tarredIndex <- downloadHTTPUncompress indexURI
+    liftIO $ BS.writeFile hackageData tarredIndex
+
+readHackageIndex :: Hsenv Hackage
+readHackageIndex = do
+  noSharingFlag <- asks noSharing
+  dirStructure  <- hseDirStructure
+  hackageCache  <- indentMessages $
+      if noSharingFlag then
+          return $ cabalDir dirStructure </> "packages"
+      else do
+          cabalInstallDir <- liftIO $ Dir.getAppUserDataDirectory "cabal"
+          return $ cabalInstallDir </> "packages"
+  let cacheDir = hackageCache </> hackageDomain
+      hackageIndexLocation = cacheDir </> "00-index.tar"
+  liftIO $ readHackage' hackageIndexLocation
+
+chooseCIBVersion :: Hackage -> Version -> Hsenv Version
+chooseCIBVersion hackage cabalVersion = do
+  debug "Choosing the right cabal-install-bundle version"
+  let cibs = hackage ! "cabal-install-bundle"
+      cibVersions = keys cibs
+  trace $ "Found cabal-install-bundle versions: " ++ unwords (map prettyVersion cibVersions)
+  let matchingCIBs = filter (executableMatchesCabal "cabal" cabalVersion) cibs
+      matchingCIBVersions = keys matchingCIBs
+  debug $ "cabal-install-bundle versions matching Cabal library: "
+            ++ unwords (map prettyVersion matchingCIBVersions)
+  case matchingCIBVersions of
+    [] -> throwError $ HsenvException $ "No cabal-install-bundle packages "
+                           ++ "matching installed Cabal library"
+    v:vs -> return $ foldr max v vs
+
+runSetupHsConfigure :: FilePath -> Hsenv ()
+runSetupHsConfigure setupHsPath = do
+  cabalVersion <- getHighestVersion (PackageName "Cabal") insideGhcPkg
+  dirStructure <- hseDirStructure
+  let cabal_1_16_0_version = Version [1, 16, 0] []
+  _ <- indentMessages $
+    if cabalVersion >= cabal_1_16_0_version then do
+      debug "Cabal has version >= 1.16.0, using new --package-db args"
+      debug "  instead of relying on $GHC_PACKAGE_PATH variable"
+      ghcPkgDbPath <- indentMessages externalGhcPkgDb
+      let args = [ setupHsPath
+                 , "configure"
+                 , "--prefix=" ++ cabalDir dirStructure
+                 , "--package-db=" ++ ghcPkgDbPath
+                 , "--package-db=" ++ ghcPackagePath dirStructure
+                 ]
+      insideProcess' True "runghc" args Nothing
+    else do
+      let args = [ setupHsPath
+                 , "configure"
+                 , "--prefix=" ++ cabalDir dirStructure
+                 , "--user"
+                 ]
+      insideProcess "runghc" args Nothing
+  return ()
+
+installCabal :: Version -> Hsenv ()
+installCabal cabalVersion = do
+  fetchHackageIndex
+  hackageIndex <- readHackageIndex
+  cibVersion <- chooseCIBVersion hackageIndex cabalVersion
+  info $ "Using cabal-install-bundle version " ++ prettyVersion cibVersion
+  let url = getCIBURI cibVersion
+  trace $ "Download URL: " ++ show url
+  tarredPkg <- downloadHTTPUncompress url
+  runInTmpDir $ do
+    cwd <- liftIO Dir.getCurrentDirectory
+    trace $ "Unpacking package in " ++ cwd
+    liftIO $ Tar.unpack cwd $ Tar.read tarredPkg
+    debug "Configuring cabal-install-bundle"
+    let pkgDir = cwd </> "cabal-install-bundle-" ++ prettyVersion cibVersion
+        setup  = pkgDir </> "Setup.hs"
+    liftIO $ Dir.setCurrentDirectory pkgDir
+    let cabalSetup args = insideProcess "runghc" (setup:args) Nothing
+    _ <- runSetupHsConfigure setup
+    debug "Building cabal-install-bundle"
+    _ <- cabalSetup ["build"]
+    debug "Installing cabal-install-bundle"
+    _ <- cabalSetup ["install"]
+    return ()
+
+bootstrapCabal :: Hsenv ()
+bootstrapCabal = action "Bootstrapping cabal-install" $ do
+  cabalVersion <- getHighestVersion (PackageName "Cabal") insideGhcPkg
+  debug $ "Cabal library has version " ++ prettyVersion cabalVersion
+  trace "Checking where cached version of cabal-install would be"
+  versionedCabInsCachePath <- cachedCabalInstallPath cabalVersion
+  let versionedCabInsPath = versionedCabInsCachePath </> "cabal"
+  trace $ "It would be at " ++ versionedCabInsPath
+  dirStructure  <- hseDirStructure
+  flag <- liftIO $ Dir.doesFileExist versionedCabInsPath
+  if flag then do
+      info $ "Using cached copy of cabal-install for Cabal-"
+               ++ prettyVersion cabalVersion
+      let cabInsTarget = cabalBinDir dirStructure </> "cabal"
+      liftIO $ Dir.createDirectoryIfMissing True $ cabalBinDir dirStructure
+      liftIO $ Dir.copyFile versionedCabInsPath cabInsTarget
+   else do
+      info $ concat [ "No cached copy of cabal-install for Cabal-"
+                    , prettyVersion cabalVersion
+                    , ", proceeding with downloading and compilation of"
+                    , " cabal-install-bundle."
+                    , " This can take a few minutes"
+                    ]
+      installCabal cabalVersion
+      let cabInsPath = cabalBinDir dirStructure </> "cabal"
+      debug $ concat [ "Copying compiled cabal-install-bundle binary"
+                     , " for future use (to "
+                     , versionedCabInsPath
+                     , ")"
+                     ]
+      liftIO $ Dir.createDirectoryIfMissing True versionedCabInsCachePath
+      liftIO $ Dir.copyFile cabInsPath versionedCabInsPath
+
+	  {-# LANGUAGE Arrows, CPP #-}
+
+module Args (getArgs) where
+
+import Control.Arrow
+import Data.Char
+import Util.Args
+import System.Directory (getCurrentDirectory)
+import Types
+
+#ifdef cabal
+import Util.Cabal (prettyVersion)
+import Paths_hsenv (version)
+
+versionString :: String
+versionString = prettyVersion version
+#else
+versionString :: String
+versionString = "dev"
+#endif
+
+verbosityOpt, veryVerbosityOpt, skipSanityOpt, sharingOpt, noPS1Opt, bootstrapCabalOpt :: Switch
+
+verbosityOpt = Switch { switchName  = "verbose"
+                      , switchHelp  = "Print some debugging info"
+                      , switchShort = Just 'v'
+                      }
+
+veryVerbosityOpt = Switch { switchName  = "very-verbose"
+                          , switchHelp  = "Print some more debugging info"
+                          , switchShort = Nothing
+                          }
+
+skipSanityOpt = Switch { switchName  = "skip-sanity-check"
+                       , switchHelp  = "Skip all the sanity checks (use at your own risk)"
+                       , switchShort = Nothing
+                       }
+
+sharingOpt = Switch { switchName  = "dont-share-cabal-cache"
+                    , switchHelp  = "Don't share ~/.cabal/packages (hackage download cache)"
+                    , switchShort = Nothing
+                    }
+
+noPS1Opt =
+    Switch { switchName = "no-ps1-indicator"
+           , switchHelp =
+               "Don't modify the shell prompt to indicate the current hsenv"
+           , switchShort = Nothing
+           }
+
+bootstrapCabalOpt =
+    Switch { switchName  = "bootstrap-cabal"
+           , switchHelp  = "Bootstrap cabal-install inside virtual environment"
+                           ++ "(Use this if you don't have cabal-install installed "
+                           ++ "or it's not on your $PATH)"
+           , switchShort = Nothing
+           }
+
+parentOpt, nameOpt, ghcOpt :: DynOpt
+
+parentOpt = DynOpt
+            { dynOptName = "parent-dir"
+            , dynOptTemplate = "PATH"
+            , dynOptDescription = "current directory"
+            , dynOptHelp = "Create Virtual Haskell Environment inside PATH"
+            }
+
+nameOpt = DynOpt
+          { dynOptName = "name"
+          , dynOptTemplate = "NAME"
+          , dynOptDescription = "current directory name"
+          , dynOptHelp = "Use NAME as name of the Virtual Haskell Environment"
+          }
+
+ghcOpt = DynOpt
+         { dynOptName = "ghc"
+         , dynOptTemplate = "VERSION|URL|FILE"
+         , dynOptDescription = "system's copy of GHC"
+         , dynOptHelp =
+             "Use GHC from provided location -- a GHC version number, an HTTP or HTTPS URL or a path to a tarball (e.g. ghc-7.0.4-i386-unknown-linux.tar.bz2)"
+         }
+
+makeOpt :: StaticOpt
+makeOpt = StaticOpt
+          { staticOptName = "make-cmd"
+          , staticOptTemplate = "CMD"
+          , staticOptDefault = "make"
+          , staticOptHelp =
+              "Used as make substitute for installing GHC from tarball (e.g. gmake)"
+          }
+
+argParser :: ArgArrow () Options
+argParser = proc () -> do
+  verbosityFlag <- getOpt verbosityOpt -< ()
+  verbosityFlag2 <- getOpt veryVerbosityOpt -< ()
+  let verboseness = case (verbosityFlag, verbosityFlag2) of
+                      (_, True)      -> VeryVerbose
+                      (True, False)  -> Verbose
+                      (False, False) -> Quiet
+  name <- getOpt nameOpt -< ()
+  parentFlag <- getOpt parentOpt -< ()
+  parent <- case parentFlag of
+           Just parent' -> returnA -< parent'
+           Nothing -> liftIO' getCurrentDirectory -< ()
+  ghcFlag <- getOpt ghcOpt -< ()
+  noPS1' <- getOpt noPS1Opt -< ()
+  let ghc = case ghcFlag of
+              Nothing   -> System
+              -- First check for URLs (@//@ is not meaningful in Posix file
+              -- paths), then versions and then default to path.
+              Just s | "https://" == take 8 s -> Url s
+                     | "http://"  == take 7 s -> Url s
+                     | isVersion s            -> Release s
+                     | otherwise              -> Tarball s
+  skipSanityCheckFlag <- getOpt skipSanityOpt -< ()
+  noSharingFlag <- getOpt sharingOpt -< ()
+  bootstrapCabalFlag <- getOpt bootstrapCabalOpt -< ()
+  make <- getOpt makeOpt -< ()
+  returnA -< Options{ verbosity       = verboseness
+                   , skipSanityCheck = skipSanityCheckFlag
+                   , envParentDir    = parent
+                   , hsEnvName       = name
+                   , ghcSource       = ghc
+                   , makeCmd         = make
+                   , noSharing       = noSharingFlag
+                   , noPS1           = noPS1'
+                   , cabalBootstrap  = bootstrapCabalFlag
+                   }
+    where liftIO' = liftIO . const
+
+getArgs :: IO Options
+getArgs = parseArgs argParser versionString outro
+  where
+    outro = "Creates Virtual Haskell Environment in the current directory.\n"
+         ++ "All files will be stored in the .hsenv[_NAME]/ subdirectory.\n"
+         ++ "\n"
+         ++ "To activate a sandbox in the current directory, run:\n"
+         ++ "\n"
+         ++ "    source .hsenv/bin/activate\n"
+         ++ "\n"
+         ++ "To deactivate an active sandbox, run:\n"
+         ++ "\n"
+         ++ "    deactivate_hsenv"
+
+isVersion :: String -> Bool
+isVersion s = case dropWhile isDigit s of
+                ""     -> s /= ""
+                '.':s' -> s /= '.':s' && isVersion s'
+                _      -> False
+
+				module Actions ( cabalUpdate
+               , installCabalConfig
+               , installCabalWrapper
+               , installActivateScript
+               , installSimpleWrappers
+               , installProgSymlinks
+               , symlinkToSkeleton
+               , copyBaseSystem
+               , initGhcDb
+               , installGhc
+               , createDirStructure
+               , bootstrapCabal
+               , initDotHsenvDir
+               ) where
+
+import Control.Monad
+import System.Directory
+import System.FilePath ((</>))
+import System.Info (arch, os)
+import System.Posix hiding (createDirectory, version)
+import Distribution.Version (Version (..))
+import Distribution.Package (PackageName(..))
+import Safe (lastMay)
+import Data.List (intercalate)
+import Data.Maybe (fromMaybe, isJust)
+
+import Network.Http.Client
+import qualified Data.ByteString.Char8 as C8
+import qualified System.IO.Streams as S
+
+import HsenvMonad
+import HsenvMonadUtils
+import Types
+import Paths
+import PackageManagement
+import Process
+import Util.Template (substs)
+import Util.IO (makeExecutable)
+import Skeletons
+import CabalBootstrap (bootstrapCabal)
+
+-- update cabal package info inside Virtual Haskell Environment
+cabalUpdate :: Hsenv ()
+cabalUpdate = do
+  noSharingFlag <- asks noSharing
+  if noSharingFlag then do
+    debug "Sharing user-wide ~/.cabal/packages disabled"
+    cabalUpdate'
+   else do
+    debug "Sharing user-wide ~/.cabal/packages enabled, checking if data is already downloaded"
+    cabalInstallDir <- liftIO $ getAppUserDataDirectory "cabal"
+    let hackageData = foldl (</>) cabalInstallDir [ "packages"
+                                                  , "hackage.haskell.org"
+                                                  , "00-index.tar"
+                                                  ]
+    dataExists <- liftIO $ doesFileExist hackageData
+    if dataExists then do
+      info "Skipping 'cabal update' step, Hackage download cache already downloaded"
+      info "  to ~/.cabal/packages/. You can update it manually with 'cabal update'"
+      info "  (from inside or outside the virtual environment)."
+     else do
+      debug "No user-wide Hackage cache data downloaded"
+      cabalUpdate'
+      where cabalUpdate' = do
+              cabalConfig <- cabalConfigLocation
+              info "Updating cabal package database inside Virtual Haskell Environment."
+              _ <- indentMessages $ insideProcess "cabal" ["--config-file=" ++ cabalConfig, "update"] Nothing
+              return ()
+
+
+-- install cabal wrapper (in bin/ directory) inside virtual environment dir structure
+installCabalWrapper :: Hsenv ()
+installCabalWrapper = do
+  cabalConfig  <- cabalConfigLocation
+  dirStructure <- hseDirStructure
+  hsEnvName'   <- asks hsEnvName
+  let cabalWrapper = hsEnvBinDir dirStructure </> "cabal"
+  info $ concat [ "Installing cabal wrapper using "
+                , cabalConfig
+                , " at "
+                , cabalWrapper
+                ]
+  let cabalWrapperContents = substs [ ("<CABAL_CONFIG>", cabalConfig)
+                                    , ("<HSENV_NAME>", fromMaybe "" hsEnvName')] cabalWrapperSkel
+  indentMessages $ do
+    trace "cabal wrapper contents:"
+    indentMessages $ mapM_ trace $ lines cabalWrapperContents
+  liftIO $ writeFile cabalWrapper cabalWrapperContents
+  liftIO $ makeExecutable cabalWrapper
+
+installActivateScriptSupportFiles :: Hsenv ()
+installActivateScriptSupportFiles = do
+  debug "installing supporting files"
+  dirStructure <- hseDirStructure
+  ghc          <- asks ghcSource
+  indentMessages $ do
+    let pathVarPrependixLocation = hsEnvDir dirStructure </> "path_var_prependix"
+        pathVarElems =
+            case ghc of
+              System -> [hsEnvBinDir dirStructure, cabalBinDir dirStructure]
+              _      -> [ hsEnvBinDir dirStructure
+                        , cabalBinDir dirStructure
+                        , ghcBinDir dirStructure
+                        ]
+        pathVarPrependix = intercalate ":" pathVarElems
+    debug $ "installing path_var_prependix file to " ++ pathVarPrependixLocation
+    indentMessages $ trace $ "path_var_prependix contents: " ++ pathVarPrependix
+    liftIO $ writeFile pathVarPrependixLocation pathVarPrependix
+    ghcPkgDbPath <- indentMessages ghcPkgDbPathLocation
+    let ghcPackagePathVarLocation = hsEnvDir dirStructure </> "ghc_package_path_var"
+        ghcPackagePathVar         = ghcPkgDbPath
+    debug $ "installing ghc_package_path_var file to " ++ ghcPackagePathVarLocation
+    indentMessages $ trace $ "path_var_prependix contents: " ++ ghcPackagePathVar
+    liftIO $ writeFile ghcPackagePathVarLocation ghcPackagePathVar
+
+-- install activate script (in bin/ directory) inside virtual environment dir structure
+installActivateScript :: Hsenv ()
+installActivateScript = do
+  info "Installing activate script"
+  hsEnvName'   <- asks hsEnvName
+  noModifyPS1  <- asks noPS1
+  dirStructure <- hseDirStructure
+  ghcPkgDbPath <- indentMessages ghcPkgDbPathLocation
+  let activateScript = hsEnvBinDir dirStructure </> "activate"
+  indentMessages $ debug $ "using location: " ++ activateScript
+  let activateScriptContents =
+          substs [ ("<HSENV_NAME>", fromMaybe "" hsEnvName')
+                 , ("<HSENV_DIR>", hsEnvDir dirStructure)
+                 , ("<HSENV>", hsEnv dirStructure)
+                 , ("<GHC_PACKAGE_PATH>", ghcPkgDbPath)
+                 , ("<HSENV_BIN_DIR>", hsEnvBinDir dirStructure)
+                 , ("<CABAL_BIN_DIR>", cabalBinDir dirStructure)
+                 , ("<GHC_BIN_DIR>", ghcBinDir dirStructure)
+                 , ("<MODIFY_PS1>", if noModifyPS1 then "false" else "true")
+                 ] activateSkel
+  indentMessages $ do
+    trace "activate script contents:"
+    indentMessages $ mapM_ trace $ lines activateScriptContents
+  liftIO $ writeFile activateScript activateScriptContents
+  indentMessages installActivateScriptSupportFiles
+
+-- install cabal's config file (in cabal/ directory) inside virtual environment dir structure
+installCabalConfig :: Hsenv ()
+installCabalConfig = do
+  cabalConfig  <- cabalConfigLocation
+  dirStructure <- hseDirStructure
+  noSharingFlag  <- asks noSharing
+  hackageCache <- indentMessages $
+      if noSharingFlag then do
+          info "Using private Hackage download cache directory"
+          return $ cabalDir dirStructure </> "packages"
+      else do
+          info "Using user-wide (~/.cabal/packages) Hackage download cache directory"
+          cabalInstallDir <- liftIO $ getAppUserDataDirectory "cabal"
+          return $ cabalInstallDir </> "packages"
+  info $ "Installing cabal config at " ++ cabalConfig
+  let cabalConfigContents = substs [ ("<GHC_PACKAGE_PATH>", ghcPackagePath dirStructure)
+                                   , ("<CABAL_DIR>", cabalDir dirStructure)
+                                   , ("<HACKAGE_CACHE>", hackageCache)
+                                   ] cabalConfigSkel
+  indentMessages $ do
+    trace "cabal config contents:"
+    indentMessages $ mapM_ trace $ lines cabalConfigContents
+  liftIO $ writeFile cabalConfig cabalConfigContents
+
+installSimpleWrappers :: Hsenv ()
+installSimpleWrappers = mapM_ installSimpleWrapper simpleWrappers
+
+installSimpleWrapper :: (String, String) -> Hsenv ()
+installSimpleWrapper (targetFilename, skeleton) = do
+    ghcPkgDbPath <- indentMessages ghcPkgDbPathLocation
+    dirStructure <- hseDirStructure
+    let ghcWrapperContents =
+            substs [("<GHC_PACKAGE_PATH>", ghcPkgDbPath)] skeleton
+        ghcWrapper = hsEnvBinDir dirStructure </> targetFilename
+    liftIO $ writeFile ghcWrapper ghcWrapperContents
+    liftIO $ makeExecutable ghcWrapper
+
+installProgSymlinks :: Hsenv ()
+installProgSymlinks = mapM_ installSymlink extraProgs
+
+extraProgs :: [String]
+extraProgs = [ "alex"
+             , "ar"
+             , "c2hs"
+             , "cpphs"
+             , "ffihugs"
+             , "gcc"
+             , "greencard"
+             , "haddock"
+             , "happy"
+             , "hmake"
+             , "hpc"
+             , "hsc2hs"
+             , "hscolour"
+             , "hugs"
+             , "jhc"
+             , "ld"
+             , "lhc"
+             , "lhc-pkg"
+             , "nhc98"
+             , "pkg-config"
+             , "ranlib"
+             , "strip"
+             , "tar"
+             , "uhc"
+             ]
+
+installSymlink :: String -> Hsenv ()
+installSymlink prog = do
+    dirStructure <- hseDirStructure
+    ghcSourceOpt <- asks ghcSource
+    mPrivateLoc <- case ghcSourceOpt of
+        System -> return Nothing
+        _      -> liftIO $ findExecutable $ ghcDir dirStructure </> "bin" </> prog
+    mSystemLoc <- liftIO $ findExecutable prog
+    let mProgLoc = mPrivateLoc `mplus` mSystemLoc
+    when (isJust mProgLoc) $ do
+        let Just progLoc = mProgLoc
+        liftIO $ createSymbolicLink progLoc $ hsEnvBinDir dirStructure </> prog
+
+-- | Install a symbolic link to a skeleton script in hsenv's bin directory
+symlinkToSkeleton :: String -- ^ Name of skeleton
+                  -> String -- ^ Name of link
+                  -> Hsenv ()
+symlinkToSkeleton skel link = do
+    dirStructure <- hseDirStructure
+    let prependBinDir = (hsEnvBinDir dirStructure </>)
+    liftIO $ createSymbolicLink (prependBinDir skel) (prependBinDir link)
+
+createDirStructure :: Hsenv ()
+createDirStructure = do
+  dirStructure <- hseDirStructure
+  info "Creating Virtual Haskell directory structure"
+  indentMessages $ do
+    debug $ "hsenv directory: " ++ hsEnvDir dirStructure
+    liftIO $ createDirectory $ hsEnvDir dirStructure
+    debug $ "cabal directory: " ++ cabalDir dirStructure
+    liftIO $ createDirectory $ cabalDir dirStructure
+    debug $ "hsenv bin directory: " ++ hsEnvBinDir dirStructure
+    liftIO $ createDirectory $ hsEnvBinDir dirStructure
+
+-- initialize private GHC package database inside virtual environment
+initGhcDb :: Hsenv ()
+initGhcDb = do
+  dirStructure <- hseDirStructure
+  info $ "Initializing GHC Package database at " ++ ghcPackagePath dirStructure
+  out <- indentMessages $ insideGhcPkg ["--version"] Nothing
+  case lastMay $ words out of
+    Nothing            -> throwError $ HsenvException $ "Couldn't extract ghc-pkg version number from: " ++ out
+    Just versionString -> do
+      indentMessages $ trace $ "Found version string: " ++ versionString
+      version <- parseVersion versionString
+      let ghc_6_12_1_version = Version [6,12,1] []
+      if version < ghc_6_12_1_version then do
+        indentMessages $ debug "Detected GHC older than 6.12, initializing GHC_PACKAGE_PATH to file with '[]'"
+        liftIO $ writeFile (ghcPackagePath dirStructure) "[]"
+       else do
+        _ <- indentMessages $ insideGhcPkg ["init", ghcPackagePath dirStructure] Nothing
+        return ()
+
+-- copy optional packages and don't fail completely if this copying fails
+-- some packages mail fail to copy and it's not fatal (e.g. older GHCs don't have haskell2010)
+transplantOptionalPackage :: String -> Hsenv ()
+transplantOptionalPackage name = transplantPackage (PackageName name) `catchError` handler
+  where handler e = do
+          warning $ "Failed to copy optional package " ++ name ++ " from system's GHC: "
+          indentMessages $ warning $ getExceptionMessage e
+
+-- copy base system
+-- base - needed for ghci and everything else
+-- Cabal - needed to install non-trivial cabal packages with cabal-install
+-- haskell98 - some packages need it but they don't specify it (seems it's an implicit dependancy)
+-- haskell2010 - maybe it's similar to haskell98?
+-- ghc and ghc-binary - two packages that are provided with GHC and cannot be installed any other way
+-- also include dependant packages of all the above
+-- when using GHC from tarball, just reuse its package database
+-- cannot do the same when using system's GHC, because there might be additional packages installed
+-- then it wouldn't be possible to work on them insie virtual environment
+copyBaseSystem :: Hsenv ()
+copyBaseSystem = do
+  info "Copying necessary packages from original GHC package database"
+  indentMessages $ do
+    ghc <- asks ghcSource
+    case ghc of
+      System -> do
+        transplantPackage $ PackageName "base"
+        transplantPackage $ PackageName "Cabal"
+        mapM_ transplantOptionalPackage ["haskell98", "haskell2010", "ghc", "ghc-binary"]
+      _ -> debug "Using external GHC - nothing to copy, Virtual environment will reuse GHC package database"
+
+installGhc :: Hsenv ()
+installGhc = do
+  info "Installing GHC"
+  ghc <- asks ghcSource
+  case ghc of
+    System              -> indentMessages $ debug "Using system version of GHC - nothing to install."
+    Tarball tarballPath -> indentMessages $ installExternalGhc tarballPath
+    Url url             -> indentMessages $ installRemoteGhc url
+    Release tag         -> indentMessages $ installReleasedGhc tag
+
+installExternalGhc :: FilePath -> Hsenv ()
+installExternalGhc tarballPath = do
+  info $ "Installing GHC from " ++ tarballPath
+  dirStructure <- hseDirStructure
+  runInTmpDir $ do
+    debug "Unpacking GHC tarball"
+    _ <- indentMessages $ outsideProcess' "tar" [ "xf"
+                                               , tarballPath
+                                               , "--strip-components"
+                                               , "1"
+                                               ]
+    cwd <- liftIO getCurrentDirectory
+    let configureScript = cwd </> "configure"
+    debug $ "Configuring GHC with prefix " ++ ghcDir dirStructure
+    make <- asks makeCmd
+    _ <- indentMessages $ outsideProcess' configureScript ["--prefix=" ++ ghcDir dirStructure]
+    debug $ "Installing GHC with " ++ make ++ " install"
+    _ <- indentMessages $ outsideProcess' make ["install"]
+    return ()
+
+-- Download a file over HTTP using streams, so it
+-- has constant memory allocation.
+downloadFile :: URL -> FilePath -> Hsenv ()
+downloadFile url name = do
+  m_ex <- liftIO $ get url $ \response inStream ->
+    case getStatusCode response of
+      200 -> S.withFileAsOutput name (S.connect inStream) >> return Nothing
+      code -> return $ Just $ HsenvException $
+        "Failed to download "
+          ++ name
+          ++ ": http response returned "
+          ++ show code
+  maybe (return ()) throwError m_ex
+
+installRemoteGhc :: String -> Hsenv ()
+installRemoteGhc url = runInTmpDir $ do
+    cwd <- liftIO getCurrentDirectory
+    let tarball = cwd </> "tarball"
+    debug $ "Downloading GHC from " ++ url
+    downloadFile (C8.pack url) tarball
+    installExternalGhc tarball
+
+installReleasedGhc :: String -> Hsenv ()
+installReleasedGhc tag = do
+    let url = "http://www.haskell.org/ghc/dist/" ++ tag ++ "/ghc-" ++ tag ++ "-" ++ platform ++ ".tar.bz2"
+    installRemoteGhc url
+
+platform :: String
+platform = intercalate "-" [arch, if os == "darwin" then "apple" else "unknown", os]
+
+initDotHsenvDir :: Hsenv ()
+initDotHsenvDir = do
+  dir <- liftIO $ getAppUserDataDirectory "hsenv"
+  liftIO $ createDirectoryIfMissing True dir

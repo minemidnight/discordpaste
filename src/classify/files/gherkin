@@ -1,0 +1,199 @@
+Feature: LNOBJ
+
+  Scenario: Long Note Object
+    Given a BMS file as follows
+      """
+      #LNOBJ XX
+      #00111:01XX02XX03XX04XX
+      """
+    Then there should be 4 playable notes
+     And object 01 should be a long note from beat 4 to 4.5
+     And object 02 should be a long note from beat 5 to 5.5
+     And object 03 should be a long note from beat 6 to 6.5
+     And object 04 should be a long note from beat 7 to 7.5
+  
+  Feature: Spacing (#SPEED)
+
+  Scenario: Without Speed Set
+    Given a BMS file as follows
+      """
+      #SPEED01 0.5
+      """
+    Then note spacing at beat 1 is 1
+    And note spacing at beat 100 is 1
+
+  Scenario: With Single Speed
+    Given a BMS file as follows
+      """
+      #SPEED01 0.5
+      #001SP:0001
+      """
+    Then note spacing at beat 1 is 0.5
+    And note spacing at beat 100 is 0.5
+
+  Scenario: With Multiple Speed
+    Given a BMS file as follows
+      """
+      #SPEED01 0.5
+      #SPEED02 1.5
+      #SPEED03 1
+      #001SP:0102
+      #002SP:03
+      """
+    Then note spacing at beat 1 is 0.5
+    And note spacing at beat 4 is 0.5
+    And note spacing at beat 5 is 1
+    And note spacing at beat 6 is 1.5
+    And note spacing at beat 7 is 1.25
+    And note spacing at beat 8 is 1
+    And note spacing at beat 100 is 1
+
+Feature: Typography
+  In order to ensure that typography implementations meet the GEL standards
+  As an evaluator for GEL compliance
+  I want to test the fixture page of a project for text styles
+
+  Scenario: GEL typography Canon, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-cannon"
+    Then "font-size" of an element with class "gel-cannon" is "40px"
+    And "line-height" of an element with class "gel-cannon" is "48px"
+
+  Scenario: GEL typography Canon Bold, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-cannon-bold"
+    Then "font-size" of an element with class "gel-cannon-bold" is "40px"
+    And "line-height" of an element with class "gel-cannon-bold" is "48px"
+    And "font-weight" of an element with class "gel-cannon-bold" is "bold"
+    And "letter-spacing" of an element with class "gel-cannon-bold" is "-1px"
+
+  Scenario: GEL typography Trafalgar, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-trafalgar"
+    Then "font-size" of an element with class "gel-trafalgar" is "32px"
+    And "line-height" of an element with class "gel-trafalgar" is "32px"
+
+  Scenario: GEL typography Trafalgar Bold, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-trafalgar-bold"
+    Then "font-size" of an element with class "gel-trafalgar-bold" is "32px"
+    And "line-height" of an element with class "gel-trafalgar-bold" is "32px"
+    And "font-weight" of an element with class "gel-trafalgar-bold" is "bold"
+    And "letter-spacing" of an element with class "gel-trafalgar-bold" is "-1px"
+
+  Scenario: GEL typography Double Pica, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-double-pica"
+    Then "font-size" of an element with class "gel-double-pica" is "20px"
+    And "line-height" of an element with class "gel-double-pica" is "24px"
+
+  Scenario: GEL typography Double Pica Bold, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-double-pica-bold"
+    Then "font-size" of an element with class "gel-double-pica-bold" is "20px"
+    And "line-height" of an element with class "gel-double-pica-bold" is "24px"
+    And "font-weight" of an element with class "gel-double-pica-bold" is "bold"
+    And "letter-spacing" of an element with class "gel-double-pica-bold" is "-1px"
+
+  Scenario: GEL typography Great Primer, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-great-primer"
+    Then "font-size" of an element with class "gel-great-primer" is "20px"
+    And "line-height" of an element with class "gel-great-primer" is "20px"
+
+  Scenario: GEL typography Great Primer Bold, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-great-primer-bold"
+    Then "font-size" of an element with class "gel-great-primer-bold" is "20px"
+    And "line-height" of an element with class "gel-great-primer-bold" is "20px"
+    And "font-weight" of an element with class "gel-great-primer-bold" is "bold"
+
+  Scenario: GEL typography Pica, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-pica"
+    Then "font-size" of an element with class "gel-pica" is "16px"
+    And "line-height" of an element with class "gel-pica" is "22px"
+
+  Scenario: GEL typography Pica Bold, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-pica-bold"
+    Then "font-size" of an element with class "gel-pica-bold" is "16px"
+    And "line-height" of an element with class "gel-pica-bold" is "22px"
+    And "font-weight" of an element with class "gel-pica-bold" is "bold"
+
+  Scenario: GEL typography Long Primer, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-long-primer"
+    Then "font-size" of an element with class "gel-long-primer" is "14px"
+    And "line-height" of an element with class "gel-long-primer" is "18px"
+
+  Scenario: GEL typography Long Primer Bold, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-long-primer-bold"
+    Then "font-size" of an element with class "gel-long-primer-bold" is "14px"
+    And "line-height" of an element with class "gel-long-primer-bold" is "18px"
+    And "font-weight" of an element with class "gel-long-primer-bold" is "bold"
+
+  Scenario: GEL typography Brevier, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-brevier"
+    Then "font-size" of an element with class "gel-brevier" is "13px"
+    And "line-height" of an element with class "gel-brevier" is "16px"
+
+  Scenario: GEL typography Brevier Bold, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-brevier-bold"
+    Then "font-size" of an element with class "gel-brevier-bold" is "13px"
+    And "line-height" of an element with class "gel-brevier-bold" is "16px"
+    And "font-weight" of an element with class "gel-brevier-bold" is "bold"
+
+  Scenario: GEL typography Minion, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-minion"
+    Then "font-size" of an element with class "gel-minion" is "12px"
+    And "line-height" of an element with class "gel-minion" is "16px"
+    And "text-transform" of an element with class "gel-minion" is "uppercase"
+
+  Scenario: GEL typography Minion Bold, group D
+    Given screen width of "600px" or higher
+    And touch is not available
+    And there is an element with class "gel-minion-bold"
+    Then "font-size" of an element with class "gel-minion-bold" is "12px"
+    And "line-height" of an element with class "gel-minion-bold" is "16px"
+    And "text-transform" of an element with class "gel-minion" is "uppercase"
+    And "font-weight" of an element with class "gel-minion-bold" is "bold"
+
+Feature: Blind draft mode
+  Two translation modes will be available to translators.
+  The default mode has the source on the left and the translation on the right.
+  The blind draft mode will only display the translation.
+  
+  Background:
+    Given I have selected a frame
+    And I am viewing the main activity
+    And I have opened the contextual menu
+  
+  Scenario: Enable blind draft mode
+    Given the blind draft mode is disabled
+    When I click on the "toggle blind draft mode" button
+    Then I want to see the blind draft mode
+  
+  Scenario: Disable blind draft mode
+    Given the blind draft mode is enabled
+    When I click on the "toggle blind draft mode" button
+    Then I want to see the default mode

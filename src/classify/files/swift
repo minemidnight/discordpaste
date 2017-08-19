@@ -1,0 +1,603 @@
+//
+//  JSONValue.swift
+//  Crust
+//
+//  Created by Justin Spahr-Summers on 2014-06-21.
+//  Copyright (c) 2014 Justin Spahr-Summers. All rights reserved.
+//
+
+import Foundation
+
+/// Represents a JSON value.
+enum JSONValue: Equatable, Hashable {
+	case object(Dictionary<String, JSONValue>)
+	case array(Array<JSONValue>)
+	case string(String)
+	case number(NSNumber)
+	case boolean(Bool)
+	case null
+
+	var hashValue: Int {
+		get {
+			switch self {
+			case let .object(dict):
+				return dict.count.hashValue
+
+			case let .array(arr):
+				return arr.count.hashValue
+
+			case let .string(str):
+				return str.hashValue
+
+			case let .number(num):
+				return num.hashValue
+
+			case let .boolean(b):
+				return b.hashValue
+
+			case let .null:
+				return 0
+			}
+		}
+	}
+
+	subscript(key: String) -> JSONValue? {
+		switch self {
+		case let .object(dict):
+			return dict[key]
+
+		default:
+			return nil
+		}
+	}
+
+	/// Converts a dynamically-typed Objective-C object (such as you might get
+	/// back from `NSJSONSerialization`) into a `JSONValue`.
+	static func fromObject(obj: AnyObject) -> Result<JSONValue> {
+		if let d = obj as? Dictionary<String, AnyObject> {
+			var verifiedDictionary = Dictionary<String, JSONValue>()
+
+			for (key, value: AnyObject) in d {
+				switch fromObject(value) {
+				case let .success(newValue):
+					verifiedDictionary[key] = newValue
+				
+				case let .error(error):
+					return .error(error)
+				}
+			}
+
+			return .success(Box(object(verifiedDictionary)))
+		} else if let a = obj as? Array<AnyObject> {
+			var verifiedArray = Array<JSONValue>()
+
+			for (value: AnyObject) in a {
+				switch fromObject(value) {
+				case let .success(newValue):
+					verifiedArray.append(newValue)
+				
+				case let .error(error):
+					return .error(error)
+				}
+			}
+
+			return .success(Box(array(verifiedArray)))
+		} else if let s = obj as? String {
+			return .success(Box(string(s)))
+		} else if obj === kCFBooleanTrue {
+			return .success(Box(boolean(true)))
+		} else if obj === kCFBooleanFalse {
+			return .success(Box(boolean(false)))
+		} else if let n = obj as? NSNumber {
+			return .success(Box(number(n)))
+		} else if obj is NSNull {
+			return .success(Box(null))
+		} else {
+			// TODO: Use a real error here.
+			return .error(nil)
+		}
+	}
+
+	/// Converts a `JSONValue` into a dynamically-typed Objective-C object (such
+	/// as you might pass into `NSJSONSerialization`).
+	func toObject() -> AnyObject {
+		switch self {
+		case let .object(dict):
+			var duckDictionary = NSMutableDictionary(capacity: dict.count)
+
+			for (key, value) in dict {
+				duckDictionary[key] = value.toObject()
+			}
+
+			return duckDictionary
+
+		case let .array(arr):
+			return arr.map { $0.toObject() }
+
+		case let .string(str):
+			return str
+		
+		case let .number(num):
+			return num
+		
+		case let .boolean(b):
+			if b {
+				return kCFBooleanTrue
+			} else {
+				return kCFBooleanFalse
+			}
+		
+		case let .null:
+			return NSNull()
+		}
+	}
+
+	/// Attempts to parse a `JSONValue` from a data buffer.
+	static func fromData(data: NSData, options: NSJSONReadingOptions = NSJSONReadingOptions()) -> Result<JSONValue> {
+		var error: NSError?
+		let maybeObj: AnyObject? = NSJSONSerialization.JSONObjectWithData(data, options: options, error: &error)
+
+		if let obj: AnyObject = maybeObj {
+			return fromObject(obj)
+		} else {
+			return .error(error)
+		}
+	}
+	
+	/// Attempts to parse a `JSONValue` from an input stream.
+	static func fromStream(stream: NSInputStream, options: NSJSONReadingOptions = NSJSONReadingOptions()) -> Result<JSONValue> {
+		var error: NSError?
+		let maybeObj: AnyObject? = NSJSONSerialization.JSONObjectWithStream(stream, options: options, error: &error)
+
+		if let obj: AnyObject = maybeObj {
+			return fromObject(obj)
+		} else {
+			return .error(error)
+		}
+	}
+
+	/// Attempts to serialize the JSON value to a data buffer.
+	func toData(options: NSJSONWritingOptions = NSJSONWritingOptions()) -> Result<NSData> {
+		var error: NSError?
+		let maybeData = NSJSONSerialization.dataWithJSONObject(self.toObject(), options: options, error: &error)
+
+		if let data = maybeData {
+			return .success(Box(data))
+		} else {
+			return .error(error)
+		}
+	}
+
+	/// Attempts to serialize the JSON value, then write it to an output stream.
+	func toStream(stream: NSOutputStream, options: NSJSONWritingOptions = NSJSONWritingOptions()) -> Result<Int> {
+		var error: NSError?
+		let bytes = NSJSONSerialization.writeJSONObject(self.toObject(), toStream: stream, options: options, error: &error)
+
+		if bytes > 0 {
+			return .success(Box(bytes))
+		} else {
+			return .error(error)
+		}
+	}
+}
+
+@infix
+func ==(lhs: JSONValue, rhs: JSONValue) -> Bool {
+	switch lhs {
+	case let .object(left):
+		switch rhs {
+		case let .object(right):
+			return left == right
+
+		default:
+			return false
+		}
+
+	case let .array(left):
+		switch rhs {
+		case let .array(right):
+			return left == right
+
+		default:
+			return false
+		}
+
+	case let .string(left):
+		switch rhs {
+		case let .string(right):
+			return left == right
+
+		default:
+			return false
+		}
+
+	case let .number(left):
+		switch rhs {
+		case let .number(right):
+			return left == right
+
+		default:
+			return false
+		}
+
+	case let .boolean(left):
+		switch rhs {
+		case let .boolean(right):
+			return left == right
+
+		default:
+			return false
+		}
+
+	case let .null:
+		switch rhs {
+		case let .null:
+			return true
+
+		default:
+			return false
+		}
+
+	}
+}
+
+
+
+//
+//  BannerInterface.swift
+//  NotificationTesting
+//
+//  Created by Hamza Sood on 02/07/2015.
+//  Copyright © 2015 Hamza Sood. All rights reserved.
+//
+
+import Cocoa
+import SceneKit
+
+class BannerInterface: NSViewController {
+    
+    @IBOutlet var sceneView: SCNView!
+    override var nibName: String { return "BannerInterface" }
+    
+    override func awakeFromNib() {
+        super.awakeFromNib()
+        
+        guard let sceneURL = NSBundle.mainBundle().URLForResource("TextScene", withExtension: "scn") else {
+            NSLog("Error: Unable to find TextScene.scn")
+            return
+        }
+        let sceneSource = SCNSceneSource(URL: sceneURL, options: nil)
+        do {
+            sceneView.scene = try sceneSource.sceneWithOptions(nil)
+            NSEvent.mouseLocation()
+        }
+        catch (let error as NSError) {
+            NSLog("Error loading scene file. %@", error.debugDescription)
+        }
+    }
+    
+    
+    
+    
+    //MARK: - Mouse Handling
+    
+    var mouseMovementMonitor: AnyObject?
+    
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        mouseMovementMonitor = NSEvent.addGlobalMonitorForEventsMatchingMask(.MouseMovedMask) { [unowned self] event in
+            if event.modifierFlags.contains(.AlternateKeyMask) {
+                self.sceneView.scene!.rootNode.eulerAngles.y += event.deltaX*0.005
+                self.sceneView.scene!.rootNode.eulerAngles.x += event.deltaY*0.005
+            }
+        }
+    }
+    
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        if mouseMovementMonitor != nil {
+            NSEvent.removeMonitor(mouseMovementMonitor!)
+        }
+    }
+    
+}
+
+//
+//  Enemy.swift
+//  Flight Fight
+//
+//  Created by asduk on 14-6-8.
+//  Copyright (c) 2014 asduk. All rights reserved.
+//
+
+import UIKit
+var enemy:UIImageView!;
+
+protocol enemyDelegate{
+    func enemyDidStop();
+}
+
+
+
+enum EnemyType: Int {
+    case enemy_1,enemy_2,enemy_3
+    func enemyDescription() -> String {
+        switch self {
+        case .enemy_1:
+            return "enemy_1"
+        case .enemy_2:
+            return "enemy_2"
+        case .enemy_3:
+            return "enemy_3"
+
+        default:
+            return String(self.toRaw())
+        }
+    }
+}
+
+
+
+class Enemy: UIView {
+    
+    var delegate:enemyDelegate?;
+    
+    init(enemyType:EnemyType){
+        super.init(frame:CGRect())
+        if enemyType==EnemyType.enemy_1{
+            self.frame=CGRectMake(0, 0, 34, 24)
+            let enemy1_fly_1=self.getImageRef(CGRectMake(82, 657, 34, 24));
+            let enemy1_blowup_1=self.getImageRef(CGRectMake(47, 657, 34, 24));
+            let enemy1_blowup_2=self.getImageRef(CGRectMake(420, 729, 34, 32));
+            let enemy1_blowup_3=self.getImageRef(CGRectMake(472, 719,38, 34));
+            let enemy1_blowup_4=self.getImageRef(CGRectMake(479, 413,32, 32));
+            
+            enemy=UIImageView(image:enemy1_fly_1);
+            enemy.animationImages=[enemy1_blowup_1,enemy1_blowup_2,enemy1_blowup_3,enemy1_blowup_4];
+            enemy.animationRepeatCount=1;
+            enemy.animationDuration=0.5;
+            enemy.center=self.center;
+            self.addSubview(enemy);
+            
+        }else if enemyType==EnemyType.enemy_2{
+            self.frame=CGRectMake(0, 0, 110, 164)
+            let enemy2_fly_1=self.getImageRef(CGRectMake(221, 857,110, 164));
+            let enemy2_blowup_1=self.getImageRef(CGRectMake(0, 754,110, 164));
+            let enemy2_blowup_2=self.getImageRef(CGRectMake(321, 171,110, 169));
+            let enemy2_blowup_3=self.getImageRef(CGRectMake(321, 514,110, 169));
+            let enemy2_blowup_4=self.getImageRef(CGRectMake(321, 343,110, 169));
+            
+            enemy=UIImageView(image:enemy2_fly_1);
+            enemy.animationImages=[enemy2_blowup_1,enemy2_blowup_2,enemy2_blowup_3,enemy2_blowup_4];
+            enemy.animationRepeatCount=1;
+            enemy.animationDuration=0.5;
+            enemy.center=self.center;
+            self.addSubview(enemy);
+            
+        }else if enemyType==EnemyType.enemy_3{
+            self.frame=CGRectMake(0, 0, 46, 60)
+            let enemy3_fly_1=self.getImageRef(CGRectMake(0, 569,46, 60));
+            let enemy3_blowup_1=self.getImageRef(CGRectMake(432, 538,46, 60));
+            let enemy3_blowup_2=self.getImageRef(CGRectMake(432, 599,46, 60));
+            let enemy3_blowup_3=self.getImageRef(CGRectMake(432, 476,46, 62));
+            let enemy3_blowup_4=self.getImageRef(CGRectMake(0, 628,46, 52));
+            
+            enemy=UIImageView(image:enemy3_fly_1);
+            enemy.animationImages=[enemy3_blowup_1,enemy3_blowup_2,enemy3_blowup_3,enemy3_blowup_4];
+            enemy.animationRepeatCount=1;
+            enemy.animationDuration=0.5;
+            enemy.center=self.center;
+            self.addSubview(enemy);
+            
+        }
+    }
+    
+    func blowUp() -> Void{
+        UIView.beginAnimations(nil, context: nil);
+        UIView.setAnimationDuration(0.5);
+        enemy.alpha=0;
+        UIView.setAnimationDidStopSelector("animastop()");
+        UIView.commitAnimations();
+        enemy.startAnimating();
+    }
+    func animastop(){
+        self.delegate?.enemyDidStop();
+    }
+    
+    func isAnima() ->Bool{
+        return enemy.isAnimating();
+    }
+    
+    
+    func getImageRef(rect:CGRect!)->UIImage{
+        var imgRef=CGImageCreateWithImageInRect(UIImage(named:"gameArts").CGImage , rect);
+        var uiImg=UIImage(CGImage: imgRef);
+        return uiImg;
+    }
+
+}
+
+#!/usr/bin/xcrun swift
+import Cocoa
+
+var arguments = Process.arguments
+if arguments.count == 1 {
+    print("Usage:", Process.arguments.first!, "app-id-list")
+    exit(-1)
+}
+
+for appID in arguments.dropFirst() {
+    let urlString = "https://itunes.apple.com/lookup?id=\(appID)"
+    guard let url = NSURL(string:urlString) else {continue}
+    guard let data = NSData(contentsOfURL: url) else {continue}
+    if let json =
+        try NSJSONSerialization.JSONObjectWithData(data,
+        options: []) as? NSDictionary,
+        resultsList = json["results"] as? NSArray,
+        results = resultsList.firstObject as? NSDictionary,
+        name = results["trackName"] as? String,
+        price = results["price"] as? NSNumber {
+            let words = name.characters.split(
+                isSeparator:{$0 == ":" || $0 == "-"}).map(String.init)
+            let n = words.first!
+            print ("\(n): \(price)")
+    }
+}
+
+//
+//  AppDelegate.swift
+//  TiltingLoader
+//
+//  Created by Taylor Franklin on 8/26/14.
+//  Copyright (c) 2014 Taylor Franklin. All rights reserved.
+//
+
+import UIKit
+
+@UIApplicationMain
+class AppDelegate: UIResponder, UIApplicationDelegate {
+                            
+    var window: UIWindow?
+
+
+    func application(application: UIApplication, didFinishLaunchingWithOptions launchOptions: [NSObject: AnyObject]?) -> Bool {
+        // Override point for customization after application launch.
+        return true
+    }
+
+    func applicationWillResignActive(application: UIApplication) {
+        // Sent when the application is about to move from active to inactive state. This can occur for certain types of temporary interruptions (such as an incoming phone call or SMS message) or when the user quits the application and it begins the transition to the background state.
+        // Use this method to pause ongoing tasks, disable timers, and throttle down OpenGL ES frame rates. Games should use this method to pause the game.
+    }
+
+    func applicationDidEnterBackground(application: UIApplication) {
+        // Use this method to release shared resources, save user data, invalidate timers, and store enough application state information to restore your application to its current state in case it is terminated later.
+        // If your application supports background execution, this method is called instead of applicationWillTerminate: when the user quits.
+    }
+
+    func applicationWillEnterForeground(application: UIApplication) {
+        // Called as part of the transition from the background to the inactive state; here you can undo many of the changes made on entering the background.
+    }
+
+    func applicationDidBecomeActive(application: UIApplication) {
+        // Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
+    }
+
+    func applicationWillTerminate(application: UIApplication) {
+        // Called when the application is about to terminate. Save data if appropriate. See also applicationDidEnterBackground:.
+    }
+
+
+}
+
+
+//
+//  BadgeImage.swift
+//  StampIcon
+//
+//  Created by Jory Stiefel on 9/12/15.
+//  Copyright © 2015 Jory Stiefel. All rights reserved.
+//
+
+import Cocoa
+
+let kVerticalPadding: CGFloat = 3.0
+let kHorizontalPadding: CGFloat = 7.0
+let kMaxFontSize: CGFloat = 22.0
+let π = CGFloat(M_PI)
+
+struct StampConfig {
+    var inputFile = ""
+    var outputFile = ""
+    var text = ""
+    var textColor = NSColor.whiteColor()
+    var badgeColor = NSColor(red: 0.98, green: 0.13, blue: 0.15, alpha: 1.0)
+    var fontName = "Helvetica"
+}
+
+struct Stamper {
+    
+    let config: StampConfig
+
+    func generateBadgeImage(maxWidth: CGFloat, maxHeight: CGFloat) -> NSImage {
+        
+        var textFontSize = kMaxFontSize
+        var textFontAttributes = [
+            NSFontAttributeName: NSFont(name: config.fontName, size: textFontSize)!,
+            NSForegroundColorAttributeName: config.textColor
+        ]
+        
+        let drawText = config.text
+        
+        let badgeImage = NSImage(size: NSSize(width:maxWidth, height:maxHeight), flipped: false) { rect -> Bool in
+            
+            let context = NSGraphicsContext.currentContext()?.CGContext
+            
+            var textSize = drawText.sizeWithAttributes(textFontAttributes)
+            while (textSize.width > maxWidth * 0.7) {
+                textFontSize -= 0.25
+                textFontAttributes[NSFontAttributeName] = NSFont(name: self.config.fontName, size: textFontSize)!
+                textSize = drawText.sizeWithAttributes(textFontAttributes)
+            }
+            
+            var badgeRect = rect.center(CGSize(width: maxWidth * 2, height: textSize.height + kVerticalPadding))
+            
+            badgeRect.origin.x += (1.0/6) * maxWidth
+            badgeRect.origin.y -= (1.0/6) * maxHeight
+            let textRect = badgeRect.center(textSize)
+            
+            CGContextTranslateCTM(context, badgeRect.center.x, badgeRect.center.y)
+            CGContextRotateCTM(context, π / 4)
+            CGContextTranslateCTM(context, -badgeRect.center.x, -badgeRect.center.y)
+            
+            self.config.badgeColor.setFill()
+            NSRectFill(badgeRect)
+            
+            drawText.drawInRect(textRect, withAttributes: textFontAttributes)
+            
+            return true
+        }
+        
+        return badgeImage
+    }
+    
+    func generateOutputImage() -> NSImage? {
+        guard let inputImage = NSImage(contentsOfFile: self.config.inputFile) else {
+            print("Could not read input file")
+            exit(1)
+        }
+
+        let badgeImage = stamper.generateBadgeImage(inputImage.size.width, maxHeight: inputImage.size.height)
+
+        let outputImage = NSImage(size: inputImage.size, flipped: false, drawingHandler: { (rect) -> Bool in
+            inputImage.drawInRect(rect)
+            badgeImage.drawInRect(rect)
+            return true
+        })
+
+        return outputImage
+    }
+
+    func writeImageFile(image: NSImage, filename: String) {
+        
+        if let imageData = image.TIFFRepresentation,
+            let pngRepresentation: NSData = NSBitmapImageRep(data: imageData)?.representationUsingType(.NSPNGFileType, properties: [:])
+        {
+            let success = pngRepresentation.writeToFile(filename, atomically: true)
+            if !success {
+                print("Error writing file")
+                exit(1)
+            }
+        }
+    }
+    
+    func processStamp() {
+        
+        if let outputImage = self.generateOutputImage() {
+            writeImageFile(outputImage, filename: config.outputFile)
+        } else {
+            print("Could not generate output image")
+        }
+    }
+    
+}

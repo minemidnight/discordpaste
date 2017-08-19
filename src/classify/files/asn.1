@@ -1,0 +1,126 @@
+Contact ::= SEQUENCE {
+name VisibleString,
+phone NumericString
+}
+
+MyShopPurchaseOrders DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+
+PurchaseOrder ::= SEQUENCE {
+dateOfOrder	DATE,
+customer   	CustomerInfo,
+items      	ListOfItems
+}
+
+CustomerInfo ::= SEQUENCE {
+companyName	   VisibleString (SIZE (3..50)),
+billingAddress	Address,
+contactPhone   NumericString (SIZE (7..12))
+}
+
+Address::= SEQUENCE {
+street	 VisibleString (SIZE (5 .. 50)) OPTIONAL,
+city	   VisibleString (SIZE (2..30)),
+state	  VisibleString (SIZE(2) ^ FROM ("A".."Z")),
+zipCode	NumericString (SIZE(5 | 9))
+}
+
+ListOfItems ::= SEQUENCE (SIZE (1..100)) OF Item
+
+Item ::= SEQUENCE {
+itemCode	       INTEGER (1..99999),
+color          	VisibleString ("Black" | "Blue" | "Brown"),
+power          	INTEGER (110 | 220),
+deliveryTime   	INTEGER (8..12 | 14..19),
+quantity	       INTEGER (1..1000),
+unitPrice	      REAL (1.00 .. 9999.00),
+isTaxable	      BOOLEAN
+}
+END
+
+Address::= SEQUENCE {
+street	 [0] VisibleString (SIZE (5 .. 50)) OPTIONAL,
+city    [1]	VisibleString (SIZE (2..30)),
+state	  [2] VisibleString (SIZE(2) ^ FROM ("A".."Z")),
+zipCode	[3] NumericString (SIZE(5 | 9))
+}
+
+MyShopPurchaseOrders DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+IMPORTS Address FROM PostalInformation;
+.
+
+UnitPrice ::= SEQUENCE {
+unitPrice	REAL,
+currency [XER:ATTRIBUTE] VisibleString
+}
+
+PRODUCT ::= CLASS {
+&code	       INTEGER (1..99999) UNIQUE,
+&description	VisibleString (SIZE (1..100)),
+&price	      REAL
+} WITH SYNTAX { CODE &code , DESCRIPTION &description , PRICE &price}
+
+ProductCatalog PRODUCT ::= {
+{CODE 101, DESCRIPTION "iPhone v4", PRICE 250.00} |
+{CODE 102, DESCRIPTION "Android Galaxy", PRICE 250.00} |
+{CODE 103, DESCRIPTION "Win7 Nokia", PRICE 150.00}
+}
+
+Item ::= SEQUENCE {
+itemCode       	PRODUCT.&code ({ProductCatalog}),
+itemDescription	PRODUCT.&description ({ProductCatalog}{@itemCode}),
+quantity	       INTEGER (1..1000),
+unitPrice      	PRODUCT.&price ({ProductCatalog}{@itemCode}),
+itemTotal	      REAL,
+isTaxable	      BOOLEAN
+}
+
+PRODUCT ::= CLASS {
+&code	       INTEGER (1..99999) UNIQUE,
+&description	VisibleString (SIZE (1..100)),
+&price	      REAL,
+--OpenType-- &Feature	    
+} WITH SYNTAX { CODE &code , DESCRIPTION &description , PRICE &price , FEATURE &Feature }
+
+ProductCatalog PRODUCT ::= {
+{CODE 101, DESCRIPTION "iPhone", PRICE 250.00, FEATURE Generation } |
+{CODE 102, DESCRIPTION "Android Galaxy", PRICE 250.00, FEATURE Generation } |
+{CODE 103, DESCRIPTION "Win7 Nokia", PRICE 150.00, FEATURE Generation } |
+{CODE 104, DESCRIPTION "Bookshelf", PRICE 100.00, FEATURE Weight} |
+{CODE 105, DESCRIPTION "Glass Egg", PRICE 2000.00, FEATURE NULL}
+}
+Generation ::= ENUMERATED {two-G, three-G, four-G}
+Weight ::= INTEGER
+
+Item ::= SEQUENCE {
+itemCode       	PRODUCT.&code ({ProductCatalog }),
+itemDescription	PRODUCT.&description({ProductCatalog}{@itemCode}),
+feature        	PRODUCT.&Feature ({ProductCatalog}{@itemCode}),
+quantity       	INTEGER (1..1000),
+unitPrice      	PRODUCT.&price ({ProductCatalog}{@itemCode}),
+itemTotal      	REAL,
+isTaxable	      BOOLEAN
+}
+
+CustomerInfo ::= SEQUENCE {
+companyName	       VisibleString (SIZE (3..50)),
+billingAddress    	Address,
+contactPhoneNumber	NumericString (SIZE (7..12)),
+...
+}
+
+CustomerInfo ::= SEQUENCE {
+companyName	       VisibleString (SIZE (3..50)),
+billingAddress    	Address,
+contactPhoneNumber	NumericString (SIZE (7..12)),
+...,
+shippingAddress   	Address
+}
+
+CustomerInfo ::= SEQUENCE {
+companyName	       VisibleString (SIZE (3..50)),
+billingAddress    	Address,
+contactPhoneNumber	NumericString (SIZE (7..12)),
+...,
+shippingAddress   	Address,
+additionalInfo	    VisibleString (SIZE (1..128))
+}

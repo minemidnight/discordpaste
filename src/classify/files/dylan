@@ -1,0 +1,613 @@
+Module: dylan-user
+Copyright: See LICENSE in this distribution for details.
+
+define library http-client
+  use common-dylan;
+  use http-common;
+  use io,
+    import: { format,
+              standard-io,
+              streams };
+  use logging;
+  use network,
+    import: { sockets };
+  use strings;
+  use system,
+    import: { threads };
+  use uncommon-dylan;
+  use uri;
+
+  export
+    http-client,
+    http-client-internals;
+end library http-client;
+
+// See also the exports from http-common
+//
+define module http-client
+  // Connections
+  create
+    <http-connection>,
+    with-http-connection,
+    make-http-connection,
+    connection-host,
+    connection-port,
+    outgoing-chunk-size,
+    outgoing-chunk-size-setter;
+
+  // Progress protocol
+  create
+    note-bytes-sent;
+
+  // Request/response
+  create
+    send-request,
+    start-request,
+    finish-request,
+    read-response,
+    <http-response>,
+    response-content,
+    http-request,
+    http-get,
+    http-post,
+    http-put,
+    http-options,
+    http-head,
+    http-delete,
+    <maximum-redirects-exceeded>,
+    <redirect-loop-detected>;
+
+  // Utilities
+  create
+    *http-client-log*;
+
+end module http-client;
+
+define module http-client-internals
+  use common-dylan,
+    exclude: { format-to-string };
+  use format;
+  use http-client, export: all;
+  use http-common;
+  use %http-common-byte-string;
+  use logging;
+  use sockets,
+    exclude: { start-server };
+  use standard-io;
+  use streams;
+  use strings;
+  use threads;
+  use uncommon-dylan;
+  use uri;
+
+  // Internals
+  export
+    convert-headers,
+    connection-socket,
+    convert-content;
+
+end module http-client-internals;
+
+Module:    httpi
+Synopsis:  A command-line interface to start http-server as an application.
+Author:    Carl Gay
+Copyright: See LICENSE in this distribution for details.
+
+
+//// Initialization
+
+
+// --listen <interface> ...
+add-option(*command-line-parser*,
+           make(<repeated-parameter-option>,
+                help: format-to-string("host:port on which to "
+                                       "listen.  Option may be "
+                                       "repeated. "
+                                       "[default: 0.0.0.0:%d]",
+                                       $default-http-port),
+                names: #("listen", "l")));
+
+// --config <file>
+add-option(*command-line-parser*,
+           make(<parameter-option>,
+                help: "Location of the server configuration file.  "
+                      "[default: None]",
+                names: #("config", "c")));
+
+// --debug
+add-option(*command-line-parser*,
+           make(<flag-option>,
+                help: "Enable debug mode.  Causes the server to not handle "
+                      "most errors during request handling.",
+                names: #("debug")));
+
+// --working-directory <dir>
+add-option(*command-line-parser*,
+           make(<parameter-option>,
+                help: "Working directory to change to upon startup",
+                names: #("working-directory", "w")));
+
+// --directory <static-dir>
+add-option(*command-line-parser*,
+           make(<parameter-option>,
+                help: "Serve static content from the given directory.",
+                names: #("directory")));
+
+/*
+This is the precedence order (lowest to highest) in which initialization
+should happen.  Not quite there yet...
+
+<http-server> default slot values
+              |
+              V
+make(<http-server>) init args
+              |
+              V
+config file settings
+              |
+              V
+command-line args
+*/
+
+define function http-server-main
+    (#key server :: false-or(<http-server>),
+          description :: <string> = "An HTTP server",
+          before-startup :: false-or(<function>))
+ => ()
+  let parser = *command-line-parser*;
+  block ()
+    parse-command-line(parser, application-arguments(),
+                       description: description);
+  exception (ex :: <usage-error>)
+    exit-application(2);
+  end;
+  if (~empty?(parser.positional-options))
+    print-synopsis(parser, *standard-output*, description: description);
+    exit-application(2);
+  else
+    let debug? :: <boolean> = get-option-value(parser, "debug");
+    let handler <error>
+      = method (cond :: <error>, next-handler :: <function>)
+          if (debug?)
+            next-handler()  // decline to handle it
+          else
+            format(*standard-error*, "Error: %s\n", cond);
+            force-output(*standard-error*);
+            exit-application(1);
+          end;
+        end;
+
+    let cwd = get-option-value(parser, "working-directory");
+    if (cwd)
+      log-info("Working directory is %s", cwd);
+      working-directory() := as(<directory-locator>, cwd);
+    end;
+
+    // We want to bind *server* early so that log output goes to the
+    // right place (the server's default virtual host's logs).
+    let server = server | make(<http-server>);
+    dynamic-bind (*server* = server)
+      *server*.debugging-enabled? := debug?;
+      if (*server*.debugging-enabled?)
+        log-warning("*** DEBUGGING ENABLED ***  Error conditions will "
+                    "cause server to enter debugger (or exit).");
+      end;
+
+      // Configure first so that command-line argument override config settings.
+      let config-file = get-option-value(parser, "config");
+      if (config-file)
+        configure-server(*server*, config-file);
+      end;
+
+      // If --directory is specified, map it to / on the server.
+      // This is a special case to make serving a directory super-easy.
+      let directory = get-option-value(parser, "directory");
+      if (directory)
+        add-resource(*server*, "/", make(<directory-resource>,
+                                         directory: directory,
+                                         allow-directory-listing?: #t,
+                                         follow-symlinks?: #f));
+      end;
+
+      // Gives callers a chance to do things after the server has been
+      // configured.  e.g., the wiki wants to add responders after a
+      // URL prefix has been configured.
+      if (before-startup)
+        before-startup(*server*);
+      end;
+
+      // Any command-line listeners specified?
+      let listeners = get-option-value(parser, "listen");
+      for (listener in listeners)
+        add!(*server*.server-listeners, make-listener(listener));
+      end;
+
+      log-debug("Mapped resources:");
+      do-resources(*server*,
+                   method (res)
+                     log-debug("  %-25s -- %s", res.resource-url-path, res);
+                   end);
+
+      start-server(*server*);
+    end dynamic-bind;
+  end if;
+end function http-server-main;
+
+begin
+  let filename = locator-name(as(<file-locator>, application-name()));
+  if (split(filename, ".")[0] = "http-server")
+    http-server-main();
+  end;
+end;
+
+Module: postgresql
+Synopsis: Bindings for the raw functions.
+Author: Bruce Mitchener, Jr.
+Copyright: See LICENSE file in this distribution.
+
+define inline function pg-connection-status
+    (connection :: <pg-connection>)
+ => (status :: <integer>)
+  PQstatus(connection)
+end function pg-connection-status;
+
+define inline function pg-connection-error-message
+    (connection :: <pg-connection>)
+ => (error-message :: <string>)
+  PQerrorMessage(connection)
+end function pg-connection-error-message;
+
+define inline function pg-protocol-version
+    (connection :: <pg-connection>)
+ => (version :: <integer>)
+  PQprotocolVersion(connection)
+end function pg-protocol-version;
+
+define inline function pg-server-version
+    (connection :: <pg-connection>)
+ => (version :: <integer>)
+  PQserverVersion(connection)
+end function pg-server-version;
+
+define inline function pg-socket
+    (connection :: <pg-connection>)
+ => (file-descriptor :: <integer>)
+  PQsocket(connection)
+end function pg-socket;
+
+module: dylan-user
+
+define module postgresql
+  use dylan;
+  use common-dylan;
+  use c-ffi;
+
+  use %postgresql,
+    export: {
+      <ConnStatusType>,
+      $CONNECTION-AUTH-OK,
+      $CONNECTION-AWAITING-RESPONSE,
+      $CONNECTION-BAD,
+      $CONNECTION-MADE,
+      $CONNECTION-NEEDED,
+      $CONNECTION-OK,
+      $CONNECTION-SETENV,
+      $CONNECTION-SSL-STARTUP,
+      $CONNECTION-STARTED,
+
+      <PostgresPollingStatusType>,
+      $PGRES-POLLING-FAILED,
+      $PGRES-POLLING-READING,
+      $PGRES-POLLING-WRITING,
+      $PGRES-POLLING-OK,
+      $PGRES-POLLING-ACTIVE,
+
+      <PGPing>,
+      $PQPING-OK,
+      $PQPING-REJECT,
+      $PQPING-NO-RESPONSE,
+      $PQPING-NO-ATTEMPT,
+
+      <ExecStatusType>,
+      $PGRES-EMPTY-QUERY,
+      $PGRES-COMMAND-OK,
+      $PGRES-TUPLES-OK,
+      $PGRES-COPY-OUT,
+      $PGRES-COPY-IN,
+      $PGRES-BAD-RESPONSE,
+      $PGRES-NONFATAL-ERROR,
+      $PGRES-FATAL-ERROR,
+      $PGRES-COPY-BOTH,
+      $PGRES-SINGLE-TUPLE,
+
+      <pg-connection>,
+
+      <pg-result>
+    };
+
+  export pg-connect,
+         pg-connect-async,
+         pg-connect-poll,
+         $invalid-pg-connection;
+
+  export pg-connection-status,
+         pg-connection-error-message;
+
+  export pg-finish;
+
+  export pg-reset,
+         pg-reset-async,
+         pg-reset-poll;
+
+  export pg-ping;
+
+  export pg-protocol-version,
+         pg-server-version;
+
+  export pg-socket;
+
+  export pg-encode-as-text;
+
+  export pg-execute;
+
+  export pg-prepare,
+         pg-execute-prepared,
+         pg-describe-prepared;
+
+  export pg-result-status,
+         pg-result-status-as-text,
+         pg-result-error-message,
+         pg-result-command-status,
+         pg-result-clear,
+         pg-result-num-tuples,
+         pg-result-num-fields,
+         pg-result-field-name,
+         pg-result-field-number,
+         pg-result-field-table,
+         pg-result-field-table-column,
+         pg-result-field-format,
+         pg-result-field-type,
+         pg-result-field-type-modifier,
+         pg-value,
+         pg-value-null?,
+         pg-value-byte-length;
+end module postgresql;
+
+Module: postgresql
+Synopsis: Bindings for the raw functions.
+Author: Bruce Mitchener, Jr.
+Copyright: See LICENSE file in this distribution.
+
+define inline function pg-execute
+    (connection :: <pg-connection>,
+     command :: <string>,
+     #rest parameters)
+ => (result :: <pg-result>)
+  if (empty?(parameters))
+    PQexec(connection, command)
+  else
+    let param-count = parameters.size;
+    let param-types = null-pointer(<unsigned-int*>);
+    let param-values = make(<statically-typed-pointer*>,
+                            element-count: param-count);
+    for (p in parameters, idx from 0)
+      let encoded = pg-encode-as-text(p);
+      param-values[idx] := make(<C-pointer>, address: byte-storage-address(encoded));
+    end for;
+    let param-lengths = null-pointer(<int*>);
+    let param-formats = null-pointer(<int*>);
+    PQexecParams(connection, command, param-count, param-types,
+                 param-values, param-lengths, param-formats, 0)
+  end if
+end function pg-execute;
+
+define function pg-prepare
+    (connection :: <pg-connection>,
+     statement-name :: <string>,
+     query :: <string>,
+     #rest parameter-types)
+ => (result :: <pg-result>)
+  let param-count = parameter-types.size;
+  // We aren't ready yet for handling parameter types.
+  let param-types = null-pointer(<unsigned-int*>);
+  PQprepare(connection, statement-name, query, param-count, param-types)
+end function pg-prepare;
+
+define function pg-execute-prepared
+    (connection :: <pg-connection>,
+     statement-name :: <string>,
+     #rest parameters)
+ => (result :: <pg-result>)
+    let param-count = parameters.size;
+    let param-values = make(<statically-typed-pointer*>,
+                            element-count: param-count);
+    for (p in parameters, idx from 0)
+      let encoded = pg-encode-as-text(p);
+      param-values[idx] := make(<C-pointer>, address: byte-storage-address(encoded));
+    end for;
+    let param-lengths = null-pointer(<int*>);
+    let param-formats = null-pointer(<int*>);
+    PQexecPrepared(connection, statement-name, param-count, param-values,
+                   param-lengths, param-formats, 0)
+end function pg-execute-prepared;
+
+define function pg-describe-prepared
+    (connection :: <pg-connection>,
+     statement-name :: <string>)
+ => (result :: <pg-result>)
+  PQdescribePrepared(connection, statement-name)
+end function pg-describe-prepared;
+
+module: command-interface-demo
+synopsis: Demo code.
+author: Ingo Albrecht <prom@berlin.ccc.de>
+copyright: see accompanying file LICENSE
+
+define command-root $root;
+
+define command quit ($root)
+  help "Quit the shell";
+  implementation
+      tty-finish-activity(current-tty());
+end;
+
+define command error ($root)
+  help "Fail miserably";
+  simple parameter message :: <string>,
+    required: #t;
+  implementation
+      error(message);
+end;
+
+define command examine ($root)
+  simple parameter object :: <string>,
+    required?: #t,
+    repeatable?: #t;
+  implementation
+    begin
+      format-out("Doing almost nothing...\nOBJECTS: %=\n", object);
+    end;
+end;
+
+define command directory ($root)
+  help "Show information about directory";
+  simple parameter directory :: <string>,
+    node-class: <file-node>,
+    accept-file?: #f,
+    must-exist?: #t;
+  implementation
+    format-out("Nothing to show...\n");
+end;
+
+define command echo ($root)
+  simple parameter message :: <string>,
+    help: "Message to print",
+    required: #t;
+  implementation
+      format-out("%s\n", message);
+end;
+
+define command show ($root)
+  help "Show information";
+end;
+
+define command show configuration ($root)
+  help "Query configuration";
+  implementation
+    format-out("Nothing to show...\n");
+end;
+
+define command show interface ($root)
+  help "Query interfaces";
+  flag parameter verbose :: <boolean>,
+    help: "Print verbose information";
+  simple parameter name :: <string>,
+    help: "Filter interfaces by name",
+    repeatable?: #t,
+    node-class: <oneof-node>,
+    alternatives: #("eth0", "eth1", "eth2", "eth3");
+  named parameter type :: <string>,
+    help: "Filter interfaces by type",
+    node-class: <oneof-node>,
+    alternatives: #("ethernet","atm");
+  named parameter protocol :: <string>,
+    help: "Filter interfaces by protocol",
+    node-class: <oneof-node>,
+    alternatives: #("ip","ip4","ip6","lldp");
+  implementation
+    format-out("Nothing to show... %= | %=\n", verbose, name);
+end;
+
+define command show route ($root)
+  help "Query routes";
+  named parameter destination :: <symbol>,
+    help: "Filter routes by destination";
+  named parameter source :: <symbol>,
+    help: "Filter routes by source";
+  implementation
+    format-out("Nothing to show...\n src %= dst %= \n", source, destination);
+end;
+
+define command show log ($root)
+  help "Query logs";
+  named parameter service :: <string>,
+    help: "Filter log messages by service",
+    node-class: <oneof-node>,
+    alternatives: #("dhcp-server","dhcp-client","kernel");
+  named parameter level :: <string>,
+    help: "Filter log messages by level",
+    node-class: <oneof-node>,
+    alternatives: #("fatal","error","warning","notice","info","debug","trace");
+  implementation
+    format-out("Nothing to show...\n");
+end;
+
+define command show rule ($root)
+  help "Query rules";
+  named parameter src-interface :: <string>;
+  named parameter src-address :: <string>;
+  named parameter dst-interface :: <string>;
+  named parameter dst-address :: <string>;
+  implementation
+    format-out("Nothing to show...\n");
+end;
+
+define command configure ($root)
+  help "Modify configuration";
+  implementation
+    tty-start-activity(current-tty(),
+                       make(<tty-command-shell>,
+                            root-node: $configure,
+                            prompt: "config$ "));
+end;
+
+define command-root $configure;
+
+define command diff ($configure)
+  help "Show changes";
+  implementation
+    format-out("Configuration unchanged.\n");
+end;
+
+define command set ($configure)
+  help "Change a parameter";
+  implementation
+    format-out("Not implemented...\n");
+end;
+
+define command show ($configure)
+  help "Show configuration";
+  implementation
+    format-out("Nothing to show...\n");
+end;
+
+define command remark ($configure)
+  help "Add remark on current config transaction";
+  implementation
+    format-out("Not implemented...\n");
+  simple parameter remark;
+end;
+
+define command abort ($configure)
+  help "Abort current config transaction";
+  implementation
+    begin
+      format-out("Aborting configuration change.\n");
+      tty-finish-activity(current-tty());
+    end;
+end;
+
+define command commit ($configure)
+  help "Commit current config transaction";
+  implementation
+    begin
+      format-out("Not really doing anything but we might...\n");
+      tty-finish-activity(current-tty());
+    end;
+end;
+
+tty-command-shell-main(application-name(), application-arguments(),
+                       application-controlling-tty(),
+                       $root);
+
+                       

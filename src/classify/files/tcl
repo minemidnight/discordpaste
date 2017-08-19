@@ -1,0 +1,1259 @@
+#!/usr/bin/env tclsh8.5
+
+package require html
+package require smtp
+package require mime
+
+################################################################################
+# Configuration
+################################################################################
+
+if {[llength $argv]} {
+    set ::configfile [lindex $argv 0]
+} else {
+    puts stderr "Usage: recidiv <config-file>"
+    exit 1
+}
+
+# Create the procedures to set the configuration parameters.
+foreach {directive defval} {
+    notify.from ci@test.org
+    notify.to {}
+    history.len 1024
+    datafile /tmp/recidiv.data
+    webroot /tmp/
+    whitelist {}
+    template {<html><body>%content</body></html>}
+    notify.every.failure 0
+    smtp.server 127.0.0.1
+    wait.after.every.test 0
+    web.index.show.latest 15
+    web.index.show.latest.err 5
+    run.after {}
+} {
+    proc $directive val "set ::$directive \$val"
+    set $directive $defval
+}
+
+# The 'test' procedure is used in order to setup a new CI test.
+proc test {name steps {options ""}} {
+    set options_dict {}
+    foreach option [split $options "\r\n"] {
+        if {[llength $option] == 0} continue
+        dict set options_dict [lindex $option 0] [lrange $option 1 end]
+    }
+    lappend ::tests [list $name $steps $options_dict]
+}
+
+################################################################################
+# Running the tests.
+################################################################################
+
+source $::configfile
+set ::test_id 0
+
+proc ci_error {stage msg} {
+    set ::err [list $stage $msg]
+    puts "### ERROR in stage '$stage': $msg"
+}
+
+proc ci_exec_command cmd {
+    puts "++ $cmd"
+    set ignore_error 0
+    if {[string index $cmd 0] eq {!}} {
+        set cmd [string range $cmd 1 end-1]
+        set ignore_error 1
+    }
+    if {[catch {
+        if {[lindex $cmd 0] eq {cd}} {
+            cd [lindex $cmd 1]
+            set output "Working dir is now '[lindex $cmd 1]'\n"
+        } else {
+            set output [exec -ignorestderr {*}$cmd 2>@1]
+        }
+    } e]} {
+        if {$ignore_error} {
+            set output $e
+        } else {
+            ci_error $cmd $e
+            set output {}
+        }
+    }
+    return $output
+}
+
+################################################################################
+# Data persistence. We just use the fact that in Tcl everything is a string...
+################################################################################
+
+proc save_data {} {
+    set data {}
+    foreach test $::tests {
+        lassign $test name commands options
+        if {[info exists ::history_$name]} {
+            lappend data ::history_$name [set ::history_$name]
+        }
+    }
+    lappend data ::test_id [set ::test_id]
+    set fd [open $::datafile w]
+    puts -nonewline $fd $data
+    close $fd
+}
+
+proc load_data {} {
+    if {![file readable $::datafile]} return
+    set fd [open $::datafile]
+    set data [read $fd]
+    close $fd
+    foreach {var val} $data {
+        set $var $val
+    }
+}
+
+################################################################################
+# History
+################################################################################
+
+# Returns the UNIX time of the last exection of the specified test, or
+# 0 if the test was never executed before.
+proc last_execution_time name {
+    if {![info exists ::history_$name]} {return 0}
+    set h [set ::history_$name]
+    set last [lindex $h end]
+    lassign $last status id time name tag err output
+    return $time
+}
+
+proc history_add {name status id time tag err output} {
+    lappend ::history_$name [list $status $id $time $name $tag $err $output]
+    set ::history_$name [lrange [set ::history_$name] \
+        end-[expr {[set ::history.len]-1}] end]
+}
+
+################################################################################
+# HTML generation
+################################################################################
+
+# Alias for html entitites.
+proc e s {html::html_entities $s}
+
+# Write an HTML file using the global HTML template.
+proc write_html {file body} {
+    set html [string map [list %content% $body] $::template]
+    set fd [open $file w]
+    puts -nonewline $fd $html
+    close $fd
+}
+
+# Render commands output to HTML.
+proc output-to-html o {
+    set e [e $o]
+    regsub -all "\n(@\[^\n\]+)\n" $o "\n</pre><h3>\\1</h3><pre>\n"
+}
+
+# Create the detail page, the one of a specific test run.
+proc update_detail_page item {
+    set content {}
+    foreach {status id time branch tag err fulloutput} $item break
+    if {[file exists [file join $::webroot run_$id.html]]} return
+    append content "<div class=\"rundetails\">"
+    append content "<h2>Details for run #$id (<span class=\"status_$status\">$status</span>)</h2>\n"
+    append content "<h3>$branch ($tag)</h3>\n"
+    append content "<h4>[clock format $time]</h4>\n"
+    if {$status eq {ok}} {
+        append content "<pre class=\"okpre\">[output-to-html $fulloutput]</pre>\n"
+    } else {
+        append content "<div class=\"errorcmd\">Error in: [lindex $err 0]</div>\n<pre class=\"okpre\">[output-to-html $fulloutput]</pre>\n<pre class=\"errpre\">[output-to-html [lindex $err 1]]</pre>\n"
+    }
+    append content "</div>"
+    write_html [file join $::webroot run_$id.html] $content
+}
+
+proc latest_runs_to_html {name count status_pattern} {
+    set h [set ::history_$name]
+    set c 0
+    set content {}
+
+    for {set j 0} {$j < [llength $h]} {incr j} {
+        if {$c == $count} break
+        set item [lindex $h end-$j]
+        if {$item eq {}} break
+        foreach {status id time name tag} $item break
+        if {[string match -nocase $status_pattern $status]} {
+            append content "<li><a href=\"run_$id.html\">#$id</a> \[<span class=\"status_$status\">$status</span>\] $name ($tag) -- [clock format $time]</li>\n"
+            update_detail_page $item
+            incr c
+        }
+    }
+    if {$c == 0} {
+        append content "No items."
+    }
+    return $content
+}
+
+# Create the index.html file in the web site, and triggers the generation
+# of all the details pages.
+proc update_site {} {
+    set content {}
+
+    append content {<div id="badges">}
+    foreach test $::tests {
+        lassign $test name commands options
+        if {[info exists ::history_$name]} {
+            set h [set ::history_$name]
+            set item [lindex $h end]
+            foreach {status id time name tag} $item break
+            append content "<div class=\"status_$status badge\">$name</div>"
+        }
+    }
+    append content {</div>}
+
+    foreach test $::tests {
+        lassign $test name commands options
+        if {[info exists ::history_$name]} {
+            append content "<h2>$name</h2>\n<ul>\n"
+            append content [latest_runs_to_html $name [set ::web.index.show.latest] *]
+            append content "</ul>\n"
+            set latesterr [latest_runs_to_html $name [set ::web.index.show.latest.err] err]
+            if {$latesterr ne {}} {
+                append content "<h3>latest errors</h3>\n<ul>\n"
+                append content $latesterr
+                append content "</ul>\n"
+            }
+        }
+    }
+    write_html [file join $::webroot index.html] $content
+}
+
+# Print some history information when the CI is executed.
+# Just as a way to say "Welcome, you are running the right thing".
+proc print_history_info {} {
+    foreach test $::tests {
+        lassign $test name commands options
+        if {[info exists ::history_$name]} {
+            puts "$name:"
+            flush stdout
+            foreach item [lrange [set ::history_$name] end-4 end] {
+                foreach {status id time branch tag} $item break
+                puts "#$id \[$status\] $branch ($tag) -- [clock format $time]"
+            }
+        }
+        puts {}
+    }
+}
+
+################################################################################
+# Email notifications
+################################################################################
+proc send_email_message {from recipient email_server subject body} {
+    set token [mime::initialize -canonical text/plain -string $body]
+    mime::setheader $token From $from
+    mime::setheader $token To $recipient
+    mime::setheader $token Subject $subject
+    smtp::sendmessage $token \
+          -originator $from -recipients $recipient -servers $email_server
+    mime::finalize $token
+}
+
+proc handle_notifications name {
+    set notify 0
+    set h [set ::history_$name]
+    set curr [lindex $h end]
+    set prev [lindex $h end-1]
+    foreach {status id time name tag err output} $curr break
+    if {$status eq {err}} {
+        if {[set ::notify.every.failure] || $prev eq {} ||
+                                       [lindex $prev 0] ne {err}} {
+            set notify 1
+        }
+    } else {
+        if {$prev ne {} && [lindex $prev 0] eq {err}} {
+            set notify 1
+        }
+    }
+
+    # Send email notifications
+    if {$notify} {
+        foreach to [set ::notify.to] {
+            puts "\[\\/\] send notification to $to"
+            set subject "\[recidiv run $id\] $name [string toupper $status]"
+            set body "Details below:\n$output\nIn [lindex $err 0]:\n\n[lindex $err 1]"
+            if {[catch {
+                send_email_message [set ::notify.from] $to [set ::smtp.server] $subject $body
+            } e]} {
+                puts "Warning: problems sending email: $e"
+            }
+        }
+    }
+}
+
+# Run the after script if configured
+proc run_after_script {name err} {
+    if {${::run.after} eq {}} return
+    if {$err eq {}} {
+        set testres ok
+        set ::env(RECIDIV_ERROR) {}
+    } else {
+        set testres err
+        set ::env(RECIDIV_ERROR) $err
+    }
+    set script [string map [list %testname $name %testres $testres] ${::run.after}]
+    set script [string trim $script]
+    puts "Executing $script"
+    if {[catch {exec {*}$script} script_err]} {
+        puts "Warning, after script error: $script_err"
+    }
+}
+
+################################################################################
+# Main!
+################################################################################
+
+# Start the CI. Load data, Update the site (just in case you removed it),
+# Print the history information, and run tests forever.
+load_data
+update_site
+print_history_info
+while 1 {
+    foreach test $::tests {
+        lassign $test name commands options
+        set ::err {}
+        set tag {???}
+        set fulloutput {}
+
+        # Handle the 'run.minimal.period <seconds>' option, not executing the
+        # test if it was already executed less than <seconds> seconds ago.
+        if {[dict exists $options run.minimal.period]} {
+            set minperiod [lindex [dict get $options run.minimal.period] 0]
+            set lastexec [last_execution_time $name]
+            if {[clock seconds]-$lastexec < $minperiod} continue
+        }
+
+        puts "======== Testing '$name'"
+        foreach cmd $commands {
+            append fulloutput "\n@$cmd\n" [ci_exec_command $cmd]
+            if {$::err ne {}} break
+        }
+
+        # If it is a git repository we try to extract the SHA of the version
+        # we are testing in order to provide more information.
+        catch {
+            if {[file exists .git]} {
+                set gitlog [exec -ignorestderr git log --oneline 2>@1]
+                set tag [lindex [split $gitlog] 0]
+            }
+        }
+
+        # Save this run in history.
+        incr ::test_id
+        if {$::err ne {}} {
+            puts "!!! Error for '$name'"
+            history_add $name err $::test_id [clock seconds] $tag $::err $fulloutput
+        } else {
+            puts "Test successful for 'name'"
+            history_add $name ok $::test_id [clock seconds] $tag {} $fulloutput
+        }
+        handle_notifications $name
+        run_after_script $name $err
+        save_data
+        puts -nonewline "Updating web site... "
+        flush stdout
+        update_site
+        puts "done\n"
+        after [expr {[set ::wait.after.every.test]*1000}]
+    }
+}
+
+namespace eval ::BuilderAPI {}
+
+proc ::BuilderAPI::GetAction { args } {
+    ::InstallAPI::ParseArgs _args $args {
+        -alias { string 1 }
+        -setup { choice 0 "" {install uninstall} }
+    }
+
+    set setups $_args(-setup)
+    if {$setups eq ""} { set setups [list install uninstall] }
+
+    foreach setup $setups {
+        set setup [string totitle $setup]
+
+        set list [::InstallJammer::GetActionComponentList $setup]
+
+        foreach id $list {
+            if {[$id get Alias] eq $_args(-alias)} { return $id }
+        }
+    }
+}
+
+proc ::BuilderAPI::GetActionGroup { args } {
+    ::InstallAPI::ParseArgs _args $args {
+        -alias { string 1 }
+        -setup { choice 0 "" {install uninstall} }
+    }
+
+    set setups $_args(-setup)
+    if {$setups eq ""} { set setups [list install uninstall] }
+
+    foreach setup $setups {
+        set list [ActionGroups[string toupper $setup 0] children]
+
+        foreach id $list {
+            if {[$id get Alias] eq $_args(-alias)} { return $id }
+        }
+    }
+}
+
+proc ::BuilderAPI::ModifyObject { args } {
+    ::InstallAPI::ParseArgs _args $args {
+        -object { string  1 }
+        -active { boolean 0 }
+    }
+
+    set id [::InstallJammer::ID $_args(-object)]
+
+    if {[info exists _args(-active)]} {
+        $id active $_args(-active)
+    }
+}
+
+proc ::BuilderAPI::SetPlatformProperty { args } {
+    ::InstallAPI::ParseArgs _args $args {
+        -platform { string 1 }
+        -property { string 1 }
+        -value    { string 1 }
+    }
+
+    set platforms $_args(-platform)
+
+    if {[string equal -nocase $_args(-platform) "all"]} {
+        set platforms [AllPlatforms]
+    }
+
+    if {[string equal -nocase $_args(-platform) "unix"]} {
+        set platforms [lremove [AllPlatforms] "Windows"]
+    }
+
+    if {[string equal -nocase $_args(-platform) "active"]} {
+        set platforms [ActivePlatforms]
+    }
+
+    foreach platform $platforms {
+        if {![::InstallJammer::ObjExists $platform]} {
+            return -code error "\"$platform\" is not a valid platform"
+        }
+
+        $platform set $_args(-property) $_args(-value)
+    }
+}
+
+proc ::InstallJammer::LoadActions {} {
+    global conf
+    global preferences
+
+    if {[string length $preferences(CustomActionDir)]} {
+        set dir $preferences(CustomActionDir)
+        lappend dirs $dir
+        eval lappend dirs [glob -nocomplain -type d -dir $dir *]
+
+    }
+
+    set dir [file join $conf(lib) Actions]
+    eval lappend dirs [glob -nocomplain -type d -dir $dir *]
+
+    foreach dir $dirs {
+        if {$dir eq $preferences(CustomActionDir)} {
+            set group "Custom Actions"
+        } else {
+            set group [file tail $dir]
+        }
+        set name [::InstallJammer::StringToTitle $group]
+        foreach file [glob -nocomplain -directory $dir *.action] {
+            set ::InstallJammer::loadactions::group  $name
+            set ::InstallJammer::loadactions::action ""
+
+            catch {
+                namespace eval ::InstallJammer::loadactions [read_file $file]
+            }
+        }
+    }
+}
+
+proc ::InstallJammer::GetActions {} {
+    variable actions
+    set list [list]
+    foreach action [lsort [array names actions]] {
+        lappend list $actions($action)
+    }
+    return $list
+}
+
+proc ::InstallJammer::GetActionNames {} {
+    set names [list]
+    foreach action [::InstallJammer::GetActions] {
+        lappend names [$action name]
+    }
+    return $names
+}
+
+proc ::InstallJammer::ActionList {} {
+    variable ::InstallJammer::aliasmap
+
+    foreach id [array names aliasmap] {
+        if {[$id is action actiongroup]} {
+            lappend list $aliasmap($id)
+        }
+    }
+
+    return [lsort -unique $list]
+}
+
+proc ::InstallJammer::GetActionList { setup {activeOnly 0} } {
+    set actions [list]
+    foreach id [GetActionComponentList $setup $activeOnly] {
+        set action [$id component]
+        eval lappend actions $action [[$id object] includes]
+    }
+
+    return [lsort -unique $actions]
+}
+
+proc ::InstallJammer::GetActionComponentList { setup {activeOnly 0} } {
+    set list [list]
+    foreach id [GetComponentList $setup $activeOnly] {
+        if {[$id is action]} { lappend list $id }
+    }
+    return $list
+}
+
+proc ::InstallJammer::GetRequiredPackages { {activeOnly 0} } {
+    set list [list]
+    foreach id [GetActionComponentList "" $activeOnly] {
+        eval lappend list [[$id object] requires]
+    }
+
+    return [lsort -unique $list]
+}
+
+proc ::InstallJammer::AddAction { setup action args } {
+    global widg
+
+    variable ::InstallJammer::actions
+
+    if {![info exists actions($action)]} {
+        ## If we're trying to add an action that doesn't exist,
+        ## it's probably because we no longer support the action.
+
+        ## We need to destroy the object that references this action.
+        array set _args $args
+        if {[info exists _args(-id)]} { $_args(-id) destroy }
+
+        return
+    }
+
+    set obj    $actions($action)
+    set pref   $widg($setup)
+    set sel    [lindex [$pref selection get] end]
+    set index  end
+    set parent [::InstallJammer::Tree::GetActionParent $pref $sel]
+
+    set data(-id)     ""
+    set data(-title)  [$obj title]
+    set data(-parent) $parent
+    array set data $args
+
+    set id     $data(-id)
+    set parent [::InstallJammer::ID $data(-parent)]
+
+    if {$parent eq ""} {
+        ::InstallJammer::Error -message "You cannot add an action here."
+        return
+    }
+
+    set new 0
+    if {$id eq ""} {
+        set new 1
+
+        if {$sel ne ""} {
+            if {[$sel is action]} { set index [$pref index $sel] }
+        }
+
+	set id  [::InstallJammer::uuid]
+        ::Action $id -parent $parent -setup $setup \
+            -component $action -type action -title $data(-title)
+        if {$index ne "end"} { $parent children move $id $index }
+    }
+
+    $obj initialize $id
+
+    if {$new} {
+        set proc ::InstallJammer::actions::Insert.$action
+        if {[::InstallJammer::CommandExists $proc]} { $proc $id }
+    }
+
+    if {[$pref exists $parent]} {
+        $pref insert $index $parent $id \
+            -text $data(-title) -data action -image [GetImage appwinprops16] \
+            -createcommand [list ::InstallJammer::CreateActionFrame $id] \
+            -fill [expr {$new ? "blue" : "black"}]
+    }
+
+    Modified
+
+    return $id
+}
+
+proc ::InstallJammer::CreateActionFrame { id } {
+    global widg
+    
+    variable actions
+
+    set setup  [$id setup]
+    set action [$id component]
+
+    if {$action eq "AddWidget"} {
+        return [::InstallJammer::CreateAddWidgetActionFrame $id]
+    }
+
+    set obj  $actions($action)
+    set pref $widg($setup)
+
+    set frame [$pref getframe $id]
+
+    if {[winfo exists $frame.sw]} { return }
+
+    ScrolledWindow $frame.sw -scrollbar vertical
+    pack $frame.sw -expand 1 -fill both
+
+    set prop [PROPERTIES $frame.sw.p]
+    $frame.sw setwidget $frame.sw.p
+
+    $prop insert end root standard -text "Standard Properties" -open 1
+
+    if {[llength [$obj properties 0]]} {
+        $prop insert end root advanced -text "Advanced Properties" -open 1
+    }
+
+    $obj addproperties $prop $id
+
+    if {[llength [$obj textfields]]} {
+        $prop insert end root text -text "Text Properties"
+        $obj addtextfields $prop text $id
+    }
+}
+
+proc ::InstallJammer::CreateAddWidgetActionFrame { id } {
+    global widg
+    
+    variable actions
+
+    set setup  [$id setup]
+    set action [$id component]
+
+    set obj  $actions($action)
+    set pref $widg($setup)
+
+    set frame [$pref getframe $id]
+
+    if {[winfo exists $frame.sw]} { return }
+
+    ScrolledWindow $frame.sw -scrollbar vertical
+    pack $frame.sw -expand 1 -fill both
+
+    set prop [PROPERTIES $frame.sw.p]
+    $frame.sw setwidget $frame.sw.p
+
+    $prop insert end root standard -text "Standard Properties" -open 1
+    $obj addproperties $prop $id -advanced 0
+
+    set appearance {Background Foreground Height LabelJustify LabelSide
+                    LabelWidth Type Width X Y}
+    $prop insert end root appearance -text "Widget Properties" -open 1
+    $obj addproperties $prop $id -properties $appearance -parentnode appearance
+
+    $prop insert end root advanced -text "Advanced Properties" -open 1
+    foreach property [$obj properties 0] {
+        if {[lsearch -exact $appearance $property] > -1} { continue }
+        $obj addproperties $prop $id -properties $property -parentnode advanced
+    }
+
+    $prop insert end root text -text "Text Properties" -open 1
+    $obj addtextfields $prop text $id
+
+    BUTTON $frame.preview -text "Preview Pane" -width 18 \
+        -command [list ::InstallJammer::PreviewWindow $id]
+    pack $frame.preview -side bottom -anchor se -pady 2
+
+    ::InstallJammer::ConfigureAddWidgetFrame $id [$id get Type]
+}
+
+proc ::InstallJammer::ConfigureAddWidgetFrame { id {type ""} } {
+    global widg
+    
+    variable actions
+
+    set setup  [$id setup]
+    set action [$id component]
+
+    set obj  $actions($action)
+    set pref $widg($setup)
+
+    set frame [$pref getframe $id]
+    set prop  $frame.sw.p
+
+    if {![winfo exists $frame.sw]} { return }
+
+    array set props {
+        "button"         {Action}
+        "browse entry"   {Action BrowseType FileTypes ValidateEntryOn
+                          Value VirtualText}
+        "checkbutton"    {Action Checked OffValue OnValue VirtualText}
+        "combobox"       {Action Editable ValidateEntryOn Value Values
+                          VirtualText}
+        "entry"          {Action ValidateEntryOn Value VirtualText}
+        "label"          {}
+        "label frame"    {}
+        "password entry" {Action ValidateEntryOn Value VirtualText}
+        "radiobutton"    {Action Checked Value VirtualText}
+        "text"           {Value VirtualText}
+    }
+
+    if {$type eq ""} { set type $::InstallJammer::active(Type) }
+    set properties $props($type)
+
+    if {![llength $properties]} {
+        $prop itemconfigure advanced -state hidden
+    } else {
+        $prop itemconfigure advanced -state normal
+        foreach node [$prop nodes advanced] {
+            set type [$prop itemcget $node -data]
+            if {[lsearch -exact $properties $type] < 0} {
+                $prop itemconfigure $node -state hidden
+            } else {
+                $prop itemconfigure $node -state normal
+            }
+        }
+    }
+}
+
+proc ::InstallJammer::AddActionGroup { setup args } {
+    global widg
+
+    set pref $widg($setup)
+
+    array set data {
+        -id     ""
+        -edit   1
+        -title  "New Action Group"
+    }
+    set data(-parent) "ActionGroups$setup"
+    array set data $args
+
+    set id     $data(-id)
+    set parent $data(-parent)
+
+    set new 0
+    if {![string length $id]} {
+        set new 1
+
+	set id [::InstallJammer::uuid]
+        ::ActionGroup $id -parent $parent \
+            -setup $setup -type actiongroup -active 1
+    }
+
+    ::ActionGroupObject initialize $id
+
+    if {$data(-edit)} {
+        $pref open $data(-parent)
+        set cmd [list ::InstallJammer::EditNewNode $pref]
+    } else {
+        set cmd [list $pref insert]
+    }
+
+    set open $new
+    if {[info exists data(-open)]} { set open $data(-open) }
+
+    eval $cmd [list end $parent $id -open $open \
+        -text $data(-title) -data actiongroup \
+        -image [GetImage appwindow_list16] \
+        -createcommand [list ::InstallJammer::CreateActionGroupFrame $id]]
+
+    set title [$pref itemcget $id -text]
+
+    $id title $title
+
+    Modified
+
+    return $id
+}
+
+proc ::InstallJammer::CreateActionGroupFrame { id } {
+    global widg
+    
+    variable actions
+
+    set setup  [$id setup]
+    set action [$id component]
+
+    set pref $widg($setup)
+
+    set frame [$pref getframe $id]
+
+    if {[winfo exists $frame.sw]} { return }
+
+    ScrolledWindow $frame.sw -scrollbar vertical
+    pack $frame.sw -expand 1 -fill both
+
+    set prop [PROPERTIES $frame.sw.p]
+    $frame.sw setwidget $frame.sw.p
+
+    set obj [$id object]
+
+    $prop insert end root standard -text "Standard Properties" -open 1
+    $obj addproperties $prop $id
+}
+
+proc ::InstallJammer::FindActionGroup { tree text } {
+    foreach node [$tree nodes root] {
+        set d [$tree itemcget $node -data]
+        if {![string equal $d "actiongroup"]} { continue }
+        set t [$tree itemcget $node -text]
+        if {[string equal $t $text]} { return $node }
+    }
+}
+
+proc ::InstallJammer::loadactions::Action { name {title ""} } {
+    variable group
+    variable action
+    variable ::InstallJammer::actions
+
+    if {[info exists actions($name)]} {
+        return -code error "Action $name already exists"
+    }
+
+    if {$title eq ""} {
+        set title [::InstallJammer::StringToTitle $name]
+    }
+
+    set action [::InstallJammer::Action ::#auto -title $title \
+        -name $name -group $group]
+}
+
+proc ::InstallJammer::loadactions::Property { args } {
+    variable action
+    eval $action property $args
+}
+
+proc ::InstallJammer::loadactions::Text { args } {
+    variable action
+    lassign $args name pretty subst
+    if {![string length $subst]}  { set subst 1 }
+    if {![string length $pretty]} { set pretty $name }
+    $action text $name $pretty $subst
+}
+
+proc ::InstallJammer::loadactions::Help { property text } {
+    variable action
+    $action help $property $text
+}
+
+proc ::InstallJammer::loadactions::Condition { name args } {
+    variable action
+    $action condition $action $name $args
+}
+
+proc ::InstallJammer::loadactions::Include { args } {
+    variable action
+    eval $action includes $args
+}
+
+proc ::InstallJammer::loadactions::Require { args } {
+    variable action
+    eval $action requires $args
+}
+
+proc ::InstallJammer::loadactions::Script { body } {
+    variable action
+    proc ::InstallJammer::actions::[$action name] {obj} $body
+}
+
+proc ::InstallJammer::loadactions::Group { groupName } {
+    variable action
+
+    variable group [::InstallJammer::StringToTitle $groupName]
+
+    if {$action ne ""} { $action group $group }
+}
+
+proc update_last_interaction {fd} {
+    set ::clients($fd) [clock seconds]
+}
+
+proc reset_client {fd} {
+    if {![info exists ::clients($fd)]} return
+    update_last_interaction $fd
+    set ::argvector($fd) {}
+    set ::argcount($fd) 0
+    set ::readlen($fd) -1
+    set ::mbulk($fd) -1
+    if {$::bulkfd($fd) ne {}} {
+        close $::bulkfd($fd)
+    }
+    if {$::bulkfile($fd) ne {}} {
+        file delete -- $::bulkfile($fd)
+    }
+    set ::bulkfile($fd) {}
+    set ::bulkfd($fd) {}
+}
+
+proc init_client {fd} {
+    update_last_interaction $fd
+    set ::mbulk($fd) -1
+    set ::argvector($fd) {}
+    set ::argcount($fd) 0
+    set ::readlen($fd) -1
+    set ::bulkfile($fd) {}
+    set ::bulkfd($fd) {}
+    set ::replyqueue($fd) {}
+}
+
+proc close_client fd {
+    reset_client $fd
+    unset ::clients($fd)
+    unset ::argvector($fd)
+    unset ::readlen($fd)
+    unset ::bulkfile($fd)
+    unset ::bulkfd($fd)
+    unset ::mbulk($fd)
+    unset ::argcount($fd)
+    for {set j 0} {$j < [llength $::replyqueue($fd)]} {incr j} {
+        set item [lindex $::replyqueue($fd)]
+        if {[lindex $item 0] eq {file}} {
+            close [lindex $item 1]
+        }
+    }
+    unset ::replyqueue($fd)
+    close $fd
+}
+
+proc accept {fd addr port} {
+    init_client $fd
+    fconfigure $fd -blocking 0 -translation binary -encoding binary
+    fileevent $fd readable [list read_request $fd]
+}
+
+proc lookup_command name {
+    foreach ct $::cmdtable {
+        if {$name eq [lindex $ct 0]} {
+            return $ct
+        }
+    }
+    return {}
+}
+
+proc read_request fd {
+    if [eof $fd] {
+        close_client $fd
+        return
+    }
+
+    # Handle first line request, that is *<argc>
+    if {$::mbulk($fd) == -1} {
+        set req [string trim [gets $fd] "\r\n "]
+        if {$req eq {}} return
+        set ::mbulk($fd) [string range $req 1 end]
+        return
+    }
+
+    # Read argument length
+    if {$::readlen($fd) == -1} {
+        set req [string trim [gets $fd] "\r\n "]
+        set ::readlen($fd) [expr [string range $req 1 end]+2]
+        lappend ::argvector($fd) {}
+    }
+
+    if {[llength $::argvector($fd)] > 1} {
+        set cmd [lookup_command [lindex $::argvector($fd) 0]]
+    } else {
+        set cmd {}
+    }
+
+    if {[llength $cmd]
+        && [lindex $cmd 2] eq {bulk}
+        && [lindex $cmd 1] == [llength $::argvector($fd)]} {
+        # Create the temp file that will hold the argument data
+        if {$::bulkfd($fd) eq {}} {
+            set ::bulkfile($fd) [get_tmp_file]
+            set ::bulkfd($fd) [open $::bulkfile($fd) w]
+            fconfigure $::bulkfd($fd) -translation binary -encoding binary
+        }
+        # Read current argument on file
+        while {$::readlen($fd)} {
+            set readlen $::readlen($fd)
+            if {$readlen > 4096} {set readlen 4096}
+            set buf [read $fd $readlen]
+            if {$buf eq {}} break
+            incr ::readlen($fd) -[string length $buf]
+            if {$::readlen($fd) < 2} {
+                set buf [string range $buf 0 end-[expr {2-$::readlen($fd)}]]
+            }
+            puts -nonewline $::bulkfd($fd) $buf
+        }
+        if {$::readlen($fd) == 0} {
+            lset ::argvector($fd) end $::bulkfile($fd)
+            set ::readlen($fd) -1
+        }
+    } else {
+        # Read current argument in memory
+        set buf [read $fd $::readlen($fd)]
+        incr ::readlen($fd) -[string length $buf]
+        if {$::readlen($fd) < 2} {
+            set buf [string range $buf 0 end-[expr {2-$::readlen($fd)}]]
+        }
+        set arg [lindex $::argvector($fd) end]
+        append arg $buf
+        lset ::argvector($fd) end $arg
+        if {$::readlen($fd) == 0} {
+            set ::readlen($fd) -1
+        }
+    }
+
+    # If our argument vector is complete, exec the command.
+    if {$::readlen($fd) == -1 && $::mbulk($fd) == [llength $::argvector($fd)]} {
+        set cmd [lookup_command [lindex $::argvector($fd) 0]]
+        if {[llength $cmd] == 0} {
+            add_reply $fd "-ERR invalid command name"
+        } elseif {[llength $::argvector($fd)] != [lindex $cmd 1]} {
+            add_reply $fd "-ERR invalid number of arguments for command"
+        } else {
+            cmd_[lindex $cmd 0] $fd $::argvector($fd)
+        }
+        reset_client $fd
+    }
+}
+
+proc write_reply fd {
+    while 1 {
+        if {[llength $::replyqueue($fd)] == 0} {
+            fileevent $fd writable {}
+            return;
+        }
+        set q [lrange $::replyqueue($fd) 1 end]
+        set item [lindex $::replyqueue($fd) 0]
+        set type [lindex $item 0]
+        set value [lindex $item 1]
+
+        if {$type eq {buf}} {
+            puts -nonewline $fd $value
+            flush $fd
+            set ::replyqueue($fd) $q ;# Consume the item
+            continue
+        } else {
+            set buf [read $value 16384]
+            if {$buf eq {}} {
+                set ::replyqueue($fd) $q ;# Consume the item
+                close $value
+            } else {
+                puts -nonewline $fd $buf
+                flush $fd
+                break
+            }
+        }
+    }
+}
+
+proc setup_bulk_read {fd argv len} {
+    set ::argvector($fd) $argv
+    set ::readlen($fd) [expr {$len+2}]  ;# Add two bytes for CRLF
+}
+
+proc wakeup_writable_handler fd {
+    if {[llength $::replyqueue($fd)] == 0} {
+        fileevent $fd writable [list write_reply $fd]
+    }
+}
+
+proc add_reply_raw {fd msg} {
+    wakeup_writable_handler $fd
+    lappend ::replyqueue($fd) [list buf $msg]
+}
+
+proc add_reply {fd msg} {
+    add_reply_raw $fd "$msg\r\n"
+}
+
+proc add_reply_int {fd int} {
+    add_reply $fd ":$int"
+}
+
+proc add_reply_file {fd filename} {
+    wakeup_writable_handler $fd
+    set keyfd [open $filename]
+    fconfigure $keyfd -translation binary -encoding binary
+    seek $keyfd 0 end
+    set len [tell $keyfd]
+    seek $keyfd 0
+    lappend ::replyqueue($fd) [list buf "\$$len\r\n"]
+    lappend ::replyqueue($fd) [list file $keyfd]
+    lappend ::replyqueue($fd) [list buf "\r\n"]
+}
+
+set ::cmdtable {
+    {ping 1 inline}
+    {quit 1 inline}
+    {set 3 bulk}
+    {get 2 inline}
+    {exists 2 inline}
+    {del 2 inline}
+    {incrby 3 inline}
+}
+
+################################################################################
+# DB API
+################################################################################
+
+proc get_tmp_file {} {
+    file join $::root tmp temp_[incr ::tmpfileid]
+}
+
+proc file_for_key {key} {
+    set sha1 [sha1_hex $key]
+    file join $::root [string range $sha1 0 1] [string range $sha1 2 3] $sha1
+}
+
+proc create_dir_for_key {key} {
+    set sha1 [sha1_hex $key]
+    set dir1 [file join $::root [string range $sha1 0 1]]
+    set dir2 [file join $dir1 [string range $sha1 2 3]]
+    catch {file mkdir $dir1}
+    catch {file mkdir $dir2}
+}
+
+proc create_key_from_file {fd key filename} {
+    # Try to move the file in an optimistic way like if the two directories
+    # already exist. Otherwise create it and retry... in the long run there is
+    # an high probability that the directory exists as there are just 65563
+    # dirs in the database.
+    if {[catch {
+        file rename -force -- $filename [file_for_key $key]
+    }]} {
+        create_dir_for_key $key
+        file rename -force -- $filename [file_for_key $key]
+    }
+}
+
+proc key_exists {key} {
+    file exists [file_for_key $key]
+}
+
+proc key_del {key} {
+    file delete [file_for_key $key]
+}
+
+proc key_get_content {key} {
+    set fd [open [file_for_key $key]]
+    fconfigure $fd -translation binary -encoding binary
+    set buf [read $fd]
+    close $fd
+    return $buf
+}
+
+proc key_set_content {key buf} {
+    set tmpfile [get_tmp_file]
+    if {[catch {
+        set fd [open $tmpfile w]
+    }]} {
+        create_dir_for_key $key
+        set fd [open $tmpfile w]
+    }
+    fconfigure $fd -translation binary -encoding binary
+    puts -nonewline $fd $buf
+    close $fd
+    file rename -force -- $tmpfile [file_for_key $key]
+}
+
+################################################################################
+# Commands implementation
+################################################################################
+
+proc cmd_ping {fd argv} {
+    add_reply $fd "+PONG"
+}
+
+proc cmd_quit {fd argv} {
+    add_reply $fd "+BYE"
+    close_client $fd
+}
+
+proc cmd_exists {fd argv} {
+    add_reply_int $fd [key_exists [lindex $argv 1]]
+}
+
+proc cmd_set {fd argv} {
+    create_key_from_file $fd [lindex $argv 1] [lindex $argv 2]
+    add_reply $fd "+OK"
+}
+
+proc cmd_get {fd argv} {
+    set filename [file_for_key [lindex $argv 1]]
+    if {![file exists $filename]} {
+        add_reply $fd "$-1"
+    } else {
+        add_reply_file $fd $filename
+    }
+}
+
+proc cmd_del {fd argv} {
+    if {![key_exists [lindex $argv 1]]} {
+        add_reply_int $fd 0
+    } else {
+        key_del [lindex $argv 1]
+        add_reply_int $fd 1
+    }
+}
+
+proc cmd_incrby {fd argv} {
+    set key [lindex $argv 1]
+    set increment [lindex $argv 2]
+
+    if {![string is integer $increment]} {
+        add_reply $fd "-ERR increment argument should be an integer"
+        return
+    }
+    if {[key_exists $key]} {
+        set val [key_get_content $key]
+    } else {
+        set val 0
+    }
+    if {![string is integer $val]} {
+        add_reply $fd "-ERR Can't increment the value at $key: not an integer"
+        return
+    }
+    incr val $increment
+    key_set_content $key $val
+    add_reply_int $fd $val
+}
+
+################################################################################
+# Initialization
+################################################################################
+
+proc initialize {} {
+    file mkdir [file join $::root tmp]
+    set ::listensocket [socket -server accept 6379]
+}
+
+proc cron {} {
+    # Todo timeout clients timeout
+    log "bigdis: [array size ::clients] connected clients"
+    after 1000 cron
+}
+
+proc main {} {
+    log "Server started"
+    initialize
+    cron
+}
+
+main
+vwait forever

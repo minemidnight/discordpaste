@@ -1,0 +1,1620 @@
+(defparameter *apple-disk*
+  (format nil "~Avintage/prisoner.dsk" (asdf-system-base-path :academy)))
+
+;; 35 tracks per each 5 1/4 floppy disk side
+(defun split-disk-image-into-tracks (disk-image)
+  (let* ((length (length disk-image))
+         (track-size (/ length 35)))
+    (loop for i = 0 then (+ i track-size)
+          while (<= (+ i track-size) length)
+          collect (subseq disk-image i (+ i track-size)))))
+
+;; ASCII text data in the images has the high bit set, so we chop it off before
+;; converting it to a native string.
+(defun bytes-to-string (array)
+  (sb-ext:octets-to-string (map-into array (lambda (el) (max 0 (- el 128))) array)
+                           :external-format :ascii))
+
+(defun extract-sector (index track)
+  (subseq track (* index 256) (min (length track) (* (1+ index) 256))))
+
+(defun extract-apple-disk-image (disk-image)
+  (unless (= (length disk-image) (* 16        ; sectors
+                                    35        ; tracks
+                                    256))     ; bytes
+    (error "Invalid size for apple disk image. ~A" (length disk-image)))
+  (loop
+    with tracks = (split-disk-image-into-tracks disk-image)
+    with vtoc = (extract-sector 0 (nth 17 tracks))
+    with track = (aref vtoc 1)   ; first catalog sector track
+    and sector = (aref vtoc 2)   ; first catalog sector sector
+    while track
+    nconc
+       (let* ((sector (extract-sector sector (nth track tracks)))
+              (next-track (aref sector 1))
+              (next-sector (aref sector 2)))
+         (if (zerop next-track)
+           (setf track nil)
+           (setf track next-track sector next-sector))
+         (read-apple-dos-file-descriptions sector tracks))))
+
+(defparameter *list-only* nil)
+(defparameter *list-file* nil)
+
+(defun read-apple-dos-file-descriptions (catalog tracks)
+  (loop for entry in (loop for i = #x0b then (+ i 35)
+                           while (< (+ i 34) (length catalog))
+                           collect (subseq catalog i (+ i 34)))
+        when (not (zerop (aref entry 0)))
+        nconcing
+           (let* ((file-code
+                    (ecase (logand #x7f (aref entry 2))
+                      (0 :text)
+                      (1 :integer-basic)
+                      (2 :applesoft-basic)
+                      (4 :binary)
+                      (8 :S)
+                      (10 :relocatable)
+                      (20 :a)
+                      (40 :b)))
+                  (file-name  (string-right-trim '(#\Space)
+                                                 (bytes-to-string (subseq entry 3 20)))))
+             (when (or (null *list-file*)
+                       (equal *list-file* file-name))
+               (list
+                (nconc
+                 (list file-name file-code)
+                 (unless *list-only*
+                     (list (collect-file-tracks
+                            file-code
+                            tracks
+                            (extract-apple-file tracks
+                                                (aref entry 0) ; first track
+                                                (aref entry 1) ; first sector
+                                                ))))))))))
+
+(defun extract-apple-file (tracks first-track first-sector)
+  (let* ((track (nth first-track tracks))
+         (sector (and track (extract-sector first-sector track))))
+    (when sector
+      (when (or (plusp (aref sector 1))  ; next T/S track
+                (plusp (aref sector 2))) ; next T/S sector
+        (error "Secondary T/S not yet handled."))
+      (loop for i = #x0c then (+ i 2)
+            while (< i #xFF)
+            when (not (zerop (aref sector i)))
+            collect (cons (aref sector i)
+                          (aref sector (1+ i)))))))
+
+(defmethod collect-file-tracks ((file-code (eql :text)) tracks sectors)
+  (apply #'concatenate 'string
+         (loop for sector-data
+                 in (loop for sector in sectors
+                          collect (extract-sector (cdr sector) (nth (car sector) tracks)))
+               collect (bytes-to-string sector-data))))
+
+(defmethod collect-file-tracks ((file-code (eql :binary)) tracks sectors)
+  (let ((raw
+         (apply #'concatenate 'vector
+                (loop for sector-data
+                        in (loop for sector in sectors
+                                 collect (extract-sector (cdr sector)
+                                                         (nth (car sector) tracks)))
+                      collect sector-data))))
+  (subseq raw 4 (logior (ash (aref raw 3) 8) (aref raw 2)))))
+
+(defun collect-basic-tracks (tracks sectors)
+  (let ((raw
+         (apply #'concatenate 'vector
+                (loop for sector-data
+                        in (loop for sector in sectors
+                                 collect (extract-sector (cdr sector)
+                                                         (nth (car sector) tracks)))
+                      collect sector-data))))
+    (subseq raw 2 (logior (ash (aref raw 1) 8) (aref raw 0)))))
+
+(defun decode-applesoft (data)
+  (let ((index 0)
+        (length (length data)))
+    (flet ((next-byte ()
+             (if (= index length)
+               (throw 'end nil)
+               (prog1
+                   (aref data index)
+                 (incf index)))))
+      (loop
+        for line
+           =
+           (catch 'end
+             (list (logior (next-byte) (ash (next-byte) 8))  ; offset
+                   (logior (next-byte) (ash (next-byte) 8))  ; size
+                   (loop for el = (next-byte)
+                         while (not (zerop el))
+                         collect el)))
+        while line
+        collect line))))
+
+(defparameter *applesoft-tokens*
+  #("END"       "FOR"   "NEXT"  "DATA"
+   "INPUT"      "DEL"   "DIM"   "READ"
+   "GR"         "TEXT"  "PR#"           "IN#"
+   "CALL"       "PLOT"  "HLIN"  "VLIN"
+   "HGR2"       "HGR"   "HCOLOR="       "HPLOT"
+   "DRAW"       "XDRAW" "HTAB"  "HOME"
+   "ROT="       "SCALE="        "SHLOAD"        "TRACE"
+   "NOTRACE"    "NORMAL"        "INVERSE"       "FLASH"
+   "COLOR="     "POP"   "VTAB"  "HIMEM:"
+   "LOMEM:"     "ONERR" "RESUME"        "RECALL"
+   "STORE"      "SPEED="        "LET"   "GOTO"
+   "RUN"        "IF"            "RESTORE"       "&"
+   "GOSUB"      "RETURN"        "REM"   "STOP"
+   "ON"         "WAIT"  "LOAD"  "SAVE"
+   "DEF"        "POKE"  "PRINT" "CONT"
+   "LIST"       "CLEAR" "GET"   "NEW"
+   "TAB("       "TO"            "FN"            "SPC("
+   "THEN"       "AT"            "NOT"   "STEP"
+   "+"          "-"             "*"             "/"
+   "^"          "AND"   "OR"            ">"
+   "="          "<"             "SGN"   "INT"
+   "ABS"        "USR"   "FRE"   "SCRN("
+   "PDL"        "POS"   "SQR"   "RND"
+   "LOG"        "EXP"   "COS"   "SIN"
+   "TAN"        "ATN"   "PEEK"  "LEN"
+   "STR$"       "VAL"   "ASC"   "CHR$"
+   "LEFT$"      "RIGHT$"        "MID$"  ""
+   "SYNTAX"                     "RETURN WITHOUT GOSUB"
+   "OUT OF DATA"                "ILLEGAL QUANTITY"
+   "OVERFLOW"                   "OUT OF MEMORY"
+   "UNDEF'D STATEMENT"          "BAD SUBSCRIPT"
+   "REDIM'D ARRAY"              "DIVISION BY ZERO"
+   "ILLEGAL DIRECT"             "TYPE MISMATCH"
+   "STRING TOO LONG"            "FORMULA TOO COMPLEX"
+   "CAN'T CONTINUE"             "UNDEF'D FUNCTION"
+   "ERROR \a"   ""              ""              ""))
+
+(defun tokenify-applesoft-lines (lines)
+  (loop for (offset line-number data) in lines
+        collect (list line-number
+                      (loop for el in data
+                            if (> el #x7f)
+                            collect (aref *applesoft-tokens* (logand el #x7f))
+                            else collect (code-char el)))))
+
+(defun print-applesoft-lines (lines &optional (stream t))
+  (loop for (line-number tokens) in lines
+        do (format stream "~A  " line-number)
+           (let ((on-space t))
+             (flet ((out (token) (princ token stream) (setf on-space nil))
+                    (space () (princ " " stream) (setf on-space t)))
+               (loop for token in tokens
+                     do (cond
+                          ((and (stringp token)
+                                (not (member token '("CHR$" "=" "-" "+" "/"
+                                                     ">" "<" "RND" "SGN"
+                                                     "INT" "NOT" "LEN"
+                                                     "ASC" "MID$" "SPC("
+                                                     "PEEK" "VAL" "ABS"
+                                                     "FRE") :test 'string=)))
+                           (when (member token '("THEN" "TO"
+                                                 "GOTO" "GOSUB"
+                                                 "OR" "AND") :test 'string=)
+                             (unless on-space (space)))
+                           (out token) (space))
+                          ((and (characterp token) (position token ";:"))
+                           (when (position token ";:") (space))
+                           (out token) (space))
+                          (t (out token))))))
+           (fresh-line stream)))
+
+(defmethod collect-file-tracks ((file-code (eql :applesoft-basic)) tracks sectors)
+  (with-output-to-string (stream)
+    (print-applesoft-lines
+     (tokenify-applesoft-lines
+      (decode-applesoft (collect-basic-tracks tracks sectors)))
+     stream)))
+
+(defmethod collect-file-tracks ((file-code (eql :integer-basic)) tracks sectors)
+  (collect-basic-tracks tracks sectors))
+
+(defmethod collect-file-tracks (file-code tracks sectors)
+  (error "Unhandled apple file type ~A." file-code))
+
+(defun show-apple-disk-catalog (&optional (disk *apple-disk*))
+  (format t "Catalog of DOS disk ~S.~%" disk)
+  (let ((*list-only* t))
+    (print-table (extract-apple-data (slurp-binary-file disk)))))
+
+(defun show-apple-disk-file (filename &optional (disk *apple-disk*))
+  (let ((*list-file* filename))
+    (let ((data (first (extract-apple-data (slurp-binary-file disk)))))
+      (if (null data)
+        (warn "No file named ~S found in ~S." filename disk)
+        (format t "~A ~A~%~A~%" (first data) (second data) (third data))))))
+
+		
+(defmacro without-package-variance-warnings (&body body)
+  `(eval-when (:compile-toplevel :load-toplevel :execute)
+     (handler-bind (#+sbcl(sb-int:package-at-variance #'muffle-warning))
+       ,@body)))
+
+(without-package-variance-warnings
+  (defpackage #:cl-oauth
+    (:nicknames #:oauth)
+    (:use #:cl #:anaphora #:f-underscore)
+    (:import-from #:hunchentoot
+                  #:create-prefix-dispatcher
+                  #:*dispatch-table*)
+    (:import-from #:alexandria #:with-unique-names #:curry #:rcurry #:ensure-list #:compose)
+    (:import-from #:split-sequence #:split-sequence)
+    (:export
+      #:*protocol-version*
+
+      ;;; error handling
+      #:http-error
+      #:bad-request
+      #:unauthorized
+      #:raise-error
+      #:default-error-handler
+      #:protocol-assert
+
+      ;;; tokens
+      #:token
+      #:token-key
+      #:token-secret
+      #:token-user-data
+
+      #:token-consumer
+
+      #:register-token
+      #:unregister-token
+
+      #:consumer-token
+      #:make-consumer-token
+
+      #:request-token
+      #:make-request-token
+      #:request-token-authorized-p
+      #:request-token-callback-uri
+      #:request-token-verification-code
+
+      #:access-token
+      #:make-access-token
+      #:access-token-session-handle
+      #:access-token-expires
+      #:access-token-authorization-expires
+      #:access-token-expired-p
+
+      ;;; consumer functions
+      #:obtain-access-token
+      #:authorize-request-token
+      #:authorize-request-token-from-request
+      #:make-authorization-uri
+      #:obtain-request-token
+      #:access-protected-resource
+
+      ;;; crypto
+      #:signature-base-string
+      #:hmac-key
+      #:hmac-sha1
+      #:encode-url
+      #:encode-signature
+      
+      ;;; parameters
+      #:remove-auth-parameters
+      #:normalized-parameters
+
+      ;;; service provider
+      #:check-version
+      #:check-nonce-and-timestamp
+      #:check-signature
+      #:check-verification-code
+
+      #:validate-request-token-request
+      #:request-token-response
+
+      #:get-supplied-request-token
+      #:finalize-callback-uri
+
+      #:validate-access-token-request
+
+      #:validate-access-token
+
+      #:make-response
+      )))
+
+
+(in-package :oauth)
+
+(defun uri-with-additional-query-part (uri query-part)
+  "Given a URI string or PURI uri, adds the string QUERY-PART to the end of the URI.  If
+it has query params already they are added onto it."
+  (let* ((puri (puri:uri uri))
+	 (existing-query-part (puri:uri-query puri)))
+    (setf (puri:uri-query puri)
+	  (if (and existing-query-part query-part)
+	      (concatenate 'string existing-query-part "&" query-part)
+	      (or existing-query-part query-part)))
+    (puri:render-uri puri nil)))
+
+(defun build-auth-string (parameters)
+  (format nil "OAuth ~{~A=~S~^, ~}"
+          (alexandria:flatten (mapcar
+                                (lambda (x y) (list x y))
+                                (mapcar (compose #'url-encode #'car) parameters)
+                                (mapcar (compose #'url-encode #'cdr) parameters)))))
+
+(defun http-request
+    (uri &key (auth-location :header) (method :get) auth-parameters parameters additional-headers drakma-args)
+  (apply #'drakma:http-request
+         uri
+         :method method
+         :parameters (if (eq auth-location :parameters)
+                         (append parameters auth-parameters)
+                         parameters)
+         :additional-headers (if (eq auth-location :header)
+                                 (cons `("Authorization" . ,(build-auth-string auth-parameters))
+                                       additional-headers)
+                                 additional-headers)
+         drakma-args))
+
+;;; SBCL 1.1.6 on OS X does not generate proper random values with (random most-positive-fixnum).
+(defun generate-nonce (&optional (size 30))
+  (with-open-file (in "/dev/urandom" :direction :input :element-type '(unsigned-byte 8))
+    (with-output-to-string (out)
+      (loop :repeat size
+         :do (write (read-byte in) :stream out :pretty nil :base 36)))))
+
+(defun generate-auth-parameters
+    (consumer signature-method timestamp version &optional token)
+  (let ((parameters `(("oauth_consumer_key" . ,(token-key consumer))
+                      ("oauth_signature_method" . ,(string signature-method))
+                      ("oauth_timestamp" . ,(princ-to-string timestamp))
+                      #+unix ("oauth_nonce" . ,(generate-nonce))
+                      #-unix ("oauth_nonce" . ,(princ-to-string
+                                                (random most-positive-fixnum)))
+                      ("oauth_version" . ,(princ-to-string version)))))
+    (if token
+        (cons `("oauth_token" . ,(url-decode (token-key token))) parameters)
+        parameters)))
+
+(defun obtain-request-token (uri consumer-token
+                             &key (version :1.0) user-parameters drakma-args
+                                  (timestamp (get-unix-time))
+                                  (auth-location :header)
+                                  (request-method :post)
+                                  callback-uri
+                                  additional-headers
+                                  (signature-method :hmac-sha1)
+                                  (include-user-parameters-in-signature-p t))
+  "Additional parameters will be stored in the USER-DATA slot of the token."
+  ;; TODO: support 1.0a too
+  (let* ((callback-uri (or callback-uri "oob"))
+         (auth-parameters (cons `("oauth_callback" . ,callback-uri)
+                                (generate-auth-parameters consumer-token
+                                                          signature-method
+                                                          timestamp
+                                                          version)))
+         (sbs (signature-base-string :uri uri :request-method request-method
+                                     :parameters (sort-parameters (copy-alist (if include-user-parameters-in-signature-p
+                                                                                  (append user-parameters auth-parameters)
+                                                                                  auth-parameters)))))
+         (key (hmac-key (token-secret consumer-token)))
+         (signature (encode-signature (hmac-sha1 sbs key) nil))
+         (signed-parameters (cons `("oauth_signature" . ,signature) auth-parameters)))
+    (multiple-value-bind (body status)
+        (http-request uri
+                      :method request-method
+                      :auth-location auth-location
+                      :auth-parameters signed-parameters
+                      :parameters user-parameters
+                      :additional-headers additional-headers
+                      :drakma-args drakma-args)
+      (if (eql status 200)
+          (let* ((response (query-string->alist (typecase body
+                                                  (string body)
+                                                  (t (map 'string #'code-char body)))))
+                 (key (cdr (assoc "oauth_token" response :test #'equal)))
+                 (secret (cdr (assoc "oauth_token_secret" response :test #'equal)))
+                 (user-data (set-difference response '("oauth_token" "oauth_token_secret")
+                                            :test (lambda (e1 e2)
+                                                    (equal (car e1) e2)))))
+            (assert key)
+            (assert secret)
+            (make-request-token :consumer consumer-token :key key :secret secret ;; TODO url-decode
+                                :callback-uri (puri:uri callback-uri) :user-data user-data))
+          (error "Server returned status ~D: ~A" status body))))) 
+
+
+(defun make-authorization-uri (uri request-token &key callback-uri user-parameters)
+  "Return the service provider's authorization URI. Use the resulting PURI
+for a redirect. [6.2.1] in 1.0." ; TODO 1.0a section number
+  ;; TODO: does 1.0 support oob callbacks?
+  (when (and request-token (request-token-authorized-p request-token))
+    (error "Request token ~A already authorized" request-token))
+  (let* ((parameters (append user-parameters
+                             (when request-token
+                               (list (cons "oauth_token" (token-key request-token))))
+                             (when callback-uri
+                               (list (cons "oauth_callback" callback-uri)))))
+         (puri (puri:copy-uri (puri:parse-uri uri))))
+    (setf (puri:uri-query puri)
+          (if (puri:uri-query puri)
+              (concatenate 'string
+                           (puri:uri-query puri)
+                           (alist->query-string parameters))
+              (alist->query-string parameters :include-leading-ampersand nil)))
+    puri))
+
+
+(defun authorize-request-token-from-request (request-token-lookup-fn)
+  "Authorize a request token. Must be running in request context.
+
+REQUEST-TOKEN-LOOKUP-FN will be called with the request token key
+and must return a valid unauthorized request token or NIL.
+
+Returns the authorized token or NIL if the token couldn't be found."
+  (let* ((parameters (get-parameters))
+         (token-key (cdr (assoc "oauth_token" parameters :test #'equal)))
+         (verification-code (cdr (assoc "oauth_verifier" parameters :test #'equal))))
+    (unless token-key
+      (error "No token key passed"))
+    (let ((token (funcall request-token-lookup-fn token-key))
+          (user-parameters (remove-oauth-parameters parameters)))
+      (cond
+        (token
+         (authorize-request-token token)
+         (setf (request-token-verification-code token) verification-code)
+         (setf (token-user-data token) user-parameters)
+         token)
+        (t
+         (error "Cannot find request token with key ~A ~
+                (never requested or already authorized)" token-key))))))
+
+
+(defun authorize-request-token (request-token)
+  "Authorize a request token explicitly.  Returns the authorized token."
+  ;; TODO test
+  (setf (request-token-authorized-p request-token) t)
+  request-token)
+
+(defun obtain-access-token (uri request-or-access-token &key
+                            (consumer-token (token-consumer request-or-access-token))
+                            (request-method :post)
+                            (auth-location :header)
+                            (version :1.0)
+                            (timestamp (get-unix-time))
+                            xauth-username xauth-password
+                            drakma-args
+			    (signature-method :hmac-sha1))
+  "Additional parameters will be stored in the USER-DATA slot of the
+token. POST is recommended as request method. [6.3.1]" ; TODO 1.0a section number
+  (let ((refresh-p (typep request-or-access-token 'access-token)))
+    (when (and request-or-access-token
+               (not refresh-p))
+      (assert (request-token-authorized-p request-or-access-token)))
+    (let* ((parameters (append
+                        (generate-auth-parameters consumer-token
+                                                  signature-method
+                                                  timestamp
+                                                  version
+                                                  request-or-access-token)
+                        (cond
+                          (refresh-p
+                           `(("oauth_session_handle" . ,(access-token-session-handle
+                                                         request-or-access-token))))
+                          ((null request-or-access-token)
+                           `(("x_auth_mode" . "client_auth")
+                             ("x_auth_username" . ,xauth-username)
+                             ("x_auth_password" . ,xauth-password)))
+                          (t
+                           (awhen (request-token-verification-code request-or-access-token)
+                             `(("oauth_verifier" . ,it)))))))
+           (sbs (signature-base-string :uri uri :request-method request-method
+                                       :parameters (sort-parameters (copy-alist parameters))))
+           (key (hmac-key (token-secret consumer-token)
+                          (when request-or-access-token
+                            (url-decode (token-secret request-or-access-token)))))
+           (signature (encode-signature (hmac-sha1 sbs key) nil))
+           (signed-parameters (cons `("oauth_signature" . ,signature) parameters)))
+      (multiple-value-bind (body status)
+          (http-request uri
+                        :method request-method
+                        :auth-location auth-location
+                        :auth-parameters signed-parameters
+                        :drakma-args drakma-args)
+        (if (eql status 200)
+            (let ((response (query-string->alist (if (stringp body)
+                                                     body
+                                                     (babel:octets-to-string body)))))
+              (flet ((field (name)
+                       (cdr (assoc name response :test #'equal))))
+                (let ((key (field "oauth_token"))
+                      (secret (field "oauth_token_secret"))
+                      (session-handle (field "oauth_session_handle"))
+                      (expires (awhen (field "oauth_expires_in")
+                                 (parse-integer it)))
+                      (authorization-expires (awhen (field "oauth_authorization_expires_in")
+                                               (parse-integer it)))
+                      (user-data (remove-oauth-parameters response)))
+                  (assert key)
+                  (assert secret)
+                  (make-access-token :consumer consumer-token
+                                     :key (url-decode key)
+                                     :secret (url-decode secret)
+                                     :session-handle session-handle
+                                     :expires (awhen expires
+                                                (+ (get-universal-time) it))
+                                     :authorization-expires (awhen authorization-expires
+                                                              (+ (get-universal-time) it))
+                                     :origin-uri uri
+                                     :user-data user-data))))
+            (error "Couldn't obtain access token: server returned status ~D" status))))))
+
+(defun refresh-access-token (access-token)
+  (obtain-access-token (access-token-origin-uri access-token) access-token))
+
+(defun maybe-refresh-access-token (access-token &optional on-refresh)
+  (if (access-token-expired-p access-token)
+    (let ((new-token (refresh-access-token access-token)))
+      (when on-refresh
+        (funcall on-refresh new-token))
+      new-token)
+    access-token))
+
+(defun get-problem-report-from-headers (headers)
+  (let ((authenticate-header (drakma:header-value :www-authenticate headers)))
+    (when (and authenticate-header (>= (length authenticate-header) 5))
+      (let ((type (subseq authenticate-header 0 5)))
+        (when (and (equalp type "OAuth") 
+		   (> (length authenticate-header) 5))
+          (let ((parameters (mapcar (lambda (token)
+                                      (destructuring-bind (name value)
+                                          (split-sequence #\= token)
+                                        (cons name (string-trim '(#\") value))))
+                                    (drakma:split-tokens
+                                      (subseq authenticate-header 6)))))
+            parameters))))))
+
+(defun get-problem-report (headers body)
+  (declare (ignore body)) ; TODO
+  (let ((from-headers (get-problem-report-from-headers headers)))
+    from-headers))
+
+(defun access-protected-resource (uri access-token
+                                  &rest kwargs
+                                  &key
+                                    (consumer-token (token-consumer access-token))
+                                    on-refresh
+                                    (timestamp (get-unix-time))
+                                    user-parameters
+                                    additional-headers
+                                    (version :1.0)
+                                    drakma-args
+                                    (auth-location :header)
+                                    (request-method :get)
+                                    (signature-method :hmac-sha1)
+                                    (include-user-parameters-in-signature-p t))
+  "Access the protected resource at URI using ACCESS-TOKEN.
+
+If the token contains OAuth Session information it will be checked for
+validity before the request is made. Should the server notify us that
+it has prematurely expired the token will be refresh as well and the
+request sent again using the new token. ON-REFRESH will be called
+whenever the access token is renewed."
+  (setf access-token (maybe-refresh-access-token access-token on-refresh))
+  (multiple-value-bind (normalized-uri query-string-parameters) (normalize-uri uri)
+    (let* ((auth-parameters (generate-auth-parameters consumer-token
+                                                      signature-method
+                                                      timestamp
+                                                      version
+                                                      access-token))
+           (sbs (signature-base-string :uri normalized-uri
+                                       :request-method request-method
+                                       :parameters (sort-parameters (copy-alist (if include-user-parameters-in-signature-p
+                                                                                    (append query-string-parameters user-parameters auth-parameters)
+                                                                                    auth-parameters)))))
+           (key (hmac-key (token-secret consumer-token) (token-secret access-token)))
+           (signature (encode-signature (hmac-sha1 sbs key) nil))
+           (signed-parameters (cons `("oauth_signature" . ,signature) auth-parameters)))
+      (when (and (eql request-method :post)
+                 user-parameters)
+        (assert (and (not (getf drakma-args :content-type))
+                     (not (getf drakma-args :content)))
+                () "User parameters and content/content-type in drakma arguments cannot be combined")
+        (setf drakma-args (list* :content-type "application/x-www-form-urlencoded"
+                                 :content (alist->query-string user-parameters
+                                                               :url-encode t
+                                                               :include-leading-ampersand nil)
+                                 drakma-args)))
+      (multiple-value-bind (body status headers)
+          (http-request uri
+                        :method request-method
+                        :auth-location auth-location
+                        :auth-parameters signed-parameters
+                        :parameters user-parameters
+                        :additional-headers additional-headers
+                        :drakma-args drakma-args)
+        (if (eql status 200)
+          (values body status nil nil headers)
+          (let* ((problem-report (get-problem-report headers body))
+                 (problem-hint (cdr (assoc "oauth_problem" problem-report :test #'equalp)))
+                 (problem-advice (cdr (assoc "oauth_problem_advice" problem-report :test #'equalp))))
+            (cond
+              ((and (eql status 401)
+                    (equalp problem-hint "token_expired"))
+               (format t "INFO: refreshing access token~%")
+               (let ((new-token (refresh-access-token access-token)))
+                 (when on-refresh
+                   (funcall on-refresh new-token))
+                 (apply #'access-protected-resource uri new-token kwargs)))
+              (t
+               (values body status problem-hint problem-advice headers)))))))))
+
+
+(in-package :oauth)
+
+(defun string-or-octets->octets (x)
+  (etypecase x
+    (string (babel:string-to-octets x))
+    ((simple-array (unsigned-byte 8)) x)))
+
+(defun hmac-sha1 (s key)
+  (let* ((s (string-or-octets->octets s))
+         (key (string-or-octets->octets key))
+         (hmac (ironclad:make-hmac key 'ironclad:sha1)))
+    (ironclad:update-hmac hmac s)
+    (ironclad:hmac-digest hmac)))
+
+
+
+(in-package :oauth)
+
+(defvar *protocol-version* :1.0)
+
+;;;; Service provider infrastructure
+
+;;;; TODO: need to store application-specific data somewhere.
+
+
+(defun finalize-callback-uri (request-token)
+  "Prepares the callback URI of REQUEST-TOKEN for
+  redirection."
+  (let ((uri (request-token-callback-uri request-token)))
+    (setf (puri:uri-query uri)
+          (concatenate 'string (or (puri:uri-query uri) "")
+                       (if (puri:uri-query uri) "&" "")
+                       "oauth_token="
+                         (url-encode (token-key request-token))
+                       "&oauth_verifier="
+                         (url-encode (request-token-verification-code request-token))))
+    uri))
+
+
+;;; Consumer management
+(defvar *registered-consumers* (make-hash-table :test #'equalp))
+
+(defmethod register-token ((token consumer-token))
+  (setf (gethash (token-key token) *registered-consumers*) token)
+  token)
+
+(defmethod unregister-token ((token consumer-token))
+  (remhash (token-key token) *registered-consumers*))
+
+(defun get-consumer-token (key)
+  (gethash key *registered-consumers*))
+
+(defmacro ignore-oauth-errors (&body body)
+  `(handler-case (progn ,@body)
+     (http-error (condition) (values nil condition))))
+
+;;; signature checking
+(defun check-signature ()
+  (unless (equalp (parameter "oauth_signature_method") "HMAC-SHA1")
+    (raise-error 'bad-request "Signature method not passed or different from HMAC-SHA1"))
+  (let* ((supplied-signature (gethash (request) *signature-cache*))
+         ;; TODO: do not bluntly ignore all errors. Factor out into GET-TOKEN
+         (consumer-secret (ignore-errors
+                            (token-secret
+                              (get-consumer-token (parameter "oauth_consumer_key")))))
+         (token-secret (ignore-errors
+                         (token-secret (or (ignore-oauth-errors (get-supplied-request-token))
+                                           (ignore-oauth-errors (get-supplied-access-token)))))))
+    (unless supplied-signature
+      (raise-error 'bad-request "This request is not signed"))
+    (unless consumer-secret
+      (raise-error 'unauthorized "Invalid consumer"))
+    ;; now calculate the signature and check for match
+    (let* ((signature-base-string (signature-base-string))
+           (hmac-key (hmac-key consumer-secret token-secret))
+           (signature (hmac-sha1 signature-base-string hmac-key))
+           (encoded-signature (encode-signature signature nil)))
+      (unless (equal encoded-signature supplied-signature)
+        (format t "calculated: ~S / supplied: ~S~%" encoded-signature supplied-signature)
+        (raise-error 'unauthorized "Invalid signature")))
+    t))
+
+
+;;; nonce and timestamp checking
+(defun check-nonce-and-timestamp (consumer-token)
+  ;; TODO: nonce checking
+  (unless (parameter "oauth_timestamp")
+      (raise-error 'bad-request "Missing Timestamp"))
+  (let ((timestamp (ignore-errors (parse-integer (parameter "oauth_timestamp"))))
+        (nonce (parameter "oauth_nonce")))
+    (unless timestamp
+      (raise-error 'unauthorized "Malformed Timestamp"))
+    (unless nonce
+      (raise-error 'bad-request "Missing nonce"))
+    (unless (>= timestamp (consumer-token-last-timestamp consumer-token))
+      (raise-error 'unauthorized "Invalid timestamp"))
+    t))
+
+
+;;; version checking
+(defun check-version ()
+  (let ((version (parameter "oauth_version")))
+    (unless (member version '("1.0" nil) :test #'equalp)
+      (raise-error 'bad-request "Not prepared to handle OAuth version other than 1.0" version))
+    t))
+
+
+;;; verification code checking
+(defun check-verification-code ()
+  (unless (equal (parameter "oauth_verifier")
+                 (request-token-verification-code (get-supplied-request-token)))
+    (raise-error 'unauthorized "Invalid verification code"))
+  t)
+
+
+;;; misc
+(defun get-supplied-consumer-token ()
+  (let ((consumer-key (parameter "oauth_consumer_key")))
+    (unless consumer-key
+      (raise-error 'bad-request "Consumer key not supplied"))
+    (let ((consumer-token (get-consumer-token consumer-key)))
+      (unless consumer-token
+        (raise-error 'unauthorized "Can't identify Consumer"))
+      consumer-token)))
+
+
+(defun get-supplied-callback-uri (&key allow-oob-callback-p
+                                       (allow-none (eq *protocol-version* :1.0)))
+  (let ((callback (parameter "oauth_callback")))
+    (cond
+      ((and (not allow-none) (not callback))
+       (raise-error 'bad-request "No callback supplied"))
+      ((and (not allow-oob-callback-p) (equal callback "oob"))
+       (raise-error 'bad-request "Not prepared for an OOB callback setup!"))
+      (t
+       callback))))
+
+
+;;; request token management
+(defvar *issued-request-tokens* (make-hash-table :test #'equalp))
+
+(defmethod register-token ((token request-token))
+  ;; TODO: already registered?
+  (setf (gethash (token-key token) *issued-request-tokens*) token))
+
+(defmethod unregister-token ((token request-token))
+  (remhash (token-key token) *issued-request-tokens*))
+
+(defun invalidate-request-token (request-token)
+  (remhash (token-key request-token) *issued-request-tokens*))
+
+(defun make-response (alist)
+  "[5.3]"
+  (alist->query-string
+    (mapcar (lambda (cons)
+              (cons (url-encode (car cons))
+                    (url-encode (cdr cons))))
+            alist)
+    :include-leading-ampersand nil))
+
+(defun request-token-response (request-token &rest additional-parameters)
+  "Respond to a valid request token request. [6.1.2]"
+  (assert (notany #'oauth-parameter-p additional-parameters))
+  (make-response
+    (append
+      `(("oauth_token" . ,(token-key request-token))
+        ("oauth_token_secret" . ,(token-secret request-token))
+        ("oauth_callback_confirmed" . "true"))
+      additional-parameters)))
+
+(defun validate-request-token-request (&key (request-token-ctor #'make-request-token)
+                                            allow-oob-callback-p)
+  "Check whether REQUEST is a valid request token request.
+  
+  Returns the supplied Consumer callback (a PURI:URI) or NIL if
+  the callback is supposed to be transferred oob. [6.1.1]"
+  (protocol-assert (>= (length (normalized-parameters))
+                       (case *protocol-version*
+                         ;; callbacks were introduced in 1.0a
+                         (1.0 4)
+                         (t 6 5))))
+  (check-version)
+  (check-signature)
+  (let ((consumer-token (get-supplied-consumer-token)))
+    (check-nonce-and-timestamp consumer-token)
+    (let* ((callback-uri (get-supplied-callback-uri :allow-oob-callback-p allow-oob-callback-p
+                                                    :allow-none t))
+           (request-token (funcall request-token-ctor :consumer consumer-token
+                                   :callback-uri (when callback-uri
+                                                   (puri:parse-uri callback-uri))
+                                   :user-data (remove-oauth-parameters (normalized-parameters)))))
+      (register-token request-token)
+      request-token)))
+
+(defun get-supplied-request-token (&key check-verification-code-p)
+  "Utility function that extracts the Consumer-supplied request token
+  from a list of normalized parameters. Guards against non-existing
+  and unknown tokens. Returns the request token on success."
+  ;; TODO: check whether the supplied token matches the Consumer key
+  (let ((request-token-key (parameter "oauth_token")))
+    ;; check if the Consumer supplied a request token
+    (unless request-token-key
+      (raise-error 'bad-request "Missing request token"))
+    ;; check if the supplied request token is known to us
+    (let ((request-token (gethash request-token-key *issued-request-tokens*)))
+      (unless request-token
+        (raise-error 'unauthorized "Invalid request token"))
+      (when check-verification-code-p
+        (check-verification-code))
+      ;; everything's looking good
+      request-token)))
+
+
+;;; access token management
+(defvar *issued-access-tokens* (make-hash-table :test #'equalp))
+
+(defmethod register-token ((token access-token))
+  (setf (gethash (token-key token) *issued-access-tokens*) token))
+
+(defmethod unregister-token ((token access-token))
+  (remhash (token-key token) *issued-access-tokens*))
+
+(defun validate-access-token-request (&key (access-token-ctor #'make-access-token))
+  ;; no user-supplied parameters allowed here, and the
+  ;; spec forbids duplicate oauth args per section 5.
+  ;; moreover we don't count the oauth_signature parameter as it isn't
+  ;; part of the normalized parameter list.
+  (protocol-assert (multiple-value-call #'between (length (normalized-parameters))
+             (case *protocol-version*
+               (1.0 (values 5 6))
+               (t 6 (values 6 7)))))
+  (format t "foo~%")
+  (protocol-assert (null (remove-oauth-parameters (normalized-parameters))))
+  (format t "bar~%")
+  (check-version)
+  (check-signature)
+  (let* ((request-token (get-supplied-request-token
+                          :check-verification-code-p (not (eq *protocol-version* :1.0))))
+         (consumer (token-consumer request-token)))
+    (check-nonce-and-timestamp consumer)
+    (let ((access-token (funcall access-token-ctor :consumer consumer)))
+      (register-token access-token)
+      (prog1
+          access-token
+        (invalidate-request-token request-token)))))
+
+(defun access-token-response (access-token &rest additional-parameters)
+  (declare (ignore additional-parameters)) ; TODO not supported yet
+  (url-encode (alist->query-string
+                `(("oauth_token" . ,(token-key access-token))
+                  ("oauth_token_secret" . ,(token-secret access-token))))))
+
+
+;;; protected resource access management [7]
+(defun get-supplied-access-token ()
+  "Utility function that extracts the Consumer-supplied request token
+  from a list of normalized parameters. Guards against non-existing
+  and unknown tokens. Returns the request token on success."
+  ;; TODO: check whether the supplied token matches the Consumer key
+  (let ((access-token-key (parameter "oauth_token")))
+    (unless access-token-key
+      (raise-error 'bad-request "Missing access token"))
+    ;; check if the supplied access token is known to us
+    (let ((access-token (gethash access-token-key *issued-access-tokens*)))
+      (unless access-token
+        (raise-error 'unauthorized "Invalid access token"))
+      access-token)))
+
+(defun validate-access-token ()
+  (protocol-assert (>= (length (normalized-parameters)) 6))
+  (check-version)
+  (check-signature)
+  (let ((consumer-token (get-supplied-consumer-token)))
+    (check-nonce-and-timestamp consumer-token)
+    (let ((access-token (get-supplied-access-token)))
+      (unless (eq consumer-token (token-consumer access-token))
+        (raise-error 'unauthorized "Access token ~S wasn't issued for Consumer ~S" access-token consumer-token))
+      t)))
+
+
+(in-package :sheeple)
+
+;;; This function is from Alexandria's symbols.lisp
+(defun make-gensym-list (length &optional (x "G"))
+  "Returns a list of LENGTH gensyms, each generated as if with a call to MAKE-GENSYM,
+using the second (optional, defaulting to \"G\") argument."
+  (let ((g (if (typep x '(integer 0)) x (string x))))
+    (loop repeat length
+          collect (gensym g))))
+
+;;; The remaining functions in this file are from Alexandria's functions.lisp
+
+(declaim (inline ensure-function))	; to propagate return type.
+
+(declaim (ftype (function (t) (values function &optional))
+                ensure-function))
+(defun ensure-function (function-designator)
+  "Returns the function designated by FUNCTION-DESIGNATOR:
+if FUNCTION-DESIGNATOR is a function, it is returned, otherwise
+it must be a function name and its FDEFINITION is returned."
+  (if (functionp function-designator)
+      function-designator
+      (fdefinition function-designator)))
+
+(define-modify-macro ensure-functionf/1 () ensure-function)
+
+(defmacro ensure-functionf (&rest places)
+  `(progn ,@(mapcar (lambda (x) `(ensure-functionf/1 ,x)) places)))
+
+(defun disjoin (predicate &rest more-predicates)
+  "Returns a function that applies each of PREDICATE and MORE-PREDICATE
+functions in turn to its arguments, returning the primary value of the first
+predicate that returns true, without calling the remaining predicates.
+If none of the predicates returns true, NIL is returned."
+  (declare (optimize (speed 3) (safety 1) (debug 1)))
+  (let ((predicate (ensure-function predicate))
+	(more-predicates (mapcar #'ensure-function more-predicates)))
+    (lambda (&rest arguments)
+      (or (apply predicate arguments)
+	  (some (lambda (p)
+		  (declare (type function p))
+		  (apply p arguments))
+		more-predicates)))))
+
+(defun conjoin (predicate &rest more-predicates)
+  "Returns a function that applies each of PREDICATE and MORE-PREDICATE
+functions in turn to its arguments, returning NIL if any of the predicates
+returns false, without calling the remaining predicates. If none of the
+predicates returns false, returns the primary value of the last predicate."
+  (lambda (&rest arguments)
+    (and (apply predicate arguments)
+	 ;; Cannot simply use CL:EVERY because we want to return the
+	 ;; non-NIL value of the last predicate if all succeed.
+         (do ((tail (cdr more-predicates) (cdr tail))
+              (head (car more-predicates) (car tail)))
+             ((not tail)
+              (apply head arguments))
+           (unless (apply head arguments)
+             (return nil))))))
+
+
+(defun compose (function &rest more-functions)
+  "Returns a function composed of FUNCTION and MORE-FUNCTIONS that applies its
+arguments to to each in turn, starting from the rightmost of MORE-FUNCTIONS,
+and then calling the next one with the primary value of the last."
+  (declare (optimize (speed 3) (safety 1) (debug 1)))
+  (reduce (lambda (f g)
+	    (let ((f (ensure-function f))
+		  (g (ensure-function g)))
+	      (lambda (&rest arguments)
+		(declare (dynamic-extent arguments))
+		(funcall f (apply g arguments)))))
+          more-functions
+          :initial-value function))
+
+(define-compiler-macro compose (function &rest more-functions)
+  (labels ((compose-1 (funs)
+             (if (cdr funs)
+                 `(funcall ,(car funs) ,(compose-1 (cdr funs)))
+                 `(apply ,(car funs) arguments))))
+    (let* ((args (cons function more-functions))
+           (funs (make-gensym-list (length args) "COMPOSE")))
+      `(let ,(loop for f in funs for arg in args
+		   collect `(,f (ensure-function ,arg)))
+         (declare (optimize (speed 3) (safety 1) (debug 1)))
+         (lambda (&rest arguments)
+           (declare (dynamic-extent arguments))
+           ,(compose-1 funs))))))
+
+(defun multiple-value-compose (function &rest more-functions)
+    "Returns a function composed of FUNCTION and MORE-FUNCTIONS that applies
+its arguments to to each in turn, starting from the rightmost of
+MORE-FUNCTIONS, and then calling the next one with all the return values of
+the last."
+  (declare (optimize (speed 3) (safety 1) (debug 1)))
+  (reduce (lambda (f g)
+	    (let ((f (ensure-function f))
+		  (g (ensure-function g)))
+	      (lambda (&rest arguments)
+		(declare (dynamic-extent arguments))
+		(multiple-value-call f (apply g arguments)))))
+          more-functions
+          :initial-value function))
+
+(define-compiler-macro multiple-value-compose (function &rest more-functions)
+  (labels ((compose-1 (funs)
+             (if (cdr funs)
+                 `(multiple-value-call ,(car funs) ,(compose-1 (cdr funs)))
+                 `(apply ,(car funs) arguments))))
+    (let* ((args (cons function more-functions))
+           (funs (make-gensym-list (length args) "MV-COMPOSE")))
+      `(let ,(mapcar #'list funs args)
+         (declare (optimize (speed 3) (safety 1) (debug 1)))
+         (lambda (&rest arguments)
+           (declare (dynamic-extent arguments))
+           ,(compose-1 funs))))))
+
+(defun curry (function &rest arguments)
+  "Returns a function that applies ARGUMENTS and the arguments
+it is called with to FUNCTION."
+  (declare (optimize (speed 3) (safety 1) (debug 1)))
+  (let ((fn (ensure-function function)))
+    (lambda (&rest more)
+      (declare (dynamic-extent more))
+      ;; Using M-V-C we don't need to append the arguments.
+      (multiple-value-call fn (values-list arguments) (values-list more)))))
+
+(define-compiler-macro curry (function &rest arguments)
+  (let ((curries (make-gensym-list (length arguments) "CURRY")))
+    `(let ,(mapcar #'list curries arguments)
+       (declare (optimize (speed 3) (safety 1) (debug 1)))
+       (lambda (&rest more)
+         (apply ,function ,@curries more)))))
+
+(defun rcurry (function &rest arguments)
+  "Returns a function that applies the arguments it is called
+with and ARGUMENTS to FUNCTION."
+  (declare (optimize (speed 3) (safety 1) (debug 1)))
+  (let ((fn (ensure-function function)))
+    (lambda (&rest more)
+      (declare (dynamic-extent more))
+      (multiple-value-call fn (values-list more) (values-list arguments)))))
+
+(defmacro named-lambda (name lambda-list &body body)
+  "Expands into a lambda-expression within whose BODY NAME denotes the
+corresponding function."
+  `(labels ((,name ,lambda-list ,@body))
+     #',name))
+
+
+;;;; -*- Mode: Lisp; Syntax: ANSI-Common-Lisp; Base: 10; indent-tabs-mode: nil -*-
+;;;;
+;;;; This file is part of Sheeple
+;;;;
+;;;; reply-dispatch.lisp
+;;;;
+;;;; Reply execution and dispatch
+;;;;
+;;;; TODO
+;;;; * Figure out an optimization to make accessors about as fast as calling property-value
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(in-package :sheeple)
+
+(defun score-reply (reply)
+  (loop for rank fixnum across (the simple-vector (reply-rank-vector reply))
+     with total fixnum = 0 do
+       (setf total (the fixnum (+ total rank)))
+     finally (return total)))
+
+(defun fully-specified-p (reply)
+  (loop for rank across (the simple-vector (reply-rank-vector reply)) always rank))
+
+(defun sort-applicable-replies (reply-list)
+  (sort (the list reply-list) #'< :key 'score-reply))
+
+(defun std-compute-discriminating-function (message)
+  (lambda (&rest args)
+    (let ((replies (compute-applicable-replies message (required-portion message args))))
+      (apply (or (cached-erfun message replies)
+                 (setf (cached-erfun message replies)
+                       (compute-effective-reply-function message replies args)))
+             args))))
+
+(defun primary-reply-p (reply)
+  (null (reply-qualifiers reply)))
+
+(defun before-reply-p (reply)
+  (eq :before (car (reply-qualifiers reply))))
+
+(defun after-reply-p (reply)
+  (eq :after (car (reply-qualifiers reply))))
+
+(defun around-reply-p (reply)
+  (eq :around (car (reply-qualifiers reply))))
+
+;;; This makes the argument list accessible to error functions like `no-primary-reply'
+;;; which are called from deeper within the dispatch machinery. Passing the arguments
+;;; down through each function call would suck.
+(defvar *reply-combination-args*)
+
+(defun compute-effective-reply-function (message replies *reply-combination-args*)
+  ;; This will eventually have some special-casing to break MOP
+  ;; metacircularities, and call `sheeple:compute-effective-reply'
+  ;; if MESSAGE isn't a standard-message or special message.
+  (if (null replies)
+      (lambda (&rest args) (apply 'no-applicable-reply message args))
+      (compile-effective-reply message (std-compute-effective-reply message replies))))
+
+(defun compile-effective-reply (message effective-reply)
+  (with-gensyms (args)
+    (labels ((transform-effective-reply (form)
+               (if (atom form) form
+                   (case (car form)
+                     (call-reply (transform-effective-reply
+                                  (let ((the-reply (transform-effective-reply (cadr form))))
+                                    (with-gensyms (reply-var)
+                                      `(let ((,reply-var ,the-reply))
+                                         (declare (ignorable ,reply-var))
+                                         (funcall (reply-function ,(if (replyp the-reply)
+                                                                       the-reply reply-var))
+                                                  ,args
+                                                  ,@(let ((subforms
+                                                           (loop for subform in (cddr form)
+                                                              collect `',subform)))
+                                                      (if subforms subforms '(())))
+                                                  :message ,message
+                                                  :reply ,(if (replyp the-reply)
+                                                              the-reply reply-var)))))))
+                     (make-reply (when (cddr form)
+                                   (error "Incorrect make-reply form: ~S" form))
+                                 (let ((reply-lambda
+                                        (std-make-reply-lambda
+                                         `(lambda (&rest ,args)
+                                            (declare (ignorable ,args))
+                                            ,(transform-effective-reply (cadr form))))))
+                                   (make-reply message () (message-lambda-list message)
+                                               (compile nil reply-lambda))))
+                     (t (mapcar #'transform-effective-reply form))))))
+      (let ((erf-lambda `(lambda (&rest ,args)
+                           (declare (ignorable ,args))
+                           ,(transform-effective-reply effective-reply))))
+        (multiple-value-bind (function warnings failure)
+            (compile nil erf-lambda)
+          (declare (ignore warnings))
+          (assert (not failure))
+          function)))))
+
+(defun std-compute-effective-reply (message applicable-replies)
+  (collect (before primary after around)
+    (dolist (reply applicable-replies)
+      (let ((qualifiers (reply-qualifiers reply)))
+        (cond
+          ((null qualifiers) (primary reply))
+          ((cdr qualifiers) (error "FIXME -- bad qualifiers for a standard-message"))
+          (t (case (car qualifiers)
+               (:around (around reply))
+               (:before (before reply))
+               (:after  (after reply))
+               (t (error "FIXME -- unsupported qualifiers for a standard-message~%Violating qualifiers: ~S~%" (car qualifiers))))))))
+    (cond
+      ((null (primary))
+       (apply 'no-primary-reply message *reply-combination-args*))
+      ;; SBCL has some optimization here. Pull it in, eventually.
+      (t (let ((main-erfun `(multiple-value-prog1
+                                (progn
+                                  ,@(mapcar (fun `(call-reply ,_)) (before))
+                                  (call-reply ,(car (primary)) ,(cdr (primary))))
+                              ,@(mapcar (fun `(call-reply ,_)) (reverse (after))))))
+           (if (not (around)) main-erfun
+               `(call-reply ,(car (around))
+                            (,@(cdr (around))
+                               (make-reply ,main-erfun)))))))))
+
+(declaim (inline relevant-role-p))
+(defun relevant-role-p (role message index)
+  (declare (fixnum index))
+  (and (eq message (role-message role))
+       (= index (the fixnum (role-position role)))))
+
+(defun compute-applicable-replies (message args)
+  "Returns a sorted list of replies on MESSAGE for which appropriate roles
+are present in ARGS."
+  (declare (list args))
+  (if (null args)
+      (message-replies message)
+      (let (discovered-replies applicable-replies)
+        (declare (list discovered-replies applicable-replies))
+        (flet ((find-and-rank-roles (object hposition index)
+                 ;; Given an object, and a specified place in the precedence list,
+                 ;; find the roles we want for a lambda-list position, and
+                 ;; rank the respective replies.
+                 (declare (fixnum hposition index))
+                 (dolist (role (%object-roles object))
+                   (when (relevant-role-p role message index)
+                     (let ((reply (role-reply role)))
+                       (unless (find reply discovered-replies :test #'eq)
+                         (clear-reply-rank reply)
+                         (push reply discovered-replies))
+                       (setf (svref (the simple-vector (reply-rank-vector reply)) index) hposition)
+                       (when (fully-specified-p reply)
+                         (pushnew reply applicable-replies :test #'eq)))))))
+          (declare (dynamic-extent #'find-and-rank-roles))
+          (loop
+             for arg in args and index fixnum upfrom 0
+             for obj = (ensure-dispatch-object arg)
+             ;; To avoid consing, we call f-a-r-r on the root object first
+             ;; Then we iterate over its ordered ancestors
+             do (loop initially (find-and-rank-roles obj 0 index)
+                   for precedence-object in (mold-precedence-list (%object-mold obj))
+                   for precedence-position fixnum from 1
+                   do (find-and-rank-roles precedence-object precedence-position index))
+             finally
+               (when applicable-replies
+                 (return (sort-applicable-replies applicable-replies))))))))
+
+(defun clear-reply-rank (reply &aux (vector (reply-rank-vector reply)))
+  (declare (simple-vector vector))
+  (loop for i below (length vector)
+     do (setf (svref vector i) nil)))
+
+(in-package :lla)
+
+;;;; Wrappers for BLAS linear algebra functions defined here.
+;;;
+;;; NOTE: This code is experimental.  Only a select few BLAS functions are implemented currently.
+
+(defun gemm! (alpha a b beta c &key transpose-a? transpose-b?
+              m n k lda ldb ldc)
+  "Basically C = ALPHA * A' * B' + BETA * C. A' is A or its transpose depending on TRANSPOSE-A?. B' is B or its transpose depending on TRANSPOSE-B?. Returns C.
+
+A' is an MxK matrix. B' is a KxN matrix. C is an MxN matrix.
+
+LDA is the width of the matrix A (not of A'). If A is not transposed, then K <= LDA, if it's transposed then M <= LDA.
+
+LDB is the width of the matrix B (not of B'). If B is not transposed, then N <= LDB, if it's transposed then K <= LDB.
+
+In the example below M=3, N=2, K=5, LDA=6, LDB=3, LDC=4. The cells marked with + do not feature in the calculation.
+
+           N
+          --+
+          --+
+        K -B+
+          --+
+          --+
+          +++
+    K
+  -----+  --++
+M --A--+  -C++
+  -----+  --++
+  ++++++  ++++"
+  (let+ ((common-type (common-float-type a b))
+         (m (or m (array-dimension c 0)))
+         (n (or n (array-dimension c 1)))
+         (k (or k (if transpose-a?
+                      (array-dimension a 0)
+                      (array-dimension a 1))))
+         (lda (or lda (array-dimension a 1)))
+         (ldb (or ldb (array-dimension b 1)))
+         (ldc (or ldc (array-dimension c 1))))
+    (cond (transpose-a?
+           (assert (<= m lda))
+           (assert (<= (* lda k) (array-total-size a))))
+          (t
+           (assert (<= k lda))
+           (assert (<= (* m lda) (array-total-size a)))))
+    (cond (transpose-b?
+           (assert (<= k ldb))
+           (assert (<= (* ldb n) (array-total-size b))))
+          (t
+           (assert (<= n ldb))
+           (assert (<= (* k ldb) (array-total-size b)))))
+    (assert (<= n ldc))
+    (assert (<= (* m ldc) (array-total-size c)))
+    ;; here C=AB <=> C^T=B^T A^T, so in the argument list, A and B are
+    ;; interchanged
+    (blas-call ("gemm" common-type c)
+      (&char (if transpose-b? #\C #\N))
+      (&char (if transpose-a? #\C #\N))
+      (&integers n m k) (&atom alpha)
+      (&array-in b) (&integer ldb)
+      (&array-in a) (&integer lda)
+      (&atom beta) (&array-in/out (:input c) ())
+      (&integer ldc))))
+
+(defun scal! (alpha x &key n (incx 1))
+  "X = alpha * X."
+  (let ((type (array-float-type x))
+        (n (cond (n
+                  (assert (<= (* n incx) (array-total-size x)))
+                  n)
+                 (t (floor (array-total-size x) incx)))))
+    (blas-call ("scal" type x)
+      (&integer n) (&atom alpha)
+      (&array-in/out (:input x) ()) (&integer incx))))
+
+(defun axpy! (alpha x y &key n (incx 1) (incy 1))
+  (let ((common-type (common-float-type x y))
+        (n (cond (n
+                  (assert (<= (* n incx) (array-total-size x)))
+                  (assert (<= (* n incy) (array-total-size y)))
+                  n)
+                 (t (min (floor (array-total-size x) incx)
+                         (floor (array-total-size y) incy))))))
+
+    (blas-call ("axpy" common-type y)
+      (&integer n) (&atom alpha)
+      (&array-in/out (:input x) ()) (&integer incx)
+      (&array-in/out (:input y) ()) (&integer incy))))
+
+(defun copy! (x y &key n (incx 1) (incy 1))
+  (let ((type (common-float-type x y))
+        (n (cond (n
+                  (assert (<= (* n incx) (array-total-size x)))
+                  (assert (<= (* n incy) (array-total-size y)))
+                  n)
+                 (t (min (floor (array-total-size x) incx)
+                         (floor (array-total-size y) incy))))))
+    (blas-call ("copy" type y)
+      (&integer n) (&array-in x) (&integer incx)
+      (&array-in/out (:input y) ()) (&integer incy))))
+
+(defun dot (x y &key n (incx 1) (incy 1))
+  (let ((common-type (common-float-type x y))
+        (n (cond (n
+                  (assert (<= (* n incx) (array-total-size x)))
+                  (assert (<= (* n incy) (array-total-size y)))
+                  n)
+                 (t (min (floor (array-total-size x) incx)
+                         (floor (array-total-size y) incy))))))
+
+    ;; no zdot, cdot
+    (blas-call ("dot" common-type nil (:float :double))
+      (&integer n)
+      (&array-in/out (:input x) ()) (&integer incx)
+      (&array-in/out (:input y) ()) (&integer incy))))
+
+(defun asum (x &key n (incx 1))
+  "Return the L1 norm of X."
+  (let ((common-type (common-float-type x))
+        (n (cond (n
+                  (assert (<= (* n incx) (array-total-size x)))
+                  n)
+                 (t (floor (array-total-size x) incx)))))
+    (blas-call ("asum" common-type nil (:float :double :float :double))
+      (&integer n) (&array-in x) (&integer incx))))
+
+(defun nrm2 (x &key n (incx 1))
+  "Return the L2 norm of X."
+  (let ((type (array-float-type x))
+        (n (cond (n
+                  (assert (<= (* n incx) (array-total-size x)))
+                  n)
+                 (t (floor (array-total-size x) incx)))))
+    (blas-call ("nrm2" type nil (:float :double :float :double))
+      (&integer n) (&array-in x) (&integer incx))))
+
+
+(defpackage #:ws-test
+  (:use #:cl #:iolib))
+(in-package #:ws-test)
+
+(defparameter *ws-host* "127.0.0.1")
+(defparameter *ws-port* 12345)
+(defparameter *ws-base-path* "")
+
+(defun ws-url (resource)
+  (format nil "ws://~a:~a~a~a" *ws-host* *ws-port* *ws-base-path* resource))
+
+(defun handshake (resource)
+   (let ((crlf (format nil "~c~c" (code-char 13) (code-char 10))))
+     (string-to-shareable-octets
+      (print (format nil "GET ~a HTTP/1.1~a~
+Upgrade: WebSocket~a~
+Connection: Upgrade~a~
+Host: ~a:~a~a~
+Origin: http://~a~a~
+WebSocket-Protocol: ~a~a~
+~a"
+               resource crlf
+               crlf
+               crlf
+               *ws-host* *ws-port* crlf
+               *ws-host* crlf
+               "test" crlf
+               crlf)))))
+
+(defun handshake-76 (resource)
+   (let ((crlf (format nil "~c~c" (code-char 13) (code-char 10))))
+     (string-to-shareable-octets
+      (print (format nil "GET ~a HTTP/1.1~a~
+Upgrade: WebSocket~a~
+Connection: Upgrade~a~
+Host: ~a:~a~a~
+Origin: http://~a~a~
+WebSocket-Protocol: ~a~a~
+Sec-WebSocket-Key1: 3e6b263  4 17 80~a~
+Sec-WebSocket-Key2: 17  9 G`ZD9   2 2b 7X 3 /r90~a~
+~a~
+WjN}|M(6"
+               resource crlf
+               crlf
+               crlf
+               *ws-host* *ws-port* crlf
+               *ws-host* crlf
+               "test" crlf
+               crlf
+               crlf
+               crlf)))))
+
+(defun x (socket &key abort)
+  (ignore-errors (shutdown socket :read t :write t))
+  (close socket :abort abort))
+
+;(babel:octets-to-string (handshake "/chat"))
+;(length (handshake "/chat"))
+
+;; fixme: organize this stuff and use some real testing lib
+
+(defun ws-connect ()
+  (make-socket :connect :active :address-family :internet
+               :type :stream
+               :remote-host *ws-host* :remote-port *ws-port*
+               ))
+
+;(close (ws-connect))
+;(close (ws-connect) :abort t)
+(defun send-handshake (socket resource)
+  (let ((handshake (handshake resource)))
+    (send-to socket handshake))
+  socket)
+
+(defun send-handshake-76 (socket resource)
+  (let ((handshake (handshake-76 resource)))
+    (send-to socket handshake))
+  socket)
+
+(defun send-handshake-fragmented (socket resource fragsize)
+  (let ((handshake (handshake resource)))
+    (loop for i from 0 below (length handshake) by fragsize
+       do (send-to socket handshake :start i :end (+ i (min fragsize
+                                                         (- (length handshake)
+                                                            i))))
+         (force-output socket)
+         (sleep 0.01)))
+  socket)
+
+(defun send-handshake-incomplete (socket resource fragsize)
+  (let ((handshake (handshake resource)))
+    (send-to socket handshake :start 0 :end  (min fragsize
+                                                  (length handshake)))
+    (force-output socket))
+  socket)
+
+(defun read-handshake (socket)
+  (loop repeat 100
+     for (i l) = (multiple-value-list
+                  (handler-case
+                      (receive-from socket :size 2048 :dont-wait t)
+                    (isys:ewouldblock ()
+                      nil)))
+     do (sleep 0.01)
+       (when i
+         (format t "read |~s|~%" (babel:octets-to-string i :encoding :utf-8 :end l :errorp nil))
+         (format t "read (~{0x~2,'0x ~})~%" (coerce (subseq i (max 0 (- l 16)) l) 'list))))
+  socket)
+(defun read-handshake-rl (socket)
+  (loop repeat 7
+     do (format t "handshake: ~s~%" (read-line socket)))
+  socket)
+#++
+(x  (send-handshake (ws-connect) "/chat"))
+#++
+(x (read-handshake (send-handshake-76 (ws-connect) "/chat")))
+#++
+(x  (send-handshake-fragmented (ws-connect) "/chat" 2))
+#++
+(x (read-handshake-rl (send-handshake (ws-connect) "/echo")))
+#++
+(loop for i from 1 below (length (handshake "/chat"))
+   do (format t "-----------~%  --> ~s~%" i)
+     (x (read-handshake-rl (send-handshake-fragmented (ws-connect) "/chat" i))))
+#++
+(x  (send-handshake-incomplete (ws-connect) "/chat" 2))
+#++
+(loop for i from 1 below (1+ (length (handshake "/chat")))
+   do (format t "-----------~%  --> ~s~%" i)
+     (x (send-handshake-incomplete (ws-connect) "/chat" i))
+     (sleep 0.01))
+
+#++
+(loop for i from 1 below (1+ (length (handshake "/chat")))
+   do (format t "-----------~%  --> ~s~%" i)
+     (x (send-handshake-incomplete (ws-connect) "/chat" i) :abort t)
+     (sleep 0.01))
+
+
+#++
+(let ((*ws-host* "3bb.cc"))
+  (loop with s = (send-handshake (ws-connect) "/chat")
+    for i from 1
+    repeat 1000
+    do (write-byte 0 s)
+    (format s "test  ~s ddddddd dddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddq" i)
+                                        ;(format t "test ~s" i)
+    (write-byte #xff s)
+    (finish-output s)
+    (sleep 0.01)
+    finally (x s)))
+
+
+#++
+(loop with s = (send-handshake (ws-connect) "/echo")
+   for i from 1
+   repeat 1000
+   do (write-byte 0 s)
+     (format s "test  ~s ddddddd dddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddd dddddddddddddddddddq" i)
+     ;(format t "test ~s" i)
+     (write-byte #xff s)
+     (finish-output s)
+     (loop repeat 100
+        while (ignore-errors (receive-from s :size 1024)))
+     (sleep 0.01)
+   finally (x s))
+
+
+#++
+(macrolet ((ignore-some-errors (&body body)
+                 `(handler-case
+                      (progn ,@body)
+                    (iolib.sockets:socket-not-connected-error ()
+                      (format t "enotconn ~s~%" ,(format nil "~s" body))
+                      nil)
+                    (isys:epipe ()
+                      (format t "epipe in disconnect~%")
+                      nil)
+                    (isys:enotconn ()
+                      (format t "enotconn in shutdown/close?")
+                      nil))))
+   (loop
+    for i1 below 50
+    do
+        (sleep 0.05)
+    (sb-thread:make-thread
+     (lambda ()
+       (let (#++(*ws-host* "3bb.cc")
+                #++(*ws-port* 12346)
+                (i1 i1))
+         (format t " thread ~s read ~s~%"
+                 i1
+                 (loop with s = (prog1
+                                    (send-handshake (ws-connect) "/chat")
+                                  (sleep 5))
+                    for i from 1
+                    repeat 5000
+                    do (write-byte 0 s)
+                    (format s "test  ~s " i)
+                                        ;(format t "test ~s" i)
+                    (write-byte #xff s)
+                    (finish-output s)
+                    sum
+                    (loop repeat 100
+                       for x = (ignore-errors (receive-from s :size 1024))
+                       while x
+                       sum (count #xff x))
+                    into c
+                    do (sleep 0.005)
+                    finally
+                    (progn
+                      (format t "thread ~s waiting~%" i1)
+                      (sleep 1)
+                      (ignore-some-errors (shutdown s :write t))
+                      (return
+                        (let ((c2 #++(loop while (socket-connected-p s)
+                                        repeat 600
+                                        do (sleep 0.1)
+                                        sum (loop for x = (ignore-errors (receive-from s :size 1024))
+                                               while x
+                                               sum (count #xff x)))
+                                  (loop for x = (Read-byte s nil nil)
+                                     while x
+                                     count (= x #xff))))
+                          (x s)
+                          (list c c2 (+ c c2)))))))))
+     :name (format nil "thread ~s" i1))))
+
+
+ 

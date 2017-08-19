@@ -1,0 +1,326 @@
+x = load('ex5Linx.dat');
+y = load('ex5Liny.dat');
+[m, n] = size(x);
+x = [ones(m, 1), x, x.^2, x.^3, x.^4, x.^5];
+[m, n] = size(x);
+
+
+L = diag([0, ones(1,n-1)]);
+
+theta_0 = (x' * x) \ (x' * y);
+theta_1 = (x' * x + L) \ (x' * y);
+theta_10 = (x' * x + 10 * L) \ (x' * y);
+
+xs = linspace(-1, 1, 100)';
+xs = [xs.^0, xs, xs.^2, xs.^3, xs.^4, xs.^5];
+
+figure;
+hold on;
+plot(x(:,2),y, 'o');
+plot(xs(:,2), xs * theta_0, 'r--')
+plot(xs(:,2), xs * theta_1, 'g--')
+plot(xs(:,2), xs * theta_10, 'b--')
+legend('Training data', 'lambda=0', 'lambda=1', 'lambda=10')
+hold off;
+
+
+% Logistic Regression %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+clear all; close all;
+
+x = load('ex5Logx.dat');
+u = x(:,1); v = x(:,2);
+y = load('ex5Logy.dat');
+
+g = inline('1.0 ./ (1.0 + exp(-z))')
+
+X = map_feature(u, v);
+[m, n] = size(X);
+
+eye_0 = diag([0; ones(n-1,1)]);
+
+lambdas = [0, 1, 10];
+
+thetas = [];
+for i = 1:length(lambdas)
+  theta = zeros(n, 1);
+  lambda = lambdas(i);
+  Js = [];
+  diff = ones(n, 1);
+  while norm(diff) > 1e-6
+    h = g(X * theta);
+    theta_0 = [0; theta(2:end,1)];
+    J = -(1/m) * sum(y.*log(h) + (1-y).*log(1 - h)) + (lambda/2*m) * theta_0' * theta_0;
+    Js = [Js, J];
+    grad = ((1/m) * X' * (h - y)) + ((lambda/m) * theta_0);
+    H = ((1/m) * (repmat(h .* (1 - h), 1, n) .* X)' * X) + ((lambda/m) * eye_0);
+    diff = H \ grad;
+    theta = theta - diff;
+  end
+  iterations = length(Js)
+  thetas = [thetas, theta];
+end
+
+% Define the ranges of the grid
+uu = linspace(-1, 1.5, 200);
+vv = linspace(-1, 1.5, 200);
+
+% Initialize space for the values to be plotted
+z0 = zeros(length(uu), length(vv));
+z1 = zeros(length(uu), length(vv));
+z10 = zeros(length(uu), length(vv));
+
+% Evaluate z = theta*x over the grid
+for i = 1:length(uu)
+    for j = 1:length(vv)
+        % Notice the order of j, i here!
+        z0(j,i) = map_feature(uu(i), vv(j))*thetas(:,1);
+        z1(j,i) = map_feature(uu(i), vv(j))*thetas(:,2);
+        z10(j,i) = map_feature(uu(i), vv(j))*thetas(:,3);
+    end
+end
+
+% Because of the way that contour plotting works
+% in Matlab, we need to transpose z, or
+% else the axis orientation will be flipped!
+%
+% But not in octave...
+
+if (exist ('octave_config_info') ~= 0)
+  % this is octave
+else
+  % this is not octave
+  z0 = z0';
+  z1 = z1';
+  z10 = z10';
+end
+
+figure;
+hold on;
+plot(x(y==0,1), x(y==0,2), 'o');
+plot(x(y==1,1), x(y==1,2), '+');
+
+% Plot z = 0 by specifying the range [0, 0]
+contour(uu,vv,z0, [0, 0], 'LineWidth', 2, 'r-');
+contour(uu,vv,z1, [0, 0], 'LineWidth', 2, 'g-');
+contour(uu,vv,z10, [0, 0], 'LineWidth', 2, 'b-');
+
+xlabel('u'); ylabel('v');
+
+legend('y = 0', 'y = 1', 'lambda=0', 'lambda=1', 'lambda=10');
+
+function g = sigmoid(z)
+g = 1 ./ (1 + exp(-z));
+end
+
+function cnnFeaExtraction(classId)
+addpath('../');
+init;
+addpath(conf.pathToMatCaffe);
+dirName = 'cnn/';
+conf.dataDir = strrep(conf.dataDir,dirName,'');
+if isempty(strfind(pwd,'cnn'))
+    cd('cnn');
+end
+if ~exist(fullfile(conf.dataDir,conf.cnnDir_Local,num2str(classId)),'dir')
+    mkdir(fullfile(conf.dataDir,conf.cnnDir_Local,num2str(classId)));
+end
+imdb = load(fullfile(conf.dataDir, conf.imdb));
+imIndex = find(imdb.images.class == classId);
+if strcmp(conf.modelName,'CaffeRef')
+    model_def_file = 'deploy1_fc6.prototxt';
+    model_file = [conf.pathToModel,'/bvlc_reference_caffenet.caffemodel'];
+    CROPPED_DIM = 227;
+elseif strcmp(conf.modelName,'VGGVD')
+    model_def_file = 'deploy1_fc6_vgg.prototxt';
+    model_file = [conf.pathToModel,'/VGG_ILSVRC_19_layers.caffemodel'];
+    CROPPED_DIM = 224;
+end
+%caffe('init',model_def_file,model_file,'test');
+%caffe('set_mode_cpu');
+caffe.set_mode_cpu();
+net = caffe.Net(model_def_file, model_file, 'test');
+d = load('ilsvrc_2012_mean.mat');
+IMAGE_MEAN = d.image_mean;
+IMAGE_DIM = 256;
+
+ for i = 1:length(imIndex)
+     fprintf('Image %d\n',i);
+     imName = imdb.images.name{imIndex(i)};
+     fprintf('%s\n',imName);
+     im = imread(fullfile(conf.imgDir,imName));
+     if size(im,3)~=3
+         im = cat(3,im,im,im);
+     end
+     [imHeight,imWidth,imDepth] = size(im);
+     if imHeight>imWidth
+         im = im2double(imresize(im,[NaN,256],'bilinear'));
+     else
+         im = im2double(imresize(im,[256,NaN],'bilinear'));
+     end
+     imCropAll = [im2colstep(im(:,:,1),[conf.patchSize,conf.patchSize],[conf.stepSize,conf.stepSize]);...
+               im2colstep(im(:,:,2),[conf.patchSize,conf.patchSize],[conf.stepSize,conf.stepSize]);...
+               im2colstep(im(:,:,3),[conf.patchSize,conf.patchSize],[conf.stepSize,conf.stepSize])];
+     images = zeros(CROPPED_DIM, CROPPED_DIM, 3, size(imCropAll,2), 'single');
+     cnnFea = single(zeros(4096,size(imCropAll,2)));
+     for j = 1:size(imCropAll,2)
+        imCrop = im2uint8(reshape(imCropAll(:,j),[conf.patchSize,conf.patchSize,3])); 
+        imCrop = single(imCrop);
+        imCrop = imresize(imCrop, [IMAGE_DIM IMAGE_DIM], 'bilinear');
+        imCrop = imCrop(:,:,[3 2 1]) - IMAGE_MEAN;
+        imCrop = imresize(imCrop, [CROPPED_DIM CROPPED_DIM], 'bilinear');
+        images(:,:,:,j) = permute(imCrop,[2 1 3]);
+       
+        %score = caffe('forward', {images(:,:,:,j)});
+        score = net.forward({images(:,:,:,j)});
+        cnnFea(:,j) = score{1};
+     end 
+     save(fullfile(conf.dataDir,conf.cnnDir_Local,num2str(classId),['cnnFea_',num2str(i),'.mat']),'cnnFea');
+ end
+ cd('..');
+
+ classdef Bson < handle
+    % Bson - Binary JSON class
+    % Objects of class "mongo.bson" are used to store BSON documents.
+    % BSON is the form that MongoDB uses to store documents in its database.
+    % MongoDB network traffic also uses BSON in messages.
+    %
+    % See http://www.mongodb.org/display/DOCS/BSON
+
+    properties
+        h   % lib.pointer handle to external data
+    end
+
+    methods (Static)
+        function display_(i, depth)
+            % Internal display function (called by display())
+            while i.next()
+                t = i.type;
+                if t == BsonType.EOO
+                    break;
+                end
+                for j = 1:depth
+                    fprintf(1, '\t');
+                end
+                fprintf(1, '%s (%d) : ', i.key, int32(t));
+                switch (t)
+                    case BsonType.DOUBLE
+                       fprintf(1, '%f', i.value);
+                    case {BsonType.STRING, BsonType.SYMBOL, BsonType.CODE}
+                        fprintf(1, '%s', i.value);
+                    case BsonType.OID
+                        fprintf(1, '%s', i.value.toString());
+                    case BsonType.BOOL
+                        if i.value
+                            fprintf(1, 'true');
+                        else
+                            fprintf(1, 'false');
+                        end
+                    case BsonType.DATE
+                        fprintf(1, '%s', datestr(i.value));
+                    case BsonType.BINDATA
+                        fprintf(1, 'BINDATA\n');
+                        disp(i.value);
+                    case BsonType.UNDEFINED
+                        fprintf(1, 'UNDEFINED');
+                    case BsonType.NULL
+                        fprintf(1, 'NULL');
+                    case BsonType.REGEX
+                        r = i.value;
+                        fprintf(1, '%s, %s', r.pattern, r.options);
+                    case BsonType.CODEWSCOPE
+                        c = i.value;
+                        fprintf(1, 'CODEWSCOPE %s\n', c.code);
+                        Bson.display_(c.scope.iterator, depth+1);
+                    case BsonType.TIMESTAMP
+                        ts = i.value;
+                        fprintf(1, '%s (%d)', datestr(ts.date), ts.increment);
+                    case {BsonType.INT, BsonType.LONG}
+                        fprintf(1, '%d', i.value);
+                    case {BsonType.OBJECT, BsonType.ARRAY}
+                        fprintf(1, '\n');
+                        Bson.display_(i.subiterator, depth+1);
+                    otherwise
+                        fprintf(1, 'UNKNOWN');
+                end
+                fprintf(1, '\n');
+            end
+        end
+
+        function b = empty()
+            % b = empty()  Construct an empy BSON document.
+            b = Bson;
+            calllib('MongoMatlabDriver', 'mongo_bson_empty', b.h);
+        end
+    end
+
+    methods
+        function b = Bson()
+            % b = Bson()  Construct a null Bson document.
+            % Mainly used internally, but may be used to specify an empty
+            % BSON document argument to some functions.
+            b.h = libpointer('bson_Ptr');
+        end
+
+        function s = size(b)
+            % s = b.size()  Returns the size of this BSON document in bytes.
+            if isNull(b.h)
+                error('Bson:size', 'Uninitialized BSON');
+            end
+            s = calllib('MongoMatlabDriver', 'mongo_bson_size', b.h);
+        end
+
+        function i = iterator(b)
+            % i = b.iterator()  Returns a BsonIterator that points to beginning of this BSON.
+            if isNull(b.h)
+                error('Bson:iterator', 'Uninitialized BSON');
+            end
+            i = BsonIterator(b);
+        end
+
+        function i = find(b, name)
+            % i = b.find(name)  Search this document for a field of the given name.
+            % If found, returns a BsonIterator that points to the field;
+            % otherwise, returns empty ([]).
+            % name may also be a dotted reference to a subfield.  For
+            % example: v = b.value("address.city");
+            if isNull(b.h)
+                error('Bson:find', 'Uninitialized BSON');
+            end
+            i = BsonIterator;
+            if ~calllib('MongoMatlabDriver', 'mongo_bson_find', b.h, name, i.h)
+                i = [];
+            end
+        end
+
+        function v = value(b, name)
+            % v = b.value(name)  Returns the value of a field within this BSON.
+            % Returns empty ([]) if the name is not found.
+            % name may also be a dotted reference to a subfield.  For
+            % example: v = b.value("address.city");
+            i = b.find(name);
+            if isempty(i)
+                v = [];
+            else
+                v = i.value;
+            end
+        end
+
+        function display(b)
+            % b.display()  Display this BSON document.
+            if ~isNull(b.h)
+                b.display_(b.iterator, 0);
+            end
+        end
+
+        function delete(b)
+            % Release this BSON document.
+            % It is not necessary to call this function by user code;
+            % it will be called automatically by Matlab when the
+            % document is no longer referenced.
+            calllib('MongoMatlabDriver', 'mongo_bson_free', b.h);
+        end
+
+    end
+end
+
+

@@ -1,0 +1,1034 @@
+"use strict";
+require! {
+  through2
+  livescript
+  path: Path
+  "gulp-util": gutil
+  "vinyl-sourcemaps-apply": applySourceMap
+}
+
+module.exports = (options) ->
+  through2.obj(
+    new VinylLSConverter(options || {}).transformFn
+  )
+
+/* jshint -W004 */
+/* jshint -W014 */
+/* jshint -W030 */
+/* jshint -W033 */
+/* jshint -W116 */
+class VinylLSConverter
+  (@options) ->
+    @isJson = delete options.json
+
+  transformFn: !(file, enc, done) ~>
+    [error, clonedFile] = @_convert(file)
+    error = new gutil.PluginError "gulp-livescript", error if error
+    done(error, clonedFile)
+
+  _convert: (file) ->
+    if file.isNull!
+      [null, file]
+    else if file.isStream!
+      ["Streaming not supported", null]
+    else
+      @_tryConvertToJS(file.clone!)
+
+  _tryConvertToJS: (clonedFile) ->
+    try
+      json = @_convertFilepath(clonedFile)
+      input = clonedFile.contents.toString("utf8")
+      options = {} <<< @options
+      options.bare ||= json
+
+      tokens = livescript.tokens(input, raw: options.lex)
+      ast = livescript.ast(tokens)
+      ast.make-return! if json
+      clonedFilename = clonedFile.relative
+      filename = clonedFilename.replace /js$/, 'ls'
+      output = ast.compile-root options
+
+      if json
+        result = livescript.run(output.toString!, options, true)
+        output = JSON.stringify(result, null, 2) + "\n"
+        clonedFile.contents = new Buffer output.toString!
+      else
+        output.setFile filename
+        output = output.toStringWithSourceMap!
+        if clonedFile.source-map
+          output.map._file = clonedFilename
+          applySourceMap clonedFile, output.map.toString!
+        clonedFile.contents = new Buffer output.code
+
+    catch error
+      error.message += "\nat " + clonedFile.path
+      clonedFile = null
+    [error, clonedFile]
+
+  _convertFilepath: (clonedFile) ->
+    dirname = Path.dirname(clonedFile.path)
+    filename = Path.basename(clonedFile.path, ".ls")
+    json = @isJson or ".json" is Path.extname(filename)
+
+    newFilename = if json then Path.basename(filename, ".json") + ".json" else filename + ".js"
+    clonedFile.path = Path.join(dirname, newFilename)
+    json
+
+	require! {
+  grunt
+  _: lodash
+  './cli'
+  './config'
+  './croakfile'
+  '../package.json'.version
+}
+
+module.exports =
+
+  version: version
+  grunt-version: grunt.version
+
+  cli: cli
+  config: config
+  grunt: grunt
+
+  load: -> it |> config.load
+
+  get: -> it |> config.get
+
+  set: -> it |> config.set
+
+  load-default: ->
+    it |> @load unless config.has-data!
+    config.get-default-project!
+
+  init: (options, project) ->
+    # extends options with project config
+    options := (options |> _.extend {}, project, _) |> map-options
+    # init grunt with project options
+    options |> @init-grunt
+
+  run: -> @init ...
+
+  init-grunt: (options = {}) ->
+    # omit unsupported grunt options
+    options := options |> omit-options
+    # load Croakfile, if exist
+    croakfile-dir = options |> croakfile.load _, (options.$dirname or options.cwd)
+    # expose croak paths as grunt config object
+    croak-config-object = options |> grunt-croak-object
+    # make croak available in grunt
+    grunt.croak = { options.base, options.tasks, options.npm } |> _.defaults croak-config-object, _
+    # wrap grunt.initConfig method
+    grunt.init-config = croak-config-object |> init-config
+    # remove croak first argument
+    grunt.cli.tasks.splice 0, 1 if grunt.cli.tasks
+    # force to override process.argv, it was taken
+    # by the Grunt module instance and it has precedence
+    # todo: use grunt.option() instead
+    options |> _.extend grunt.cli.options, _
+    # init grunt with inherited options
+    options |> grunt.cli
+
+
+# expose Croak paths as Grunt config
+# and make it available for templating
+grunt-croak-object = (options) ->
+  cwd = process.cwd!
+
+  cwd: cwd
+  root: croakfile.dirname or config.dirname!local or cwd
+  config: config.dirname!local
+  base: options.base or cwd
+  croakfile: croakfile.dirname or null
+  gruntfile: options.gruntfile or null
+  npm: options.npm
+  tasks: options.tasks
+  options: options
+  version: version
+
+set-grunt-croak-config = (config) ->
+  # add specific options avaliable from config
+  config |> grunt.config.set 'croak', _ unless 'croak' |> grunt.config.get
+
+init-config = (croak-config-object) ->
+  { init-config } = grunt
+
+  (config) ->
+    config |> init-config
+    croak-config-object |> set-grunt-croak-config
+
+omit-options = ->
+  options = {}
+
+  # supported grunt options
+  grunt-args = <[
+    no-color
+    base
+    gruntfile
+    debug
+    stack
+    force
+    tasks
+    npm
+    no-write
+    verbose
+  ]>
+
+  for own key, value of it
+    when value? and value isnt false and (key |> grunt-args.index-of) isnt -1
+    then options <<< (key): value
+
+  options
+
+map-options = ->
+  map = 'package': 'gruntfile'
+
+  for own origin, target of map
+    when (origin := it[origin])? and not it[target]?
+    then it <<< (target): origin
+  it
+
+  require! {
+  './init'
+  '../prompt'
+  '../croak'
+  '../modules'.async
+  program: commander
+}
+{ echo, exit } = require '../common'
+
+program
+  .command 'config <action> [key] [value]'
+    ..description '\n  Read/write/update/remove croak config'
+    ..option '--force', 'Force the command execution'
+    ..option '-p, --project', 'Specifies the project to run'
+    ..option '-x, --gruntfile <path>', 'Specifies the Gruntfile path'
+    ..option '-z, --pkg <name>', 'Specifies the build node package to use'
+    ..option '-g, --global [path]', 'Use the global config file'
+    ..option '-c, --croakrc [path]', 'Use a custom .croakrc file path'
+    ..usage '[create|list|remove|set|get]'
+    ..on '--help', ->
+      echo '''
+            Usage examples:
+
+              $ croak config list
+              $ croak config create
+              $ croak config remove project
+              $ croak config get -g project.gruntfile
+              $ croak config set project.gruntfile ${HOME}/builder/Gruntfile.js
+
+      '''
+    ..action ->
+      unless commands[it]
+        "#{it} command not supported. Use --help to see the available commands" |> exit 1
+
+      commands[it]apply commands, (Array::slice.call &)slice 1
+
+const commands =
+
+  list: (key, value, options) ->
+    { croakrc, global } = options
+    global-flag = global
+    croak.config.local-path = croakrc if croakrc
+
+    { global, local } = croak.config.raw!
+    echo """
+      ; global #{global.path}
+      #{global.data}
+    """ if global.data?
+    echo """
+      ; local #{local.path}
+      #{local.data}
+    """ if local.data? and not global-flag
+
+  show: -> @list ...
+
+  raw: -> @list ...
+
+  create: (name, value, options) ->
+    name |> init _, { sample: true, options.global }
+
+  add: -> @create ...
+
+  remove: (key, value, options) ->
+    "Missing required 'key' argument" |> exit 1 unless key
+
+    { croakrc } = options
+    croakrc |> load-config
+
+    try
+      key |> croak.config.remove
+      croak.config.write!
+      "'#{key}' was removed successfully from config" |> echo
+    catch { message }
+      "Cannot delete '#{key}' due to an error: #{message}" |> exit 1
+
+  delete: -> @remove ...
+
+  get: (key, value, options) ->
+    "Missing required 'key' argument" |> exit 1 unless key
+
+    { croakrc } = options
+    croakrc |> load-config
+
+    if value := croak.config.get key.to-lower-case!
+      if typeof value is 'string'
+        value |> echo
+      else
+        for own prop, data of value
+          then "#{prop}: #{data}" |> echo
+    else
+      "Config '#{key}' value do not exists" |> exit 1
+
+  set: (key, value, options) ->
+    "Missing required 'key' argument" |> exit 1 unless key
+    "Missing required 'value' argument" |> exit 1 unless value
+
+    { croakrc, global } = options
+    croakrc |> load-config
+
+    if value := value |> croak.config.set key, _, not global
+      try
+        croak.config.write!
+      catch { message }
+        "Cannot save config due to an error: #{message}" |> exit 1
+
+      "Value '#{key}' updated successfully" |> echo
+    else
+      "Cannot set '#{key}'. Project '#{key.split('.')[0]}' do not exists or it is an invalid option" |> exit 1
+
+load-config = ->
+  try
+    it |> croak.config.load
+  catch { message }
+    "Cannot read .croakrc: #{message}" |> exit 1
+
+	require! {
+  './init'
+  program: commander
+}
+{ echo, exit, file } = require '../common'
+
+# alias to the init command
+program
+  .command 'add [name]'
+    ..description '\n  Add new projects in .croakrc'
+    ..usage '[options]'
+    ..option '--force', 'Force command execution'
+    ..option '-x, --gruntfile <path>', 'Specifies the Gruntfile path'
+    ..option '-z, --pkg <name>', 'Specifies the build node package to use'
+    ..option '-g, --global', 'Creates a global config file'
+    ..option '-s, --sample', 'Creates a file with a sample project config'
+    ..on '--help', ->
+      echo '''
+            Usage examples:
+
+              $ croak add
+              $ croak add -g
+              $ croak add project --sample
+              $ croak add my-project -x ../path/to/Gruntfile.js
+              $ croak add -p my-project -z build-pkg -g
+
+      '''
+    ..action -> init ...
+
+	require! \./ly
+require! <[mkdirp fs cheerio printf ./util zhutil request]>
+
+entryStatus = (res, def) -> match res
+| /協商/    => \consultation
+| /不予?通過/  => \rejected
+| /通過/    => \passed
+| /函請行政院研處/ => \ey
+| /暫不予處理/ => \unhandled
+| otherwise => def
+
+export cache_dir = process.cwd! + "/source/misq"
+
+export function get(s, {agenda-only, dir=cache_dir}, cb)
+  err <- mkdirp dir
+  throw err if err
+  cache_dir := dir
+  announcement <- prepare_announcement s, agenda-only
+  discussion <- prepare_discussion s, agenda-only
+  cb {announcement, discussion}
+
+processItems = (body, cb) ->
+    $ = cheerio.load body
+    $('#queryListForm table tr').each ->
+        [id] = @find "td a" .map -> @attr \onclick
+            .map -> it.match /queryDetail1?\('(\d+)'\)/ .1
+        # XXX: for discussion heading is _NOT_ part of content
+
+        cols = @find \td .map -> @.text!
+            .map -> it - /^\s*/mg
+        return unless cols.length
+        cb id, cols
+
+
+parseAgenda = (g, body, doctype, type, cb) ->
+    prevHead = null
+    entries = []
+    var last-announcement
+    mapItem = (id, entry) -> switch type
+        | \Announcement =>
+            [heading, proposer, summary, result] = entry.0 / "\n"
+            if heading is \null、
+                item = ++last-announcement
+            else
+                [_, zhitem]? = heading.match util.zhreghead
+                item = zhutil.parseZHNumber zhitem
+                last-announcement := item
+            unless summary
+                [_, proposer, summary]? = proposer.match /^(.*?)(函送.*)$/
+                unless summary
+                  console.log \unknown proposer
+            {id, item, proposer, summary, result}
+        | \Exmotion =>
+            [heading, proposer, summary, result] = entry.0 / "\n"
+            heading -= /^\(|\)$/g
+            [_, zhitem]? = heading.match util.zhreg
+            item = zhutil.parseZHNumber zhitem
+            {id, item, proposer, summary, result}
+        | \Discussion =>
+            if doctype is \proceeding
+                lines = entry.0 / "\n"
+                return if lines.length <= 1
+                if lines.length <= 2
+                    result = lines.0
+                else
+                    [...line, result, _] = lines
+                    line .= join ''
+                    [_, zhitem, summary]? = line.match util.zhreghead
+                    item = zhutil.parseZHNumber zhitem
+                eod = no
+                if result is /(〈|＜)其餘議案因未處理，不予列載。(＞|〉)$/
+                    result -= /(〈|＜)其餘議案因未處理，不予列載。(＞|〉)$/
+                    eod = yes
+                [_, remark]? = summary?match /（([^（）]+)）$/
+                dtype = match summary
+                | void => 'other'
+                | /^[^，]+臨時提案/ => 'exmotion'
+                | /提請復議/        => 'reconsideration'
+                | /(.*?)提議增列([^，]*)事項/ =>
+                    console.log \changes that.1, that.2
+                    'agenda'
+                | otherwise => 'default'
+                [_, origzhItem]? = summary?match /案原列討論事項第(.*?)案/
+                origItem = zhutil.parseZHNumber origzhItem if origzhItem
+                {id, item, dtype, summary, remark, result, origItem, eod}
+            else if doctype is \agenda
+                # kludge: source error - should be none
+                return if g.ad is 8 and g.session is 1 and g.sitting is 1 and not g.extra
+                [heading, content] = entry
+                return unless content
+                heading -= /\s*/g
+                heading = prevHead unless heading.length
+                [subzhItem, proposer, summary] = content / "\n"
+                subzhItem -= /^\(|\)$/g
+                subItem = zhutil.parseZHNumber subzhItem
+                [_, zhitem]? = heading.match util.zhreghead
+                item = zhutil.parseZHNumber zhitem
+                prevHead := heading if heading
+                {id, item, subItem, proposer, summary}
+
+
+    processItems body, (id, entry) ->
+        # XXX: extract resolution.  the other info can be found using
+        # getDetails with id
+        if doctype is \agenda and type is \Announcement and entry.length > 1
+          _session = if g.extra
+            printf "%02d-%02d", g.session, g.extra
+          else
+            printf "%02d", g.session
+
+          _id = printf "%02d-%0s-%02d", g.ad, _session, g.sitting
+          _sitting = entry.1?replace /\n/g ''
+          unless _id is _sitting
+            console.error "ignoring #{_sitting} #{_id}"
+            return
+        entries.push that if mapItem id, entry
+
+    cb entries
+
+getItems = (g, doctype, type, cb) ->
+    sitting = if g.extra
+        "T#{g.sitting}-#{g.extra}"
+    else
+        g.sitting
+    file = "#cache_dir/#{g.ad}-#{g.session}-#{sitting}-#{doctype}-#{type}.html"
+    json = file.replace /\.html$/, '.json'
+
+    extract = (body) ->
+        body = util.fixup body.toString \utf-8
+        parseAgenda g, body, doctype, type, (res) ->
+            fs.writeFileSync json, JSON.stringify res, null 4
+            cb res
+
+    _, {size}? <- fs.stat json
+    if size
+        return cb require json
+
+    _, {size}? <- fs.stat file
+    if size
+        extract fs.readFileSync file
+    else
+        body <- ly.getSummary g, doctype, type
+
+        fs.writeFileSync file, body
+        extract body
+
+
+prepare_announcement = (g, agenda-only, cb) ->
+    agenda <- getItems g, \agenda \Announcement
+    proceeding <- (if agenda-only => (,,,cb) -> cb [] else getItems) g, \proceeding \Announcement
+    results = for a in agenda
+        entry = {} <<< a
+        entry.agendaItem = delete entry.item
+        entry
+    by_id = {[id, a] for {id}:a in results}
+
+    for {id,result,item}:p in proceeding
+        unless entry = by_id[id]
+          console.error "entry not found: #{id}"
+          entry = p{id, summary, proposer}
+          results.push entry
+
+        entry <<< {resolution: result, item}
+        entry.status = match result ? ''
+        | ''             => ''
+        | /照案通過/      => \accepted
+        | /提報院會/      => \accepted
+        | /列席報告/      => \accepted
+        | /多數通過/      => \accepted
+        | /少數不通過/      => \rejected
+        | /同意撤回/      => \retrected
+        | /逕付(院會)?二讀/ => \prioritized
+        | /黨團協商/      => \consultation
+        | /交([^，]+?)[兩三四五六七八]?委員會/
+          entry.committee = util.parseCommittee that.1 - /及有關$/
+          \committee
+        | /中央政府總預算案/ => \committee
+        | /展延審查期限/  => \extended
+        | /退回程序委員會/ => \rejected
+        | otherwise => console.error result; result
+        # XXX: misq has altered agenda in agenda query result.  we need to
+        # extract this info from gazette
+        #if res.origItem isnt res.item
+            #console.log "#{res.origItem} -> #{res.item}"
+    cb results
+
+prepare_discussion = (g, agenda-only, cb) ->
+    agenda <- getItems g, \agenda \Discussion
+    exmotion <- (if agenda-only => (,,,cb) -> cb [] else getItems) g, \agenda \Exmotion
+    proceeding <- (if agenda-only => (,,,cb) -> cb [] else getItems) g, \proceeding \Discussion
+    eod = no
+    items = if agenda.length => Math.max ...agenda.map (.item) else 0
+    [eod] = [p.origItem ? p.item for p in proceeding when p.eod]
+    inAgenda = [p for p in proceeding when p.origItem]
+    if eod and !inAgenda.length # unaltered but unfinished
+        inAgenda = []
+        for {summary}:p in proceeding when p.item <= eod
+            [key]? = summary.match /「(.*?)」/
+            continue unless key
+            [a] = [a for a in agenda when -1 isnt a.summary.indexOf key]
+            continue unless a
+            #console.log "for (#key) found: ",a.summary.indexOf key
+            p.origItem = a.item
+            inAgenda.push p
+    for p in proceeding
+        if p.dtype is \exmotion
+            summary = p.summary - /^.*?，/ -  /((，|。)是否有當)?，請公決案。/
+            summary .=replace /5噸以下/, '五噸以下'
+            [ex] = [e for e in exmotion when summary is e.summary - /((，|。)是否有當)?，請公決案。/]
+            unless ex
+                [ex] = [e for e in exmotion when p.summary.indexOf(e.proposer - /，/) is 0]
+            p.ref = ex
+            console.error \unmatched p unless ex
+        if p.dtype is \default
+            unless p.origItem
+                [a] = [a for a in agenda when p.summary.indexOf(a.summary) isnt -1]
+                p.origItem = a.item if a
+
+            if p.origItem
+                p.ref = [a for a in agenda when a.item is p.origItem]
+                inAgenda.push p unless p in inAgenda
+
+#    for a in agenda when a.item not in proceeding.map (.origItem)
+#        console.log a
+    by_item = {[origItem, p] for {origItem}:p in proceeding when origItem}
+    agendaResults = for a in agenda
+        entry = {} <<< a
+        entry.agendaItem = delete entry.item
+        if proceeding.length
+            if by_item[entry.agendaItem]
+                entry <<< that{item, resolution: result, dtype}
+            entry.status = entryStatus entry.resolution, \unhandled
+        entry
+    exmotionResults = exmotion.map (e) ->
+        entry = {type: \exmotion, exItem: e.item} <<< e
+        [res] = [ p for p in proceeding when p.ref is e ]
+        entry <<< res{resolution: result, dtype, item} if res
+        delete entry.result
+        entry.status = entryStatus entry.resolution, \unhandled
+        entry
+
+    extraResults = for p in proceeding when !p.ref
+        entry = {extra: true} <<< p
+        entry.resolution = delete entry.result
+        entry.status = entryStatus entry.resolution, \other
+        entry
+
+    all = agendaResults ++ exmotionResults ++ extraResults
+    #console.log \==ERROR all.length, proceeding.length
+
+    cb all
+
+extractNames = (content) ->
+    unless [_, role, names]? = content.match /getLawMakerName\('(\w+)', '(.*)'\)/
+        return []
+    names .= replace /(?:^|\s)(\S)\s(\S)(?:\s|$)/g (...args) -> " #{args.1}#{args.2} "
+    names .= replace /黨團/ '黨團 '
+    mly = names.split /\s+/ .filter (.length)
+    [{proposal: \sponsors, petition: \cosponsors}[role], mly]
+
+
+parseBill = (id, body, cb) ->
+    $ = cheerio.load body
+    info = {extracted: new Date!}
+
+    $ 'table[summary="院會審議消息資料表格"] tr' .each ->
+        key = @find \th .map -> @text!
+        if key.length is 1 and key isnt /國會圖書館/
+            key = key.0 - /：/
+            content = @find \td
+            text = -> content.map(-> @text!).0
+            [prop, value] = match key
+            | /提案單位/ => [\propsed_by text!]
+            | \審查委員會 =>
+                text!match /^本院/
+                if text!match /^本院(.*?)(?:兩|三|四|五|六|七|八)?委員會$/
+                    [\committee util.parseCommittee that.1]
+                else
+                    [\propser_text text!]
+            | \議案名稱 => [\summary text!]
+            | \提案人 => extractNames content.html!
+            | \連署人 => extractNames content.html!
+            | \議案狀態 => [\status text! - /^\s*|\s*$/g]
+            | \關連議案 =>
+                related = content.find \a .map -> [
+                    * (@attr \onclick .match /queryBillDetail\('(\d+)',/).1
+                    * @text! - /^\s*|\s*$/g
+                ]
+                [\related, related]
+            | \相關附件 =>
+                doc = content.find \a .map ->
+                    href = @attr \href
+                    href .= replace /^http:\/\/10.12.8.14:28080\//, 'http://misq.ly.gov.tw/'
+                    [ href.match(/(pdf|doc)/i).1.toLowerCase!, href ]
+                [\doc, {[type, uri] for [type, uri] in doc}]
+            | otherwise => [key, text!]
+            info[prop] = value if prop
+    cb info
+
+export function getBill(id, {dir}, cb)
+    cache_dir := dir if dir
+    err <- mkdirp "#cache_dir/bills/#{id}"
+    file = "#cache_dir/bills/#{id}/index.html"
+    json = file.replace /\.html$/, '.json'
+
+    extract = (body) ->
+        parseBill id, body, (res) ->
+            fs.writeFileSync json, JSON.stringify res, null 4
+            cb res
+
+    _, {size}? <- fs.stat json
+    if size
+        return cb require json
+
+    _, {size}? <- fs.stat file
+    if size
+        extract fs.readFileSync file
+    else
+        body <- ly.getBillDetails id
+        fs.writeFileSync file, body
+        extract body
+
+export function ensureBillDoc(id, info, cb)
+    return cb! unless uri = info.doc.doc
+    if uri is /http:\/\/10\./
+        console.error id, uri
+        return cb!
+    file = "#cache_dir/bills/#{id}/file.html"
+    _, {size}? <- fs.stat file
+    return cb! if size?
+    file = "#cache_dir/bills/#{id}/file.doc"
+    _, {size}? <- fs.stat file
+    return cb! if size?
+    var statusCode
+    writer = with fs.createWriteStream file
+        ..on \error -> cb it
+        ..on \close ->
+          if statusCode isnt 200
+            fs.unlinkSync file
+            return cb statusCode
+          console.info \done uri; cb!
+        ..
+    request {method: \GET, uri}, (_, res) -> statusCode := res.statusCode
+    .pipe writer
+
+export function parseBillHtml(body, opts, cb)
+  {BillParser} = require \./parser
+  push-field = delete opts.push-field
+  parser = new BillParser {-chute} <<< opts
+  content = []
+  parser.output-json = -> content.push it
+  parser.output = (line) -> match line
+  | /^案由：(.*)$/ => push-field \abstract, that.1
+  | /^提案編號：(.*)$/ => push-field \bill_ref, that.1
+  | /^議案編號：(.*)$/ => push-field \id, that.1
+  | otherwise => console.log \meh line
+  try
+    parser.parseHtml body
+  catch
+    return cb e
+  cb null {content}
+
+export function parseBillDoc(id, opts, cb)
+  cache_dir := opts.dir if opts.dir
+  doit = ->
+    bill = require "#cache_dir/bills/#{id}/index.json"
+    # XXX check duplicated
+    push-field = (field, val) ->
+      if bill[field]
+        console.warn "#id contains multiple doc"
+        bill.attachments = {}
+      if bill.attachments
+        bill.attachments[field] = val
+      else
+        bill[field] = val
+        if field is \id and id isnt val
+          console.warn "id mismatch: #id / #val"
+
+    error, {content}? <- parseBillHtml util.readFileSync(file), {push-field,base: "#cache_dir/bills/#{id}"}
+    return cb error if error
+    cb null bill <<< {content}
+
+  file = "#cache_dir/bills/#{id}/file.html"
+
+  _, {size}? <- fs.stat file
+  return doit! if size
+
+  util.convertDoc file.replace(/html$/, \doc), opts <<< do
+    error: -> cb new Error it ? 'convert'
+    success: doit
+
+export function getMeetingAgenda({meetingNo, meetingTime, departmentCode}, cb)
+  uri = "http://misq.ly.gov.tw/MISQ/IQuery/misq5000QueryMeetingDetail.action"
+
+  err, res, body <- request do
+    method: \POST
+    uri: uri
+    headers: do
+      Origin: 'http://misq.ly.gov.tw'
+      Referer: uri
+      User-Agent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_2) AppleWebKit/537.17 (KHTML, like Gecko) Chrome/24.0.1312.5 Safari/537.17'
+    form: { meetingNo, meetingTime, departmentCode }
+
+  $ = cheerio.load body
+
+  res = {}
+  $('#queryForm table tr').each ->
+    key = @find '> th' .map -> @text!
+    if key.length is 1 and key isnt /國會圖書館/
+      key = key.0 - /：/
+      content = @find '> td'
+      match key
+      | \議事錄
+        [pdf]? = content.find \a .map -> @attr \href
+        .filter -> it is /pdf$/
+        res[key] = pdf
+      else
+        res[key] = content.text! - /^\s*|\s*$/gm
+  cb res
+
+  # configure marked
+marked.set-options do
+  gfm: true
+  tables: true
+  breaks: true
+  highlight: (code, lang) ->
+    if lang then
+      hljs.highlight-auto code .value
+    else code
+
+# formatting function
+format = (text) ->
+  text = Linkify.all text, context
+  text = Emoji text
+  marked text
+
+# settings
+show-preview = local-storage.get-item \LiveMarkdownPreview
+show-preview ?= \true
+show-preview = if show-preview is \true then true else false
+
+# toggle preview on / off
+toggle-preview = !->
+  it.prevent-default!
+  !:=show-preview
+  local-storage.set-item \LiveMarkdownPreview show-preview
+  if show-preview
+    preview-bucket.class-list.remove \preview-hidden
+    text = textarea.value or 'Nothing to preview'
+    preview.innerHTML = format text
+  else preview-bucket.class-list.add \preview-hidden
+
+# find the important elements
+content = d.query-selector \.write-content
+textarea = content.query-selector \textarea
+head = d.head
+
+# create the button link
+button = d.create-element \a
+  ..class-name = 'js-toggle-live-preview tooltipped leftwards'
+  ..href = \#
+  ..set-attribute \original-title 'Live Preview'
+  ..add-event-listener \click toggle-preview
+
+# create the button icon
+icon = d.create-element \span
+  ..class-name = 'octicon octicon-live-preview'
+
+# create the style elements
+css = d.create-element \style
+  ..class-name = \live-preview-styling 
+  ..text-content = \INLINE_CSS
+
+css-pre = d.create-element \style
+  ..class-name = \live-preview-code-styling
+  ..text-content = \INLINE_PRE_CSS
+
+head
+  ..append-child css
+  ..append-child css-pre
+
+button.append-child icon
+content.insert-before button, content.first-child
+Tipsy button
+
+# create preview element
+preview-bucket = d.query-selector \.preview-content
+  .child-nodes.1.clone-node true
+preview = preview-bucket.query-selector \.comment-body
+
+if not show-preview then preview-bucket.class-list.add \preview-hidden
+content.append-child preview-bucket
+
+update-preview = !->
+  text = textarea.value or 'Nothing to preview'
+  if show-preview
+    preview.innerHTML = format text
+
+# add event listeners for updating
+textarea.add-event-listener \input update-preview
+
+require! {fs, zhutil}
+/* helper of zh numbers, datetime */
+
+export zhnumber = <[○ 一 二 三 四 五 六 七 八 九 十]>
+
+zhmap = {[c, i] for c, i in zhnumber}
+export zhreghead = new RegExp "^((?:#{ (<[千 百 零]> ++ zhnumber) * '|' })+)、(.*)$", \m
+export zhreg = new RegExp "^((?:#{ zhnumber * '|' })+)$"
+
+export intOfZHNumber = ->
+    if it?match? zhreg
+    then zhutil.parseZHNumber it
+    else +it
+
+parseZHHour = ->
+    [am_or_pm, hour] = it
+    hour = parseInt hour
+    if am_or_pm == '上午'
+    then hour
+    else hour + 12
+
+/*
+dateOfLyDateTime :: [String] -> [String] -> Date
+
+example:
+console.log dateOfLyDate ['11', '10', '13'] ["下午", "10"]
+*/
+export datetimeOfLyDateTime = (lydate, lyhour, lysec) ->
+    s = if lysec
+      then lysec
+      else 0
+    h = if lyhour
+      then parseZHHour lyhour
+      else 0
+    [y, m, d] = lydate.map -> intOfZHNumber it
+    new Date +y + 1911, +m-1, d, h, s
+
+export fixup = require \./charmap .applymap
+
+export readFileSync = (path) -> fixup fs.readFileSync path, \utf8
+
+update_one_to_many_map = (dct, k, v) ->
+    if dct[k] is void
+        dct[k] = [v]
+    else unless v in dct[k]
+        dct[k].push v
+    dct
+
+export build_people_interp_map = (ref_id, data, base_dct) ->
+    data.map ->
+        meta = it.0
+        if meta and meta.type is \interp
+            meta.people.map ->
+                update_one_to_many_map base_dct, it, ref_id
+    base_dct
+
+_global_name_cache = null
+
+initNameCache =  ->
+    # Not everyone is in mly-*.json. Until we have them, let's put some of them here directly.
+    _global_name_cache := {[x, 1] for x in
+        <[ 蔡英文 盧天麟 徐慶元 羅文嘉 瓦歷斯‧貝林
+           何嘉榮 林宗男 楊秋興 朱立倫 李炷烽 ]>}
+    for i from 2 to 8
+        json = try require "../data/mly-#i.json"
+        _global_name_cache <<< {[fixup(person.name), 1] for person in json}
+
+export nameListFixup = (names) ->
+    initNameCache! if _global_name_cache == null
+    ret_names = []
+    unknown = ''
+    word_stream = names * ''
+    i = 0
+    while i < word_stream.length
+        for len from 2 to 10
+            maybe_name = word_stream.substr(i, len)
+            if maybe_name of _global_name_cache
+                break
+        if len == 10
+            # try from the next charactor if not found
+            unknown += word_stream[i]
+            i++
+        else
+            # Our dictionary doesn't cover everybody, thus the tricky to pick up those missing.
+            if unknown.length > 0
+                ret_names.push unknown
+                unknown = ''
+            ret_names.push maybe_name
+            i += len
+    if unknown.length > 0
+        ret_names.push unknown
+    ret_names
+
+
+export committees = do
+    IAD: \內政
+    FND: \外交及國防
+    ECO: \經濟
+    FIN: \財政
+    EDU: \教育及文化
+    TRA: \交通
+    JUD: \司法及法制
+    SWE: \社會福利及衛生環境
+    WHL: \全院
+    PRO: \程序
+    DIS: \紀律
+    CON: \修憲
+    EXP: \經費稽核
+    # obsolete
+    IAP: \內政及民族
+    IAF: \內政及邊政
+    FRO: \邊政
+    DEF: \國防
+    FOR: \外交及僑務
+    FOP: \外交及僑政
+    OVP: \僑政
+    DIP: \外交
+    JUR: \司法
+    LAW: \法制
+    SCI: \科技及資訊
+    ECE: \經濟及能源
+    ESW: \衛生環境及社會福利
+    ELB: \衛生環境及勞工
+    BGT: \預算及決算
+    BUD: \預算
+    EDN: \教育
+
+export parseCommittee = (name) ->
+    name.split /、/ .map ->
+        [code]? = [code for code, name of committees when name is it]
+        throw it+JSON.stringify(committees) unless code
+        code
+
+export convertDoc = (file, {success, error}) ->
+    require! shelljs
+    # XXX: correct this for different OS
+    python = process.env.UNOCONV_PYTHON ? match process.platform
+    | \darwin => "/Applications/LibreOffice.app/Contents/MacOS/python"
+    | otherwise => "/opt/libreoffice4.0/program/python"
+    unless shelljs.which python
+        throw "python for unoconv not found: #python. specify UNOCONV_PYTHON to override"
+    cmd = "#python ../twlyparser/unoconv/unoconv -f html #file"
+    p = shelljs.exec cmd, {+silent, +async}, (code, output) ->
+        console.log \converted
+        console.log output, code, p? if code isnt 0
+        clear-timeout rv
+        success!
+    rv = do
+        <- setTimeout _, 320sec * 1000ms
+        console.log \timeout
+        p.kill \SIGTERM
+        p := null
+        error!
+
+{XRegExp} = require \xregexp
+
+sitting_name = XRegExp """
+    立法院(?:第(?<ad> \\d+)屆?第(?<session> \\d+)會期
+      (?:第(?<extra> \\d+)次臨時會)?)?
+    (?:
+      第(?<sitting> \\d+)次(?<talk> 全院委員談話會?)?(?<whole> 全院委員會(?:(?<hearing>.*?)公聽會)?)?會議?
+      |
+      (?<committee>\\D+?)[兩二三四五六七八2-8]?委員會
+        (?:
+          第?(?<committee_sitting> \\d+)次(?:全體委員|聯席)會?會議?
+        |
+          (?:舉行)?(?<committee_hearing> .*?公聽會(?:[（\\(]第(?<hearing_sitting> .*?)場[）\\)])?.*?)(?:會議)?
+        )
+      |
+      (?<talk_unspecified> 全院委員談話會(?:會議)?)
+      |
+      (?<election> 選舉院長、副院長會議)
+      |
+      (?<consultation>黨團協商會議)
+    )
+  """, \x
+
+export function get-sitting(name)
+  sitting = XRegExp.exec name, sitting_name
+  return unless sitting
+  if sitting.committee
+    sitting.committee = parseCommittee sitting.committee
+    sitting.sitting = sitting.committee_sitting
+  if sitting.whole
+    sitting.committee = <[WHL]>
+  if sitting.talk_unspecified
+    sitting.talk = 1
+    sitting.sitting = 1
+  if sitting.talk
+    sitting.committee = <[TLK]>
+  if sitting.hearing
+    [_, sitting.hearing]? = that.match /「(.*?)」/
+  else if sitting.committee_hearing
+    [_, sitting.hearing]? = that.match /「(.*?)」/
+    sitting.sitting = zhutil.parseZHNumber sitting.hearing_sitting if sitting.hearing_sitting
+
+  for _ in <[ad session sitting extra]> => sitting[_] = +sitting[_] if sitting[_]
+  sitting

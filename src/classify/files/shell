@@ -1,0 +1,404 @@
+rsync -e ssh -av * whygitisbetterthanx.com:/u/apps/whygit/
+
+#!/bin/bash
+# Install ImageMagick on Snow Leopard (10.6)
+# Reported to work also on Leopard (10.5)
+#
+# Created by Claudio Poli (http://www.icoretech.org)
+
+# Configuration.
+# Set the sourceforge.net's mirror to use.
+SF_MIRROR="heanet"
+# ImageMagick configure arguments.
+# If you plan on using PerlMagick remove --without-perl
+# In any case tweak as your liking.
+IMAGEMAGICK_ARGUMENTS="--disable-static --with-modules --without-fontconfig --without-perl --without-magick-plus-plus --with-quantum-depth=8 --disable-openmp"
+# Installation path.
+CONFIGURE_PREFIX=/usr/local # no trailing slash.
+# GhostScript font path.
+CONFIGURE_GS_FONT=$CONFIGURE_PREFIX/share/ghostscript
+# Mac OS X version.
+DEPLOYMENT_TARGET=10.6
+
+# Starting.
+echo "---------------------------------------------------------------------"
+echo "ImageMagick installation started."
+echo "Please note that there are incompatibilies with MacPorts."
+echo "Read: http://github.com/masterkain/ImageMagick-sl/issues/#issue/1 - reported by Nico Ritsche"
+echo "---------------------------------------------------------------------"
+
+apps=()
+# Function that tries to download a file, if not abort the process.
+function try_download () {
+  file_name=`echo "$1" | ruby -ruri -e 'puts File.basename(gets.to_s.chomp)'` # I cheated.
+  rm -f $file_name # Cleanup in case of retry.
+  echo "Downloading $1"
+  curl --fail --progress-bar -O -L --url $1
+  result=$? # Store the code of the last action, should be 0 for a successfull download.
+  file_size=`ls -l "$file_name" | awk '{print $5}'`
+  # We check for normal errors, otherwise check the file size.
+  # Some websites like sourceforge redirects and curl can't
+  # detect the problem.
+  if [[ $result -ne 0 || $file_size -lt 500000 ]] # less than 500K
+  then
+    echo "Failed download: $1, size: "$file_size"B, aborting." >&2 # output on stderr.
+    exit 65
+  else
+    apps=( "${apps[@]}" "$file_name" ) # add the filename to an array to be decompressed later.
+  fi
+}
+
+function decompress_applications () {
+  # decompress the array of apps.
+  for item in ${apps[*]}
+  do
+    echo "Decompressing $item"
+    tar zxf $item
+  done
+}
+
+# Before running anything try to download all requires files, saving time.
+try_download http://"$SF_MIRROR".dl.sourceforge.net/project/gs-fonts/gs-fonts/8.11%20%28base%2035%2C%20GPL%29/ghostscript-fonts-std-8.11.tar.gz
+try_download http://"$SF_MIRROR".dl.sourceforge.net/project/wvware/libwmf/0.2.8.4/libwmf-0.2.8.4.tar.gz
+try_download http://www.ijg.org/files/jpegsrc.v8d.tar.gz
+try_download http://download.osgeo.org/libtiff/tiff-4.0.1.tar.gz
+try_download http://"$SF_MIRROR".dl.sourceforge.net/project/lcms/lcms/2.3/lcms2-2.3.tar.gz
+try_download ftp://ftp.simplesystems.org/pub/libpng/png/src/libpng-1.5.10.tar.gz
+try_download http://download.savannah.gnu.org/releases/freetype/freetype-2.4.9.tar.gz
+try_download http://ghostscript.googlecode.com/files/ghostscript-9.00.tar.gz
+try_download ftp://ftp.imagemagick.org/pub/ImageMagick/ImageMagick.tar.gz
+
+# Decompress applications.
+decompress_applications
+
+echo "Starting..."
+
+# LibPNG.
+# Official PNG reference library.
+cd libpng-1.5.10
+./configure --prefix=$CONFIGURE_PREFIX
+make
+sudo make install
+cd ..
+
+# JPEG.
+# Library for JPEG image compression.
+cd jpeg-8d
+ln -s `which glibtool` ./libtool
+export MACOSX_DEPLOYMENT_TARGET=$DEPLOYMENT_TARGET
+./configure --enable-shared --prefix=$CONFIGURE_PREFIX
+make
+sudo make install
+cd ..
+
+# Little cms.
+# A free color management engine in 100K.
+cd lcms2-2.3
+./configure
+make
+sudo make install
+cd ..
+
+# GhostScript.
+# Interpreter for the PostScript language and for PDF.
+cd ghostscript-9.00
+./configure --prefix=$CONFIGURE_PREFIX
+make
+sudo make install
+cd ..
+
+# Ghostscript Fonts.
+# Fonts and font metrics customarily distributed with Ghostscript.
+sudo rm -rf $CONFIGURE_PREFIX/share/ghostscript/fonts # cleanup
+sudo mv fonts $CONFIGURE_GS_FONT
+
+# The FreeType Project.
+# A free, high-quality and portable font engine.
+cd freetype-2.4.9
+./configure --prefix=$CONFIGURE_PREFIX
+make
+sudo make install
+cd ..
+
+# libwmf.
+# library to convert wmf files
+cd libwmf-0.2.8.4
+make clean
+./configure --without-expat --with-xml --with-png=/usr/X11
+make
+sudo make install
+cd ..
+
+# LibTIFF.
+# Support for the Tag Image File Format (TIFF)
+cd tiff-4.0.1
+./configure --prefix=$CONFIGURE_PREFIX
+make
+sudo make install
+cd ..
+
+# ImageMagick.
+# Software suite to create, edit, and compose bitmap images.
+cd ImageMagick-*
+export CPPFLAGS=-I$CONFIGURE_PREFIX/include
+export LDFLAGS=-L$CONFIGURE_PREFIX/lib
+./configure --prefix=$CONFIGURE_PREFIX $IMAGEMAGICK_ARGUMENTS --with-gs-font-dir=$CONFIGURE_GS_FONT/fonts
+make
+sudo make install
+cd ..
+
+echo "ImageMagick installed."
+convert -version
+
+echo "Testing..."
+$CONFIGURE_PREFIX/bin/convert logo: logo.gif
+$CONFIGURE_PREFIX/bin/convert logo: logo.jpg
+$CONFIGURE_PREFIX/bin/convert logo: logo.png
+$CONFIGURE_PREFIX/bin/convert logo: logo.tiff
+echo "Tests done."
+
+exit
+
+#!/bin/bash
+
+MOU_DIR="${HOME}/Library/Application Support/Mou/"
+CSS_DIR="${MOU_DIR}/CSS/"
+TH_DIR="${MOU_DIR}/Themes/"
+
+if [ -d "$MOU_DIR" ]; then
+  cp Themes/*.txt "$TH_DIR"
+  cp CSS/*.css "$CSS_DIR"
+  echo "Solarized installed!"
+else
+  echo "${MOU_DIR} doesn't exist. Is Mou installed, and has it been started at least once?"
+fi
+
+#!/bin/bash
+
+# Usage: git-diff-grep [OPTIONS] <query>
+
+# Example: "git-diff-grep -c 10 login_required" will grep for
+# login_required in the last 10 commits diffs
+
+# Text color variables
+txtund=$(tput sgr 0 1)    # Underline
+txtbld=$(tput bold)       # Bold
+txtred=$(tput setaf 1)    # Red
+txtgrn=$(tput setaf 2)    # Green
+txtylw=$(tput setaf 3)    # Yellow
+txtblu=$(tput setaf 4)    # Blue
+txtpur=$(tput setaf 5)    # Purple
+txtcyn=$(tput setaf 6)    # Cyan
+txtwht=$(tput setaf 7)    # White
+txtrst=$(tput sgr0)       # Text reset
+
+# Set usage for error cases
+usage="Usage: git-diff-grep [OPTIONS] <query>
+  -c INTEGER    Set number of commits"
+
+# Parse options
+while getopts ":c:" opt; do
+  case $opt in
+    c )
+      revs_number=$OPTARG
+
+      # Check if revs_number is a number
+      numeric=$(echo $revs_number | grep "[0-9]\+")
+      if [ ! $numeric ]; then
+        echo "$usage"
+        exit 1
+      else
+        revs_number="-$revs_number"
+        shift 2
+      fi
+      ;;
+    \? )
+      echo "Invalid option -$OPTARG" >&2
+      echo "$usage"
+      exit 1
+      ;;
+  esac
+done
+
+# Query should be at position $1
+if [ "$1" ]; then
+  query=$1
+else
+  echo "$usage"
+  exit 1
+fi
+
+####### THE ACTUAL PROGRAM
+
+# Get rid of multiple whitespaces
+function trim {
+  echo $*
+}
+
+print_revisions() {
+    git log --pretty=format:"%H" $revs_number
+}
+
+loop_through_revisions() {
+    while read rev; do
+      git diff $rev |
+
+      grep -q "$query"
+      if [ $? -eq 0 ] # If a match was found
+      then
+        echo "  ${txtylw}commit $rev${txtrst}"
+        git show -s --format="  Author: %cn <%cE>" $rev
+        git show -s --format="  Date: %cd" $rev
+        git show -s --format="    %s" $rev
+        echo
+        # Print the diff for that commit, and grep for query
+        git_diff=$(git diff $rev | grep "$query")
+        echo "$git_diff" | while read line
+        do
+          add_remove=$(echo $line | grep '^[-+]')
+          # See if the line was a new or removed line
+          if [ "$add_remove" ]; then
+            add=$(echo $line | grep '^[-]')
+            if [ "$add" ]; then
+              color=$txtred
+            else
+              color=$txtgrn
+            fi
+          else
+            color=$txtrst
+          fi
+
+          echo "    ${color}$(trim $line)${txtrst}"
+        done
+        echo
+        echo
+      fi
+  done
+}
+
+main() {
+    print_revisions | loop_through_revisions | less -FXRS
+}
+
+main
+
+#!/bin/bash
+
+# Script to set up dependencies for Django on Vagrant.
+
+PGSQL_VERSION=9.3
+
+# Need to fix locale so that Postgres creates databases in UTF-8
+cp -p /vagrant_data/etc-bash.bashrc /etc/bash.bashrc
+locale-gen en_GB.UTF-8
+dpkg-reconfigure locales
+
+export LANGUAGE=en_GB.UTF-8
+export LANG=en_GB.UTF-8
+export LC_ALL=en_GB.UTF-8
+
+# Install essential packages from Apt
+apt-get update -y
+# Python dev packages
+apt-get install -y build-essential python python-dev python-setuptools python-pip
+# Dependencies for image processing with Pillow (drop-in replacement for PIL)
+# supporting: jpeg, tiff, png, freetype, littlecms
+apt-get install -y libjpeg-dev libtiff-dev zlib1g-dev libfreetype6-dev liblcms2-dev
+# Git (we'd rather avoid people keeping credentials for git commits in the repo, but sometimes we need it for pip requirements that aren't in PyPI)
+apt-get install -y git
+
+# Postgresql
+if ! command -v psql; then
+    apt-get install -y postgresql-$PGSQL_VERSION libpq-dev
+    cp /vagrant_data/pg_hba.conf /etc/postgresql/$PGSQL_VERSION/main/
+    /etc/init.d/postgresql reload
+fi
+
+# virtualenv global setup
+if ! command -v pip; then
+    easy_install -U pip
+fi
+if [[ ! -f /usr/local/bin/virtualenv ]]; then
+    easy_install virtualenv virtualenvwrapper stevedore virtualenv-clone
+fi
+
+# bash environment global setup
+cp -p /vagrant_data/bashrc /home/vagrant/.bashrc
+
+# install our common Python packages in a temporary virtual env so that they'll get cached
+if [[ ! -e /home/vagrant/.pip_download_cache ]]; then
+    su - vagrant -c "mkdir -p /home/vagrant/.pip_download_cache && \
+        virtualenv /home/vagrant/yayforcaching && \
+        PIP_DOWNLOAD_CACHE=/home/vagrant/.pip_download_cache /home/vagrant/yayforcaching/bin/pip install -r /vagrant_data/common_requirements.txt && \
+        rm -rf /home/vagrant/yayforcaching"
+fi
+
+# Node.js, CoffeeScript and LESS
+if ! command -v npm; then
+    wget http://nodejs.org/dist/v0.10.0/node-v0.10.0.tar.gz
+    tar xzf node-v0.10.0.tar.gz
+    cd node-v0.10.0/
+    ./configure && make && make install
+    cd ..
+    rm -rf node-v0.10.0/ node-v0.10.0.tar.gz
+fi
+if ! command -v coffee; then
+    npm install -g coffee-script
+fi
+if ! command -v lessc; then
+    npm install -g less
+fi
+
+# Cleanup
+apt-get clean
+
+echo "Zeroing free space to improve compression."
+dd if=/dev/zero of=/EMPTY bs=1M
+rm -f /EMPTY
+
+#!/bin/bash
+_baseline_readlink() {
+  (
+  TARGET_FILE=$1
+
+  cd `dirname $TARGET_FILE`
+  TARGET_FILE=`basename $TARGET_FILE`
+
+  while [ -L "$TARGET_FILE" ]
+  do
+    TARGET_FILE=`readlink $TARGET_FILE`
+    cd `dirname $TARGET_FILE`
+    TARGET_FILE=`basename $TARGET_FILE`
+  done
+
+  PHYS_DIR=`pwd -P`
+  RESULT=$PHYS_DIR/$TARGET_FILE
+  echo $RESULT
+  )
+}
+
+path_to_baseline=`which baseline`
+if [[ `uname` == "Darwin" ]]; then
+  curr_dir=$(dirname `_baseline_readlink "$path_to_baseline"`)
+else
+  curr_dir=$(dirname `readlink -f "$path_to_baseline"`)
+fi
+
+export baseline_box=true
+command=${1:-help}
+shift
+
+command_file="$curr_dir"/../lib/baseline-$command
+
+if ! [[ -x $command_file ]]; then
+  echo "\"baseline $command\" is not a subcommand. Run \"baseline help\" for more information."
+  exit 1
+fi
+
+stop_unless_baseline_project() {
+  baseline_non_project_message="You must run the command inside a baseline project"
+  [[ ! -d ".baseline" ]] && echo $baseline_non_project_message 1>&2 && exit 2
+}
+export -f stop_unless_baseline_project
+
+exec $command_file $@

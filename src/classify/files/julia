@@ -1,0 +1,1139 @@
+*(node::AudioNode, coef::Real) = Gain(node, coef)
+*(coef::Real, node::AudioNode) = Gain(node, coef)
+*(node1::AudioNode, node2::AudioNode) = Gain(node1, node2)
+# multiplying by silence gives silence
+*(in1::NullNode, in2::NullNode) = in1
+*(in1::AudioNode, in2::NullNode) = in2
+*(in1::NullNode, in2::AudioNode) = in1
+
+
++(in1::AudioNode, in2::AudioNode) = AudioMixer([in1, in2])
+# adding silence has no effect
++(in1::NullNode, in2::NullNode) = in1
++(in1::AudioNode, in2::NullNode) = in1
++(in1::NullNode, in2::AudioNode) = in2
++(in1::AudioNode, in2::Real) = Offset(in1, in2)
++(in1::Real, in2::AudioNode) = Offset(in2, in1)
+
+export af_open, FilePlayer, rewind, samplerate
+
+const SFM_READ = int32(0x10)
+const SFM_WRITE = int32(0x20)
+
+const SF_FORMAT_WAV =  0x010000
+const SF_FORMAT_FLAC = 0x170000
+const SF_FORMAT_OGG =  0x200060
+
+const SF_FORMAT_PCM_S8 = 0x0001 # Signed 8  bit data
+const SF_FORMAT_PCM_16 = 0x0002 # Signed 16 bit data
+const SF_FORMAT_PCM_24 = 0x0003 # Signed 24 bit data
+const SF_FORMAT_PCM_32 = 0x0004 # Signed 32 bit data
+
+const SF_SEEK_SET = 0
+const SF_SEEK_CUR = 1
+const SF_SEEK_END = 2
+
+const EXT_TO_FORMAT = [
+    ".wav" => SF_FORMAT_WAV,
+    ".flac" => SF_FORMAT_FLAC
+]
+
+type SF_INFO
+    frames::Int64
+    samplerate::Int32
+    channels::Int32
+    format::Int32
+    sections::Int32
+    seekable::Int32
+
+    function SF_INFO(frames::Integer, samplerate::Integer, channels::Integer,
+                     format::Integer, sections::Integer, seekable::Integer)
+        new(int64(frames), int32(samplerate), int32(channels), int32(format),
+            int32(sections), int32(seekable))
+    end
+end
+
+type AudioFile
+    filePtr::Ptr{Void}
+    sfinfo::SF_INFO
+end
+
+samplerate(f::AudioFile) = f.sfinfo.samplerate
+
+# AudioIO.open is part of the public API, but is not exported so that it
+# doesn't conflict with Base.open
+function open(path::String, mode::String = "r",
+            sampleRate::Integer = 44100, channels::Integer = 1,
+            format::Integer = 0)
+    @assert channels <= 2
+
+    sfinfo = SF_INFO(0, 0, 0, 0, 0, 0)
+    file_mode = SFM_READ
+
+    if mode == "w"
+        file_mode = SFM_WRITE
+        sfinfo.samplerate = sampleRate
+        sfinfo.channels = channels
+        if format == 0
+            _, ext = splitext(path)
+            sfinfo.format = EXT_TO_FORMAT[ext] | SF_FORMAT_PCM_16
+        else
+            sfinfo.format = format
+        end
+    end
+
+    filePtr = ccall((:sf_open, libsndfile), Ptr{Void},
+                    (Ptr{Uint8}, Int32, Ptr{SF_INFO}),
+                    path, file_mode, &sfinfo)
+
+    if filePtr == C_NULL
+        errmsg = ccall((:sf_strerror, libsndfile), Ptr{Uint8}, (Ptr{Void},), filePtr)
+        error(bytestring(errmsg))
+    end
+
+    return AudioFile(filePtr, sfinfo)
+end
+
+function Base.close(file::AudioFile)
+    err = ccall((:sf_close, libsndfile), Int32, (Ptr{Void},), file.filePtr)
+    if err != 0
+        error("Failed to close file")
+    end
+end
+
+function open(f::Function, args...)
+    file = AudioIO.open(args...)
+    try
+        f(file)
+    finally
+        close(file)
+    end
+end
+
+function af_open(args...)
+    warn("af_open is deprecated, please use AudioIO.open instead")
+    AudioIO.open(args...)
+end
+
+# TODO: we should implement a general read(node::AudioNode) that pulls data
+# through an arbitrary render chain and returns the result as a vector
+function Base.read(file::AudioFile, nframes::Integer, dtype::Type)
+    @assert file.sfinfo.channels <= 2
+    # the data comes in interleaved
+    arr = zeros(dtype, file.sfinfo.channels, nframes)
+
+    if dtype == Int16
+        nread = ccall((:sf_readf_short, libsndfile), Int64,
+                        (Ptr{Void}, Ptr{Int16}, Int64),
+                        file.filePtr, arr, nframes)
+    elseif dtype == Int32
+        nread = ccall((:sf_readf_int, libsndfile), Int64,
+                        (Ptr{Void}, Ptr{Int32}, Int64),
+                        file.filePtr, arr, nframes)
+    elseif dtype == Float32
+        nread = ccall((:sf_readf_float, libsndfile), Int64,
+                        (Ptr{Void}, Ptr{Float32}, Int64),
+                        file.filePtr, arr, nframes)
+    elseif dtype == Float64
+        nread = ccall((:sf_readf_double, libsndfile), Int64,
+                        (Ptr{Void}, Ptr{Float64}, Int64),
+                        file.filePtr, arr, nframes)
+    end
+
+    return arr[:, 1:nread]'
+end
+
+Base.read(file::AudioFile, dtype::Type) = Base.read(file, file.sfinfo.frames, dtype)
+Base.read(file::AudioFile, nframes::Integer) = Base.read(file, nframes, Int16)
+Base.read(file::AudioFile) = Base.read(file, Int16)
+
+function Base.write{T}(file::AudioFile, frames::Array{T})
+    @assert file.sfinfo.channels <= 2
+    nframes = int(length(frames) / file.sfinfo.channels)
+
+    if T == Int16
+        return ccall((:sf_writef_short, libsndfile), Int64,
+                        (Ptr{Void}, Ptr{Int16}, Int64),
+                        file.filePtr, frames, nframes)
+    elseif T == Int32
+        return ccall((:sf_writef_int, libsndfile), Int64,
+                        (Ptr{Void}, Ptr{Int32}, Int64),
+                        file.filePtr, frames, nframes)
+    elseif T == Float32
+        return ccall((:sf_writef_float, libsndfile), Int64,
+                        (Ptr{Void}, Ptr{Float32}, Int64),
+                        file.filePtr, frames, nframes)
+    elseif T == Float64
+        return ccall((:sf_writef_double, libsndfile), Int64,
+                        (Ptr{Void}, Ptr{Float64}, Int64),
+                        file.filePtr, frames, nframes)
+    end
+end
+
+function Base.seek(file::AudioFile, offset::Integer, whence::Integer)
+    new_offset = ccall((:sf_seek, libsndfile), Int64,
+        (Ptr{Void}, Int64, Int32), file.filePtr, offset, whence)
+
+    if new_offset < 0
+        error("Could not seek to $(offset) in file")
+    end
+
+    new_offset
+end
+
+# Some convenience methods for easily navigating through a sound file
+Base.seek(file::AudioFile, offset::Integer) = seek(file, offset, SF_SEEK_SET)
+rewind(file::AudioFile) = seek(file, 0, SF_SEEK_SET)
+
+type FileRenderer <: AudioRenderer
+    file::AudioFile
+
+    function FileRenderer(file::AudioFile)
+        node = new(file)
+        finalizer(node, n -> close(n.file))
+        return node
+    end
+end
+
+typealias FilePlayer AudioNode{FileRenderer}
+FilePlayer(file::AudioFile) = FilePlayer(FileRenderer(file))
+FilePlayer(path::String) = FilePlayer(AudioIO.open(path))
+
+function render(node::FileRenderer, device_input::AudioBuf, info::DeviceInfo)
+    @assert node.file.sfinfo.samplerate == info.sample_rate
+
+    # Keep reading data from the file until the output buffer is full, but stop
+    # as soon as no more data can be read from the file
+    audio = Array(AudioSample, 0, node.file.sfinfo.channels)
+    while true
+        read_audio = read(node.file, info.buf_size-size(audio, 1), AudioSample)
+        audio = vcat(audio, read_audio)
+        if size(audio, 1) >= info.buf_size || size(read_audio, 1) <= 0
+            break
+        end
+    end
+
+    # if the file is stereo, mix the two channels together
+    if node.file.sfinfo.channels == 2
+        return (audio[:, 1] / 2) + (audio[:, 2] / 2)
+    else
+        return audio
+    end
+end
+
+function play(filename::String, args...)
+    player = FilePlayer(filename)
+    play(player, args...)
+end
+
+function play(file::AudioFile, args...)
+    player = FilePlayer(file)
+    play(player, args...)
+end
+
+module Player
+
+import GL
+
+type State
+	position::GL.Vec3
+	orientation::GL.Vec3   # pitch, yaw, and roll in degrees
+	look_velocity::GL.Vec3
+	move_velocity::GL.Vec3
+	speed::Real
+	last_think::Real
+end
+State() = State(GL.Vec3(0,0,0), GL.Vec3(0,0,0), GL.Vec3(0,0,0), GL.Vec3(0,0,0), 100, 0)
+
+function lookdir!(player::State, delta::GL.Vec3, apply::Bool)
+	if apply
+		player.look_velocity += delta
+	else
+		player.look_velocity -= delta
+	end
+end
+
+function lookdir!(player::State, pitch::Real, yaw::Real)
+	pitch = player.orientation[1] + pitch
+	pitch = clamp(pitch, -89, 89)
+	yaw = (player.orientation[2] + yaw) % 360
+	player.orientation = GL.Vec3(pitch, yaw, 0)
+end
+
+export sphere2cartesian # TODO: put this in a better spot
+function sphere2cartesian(orientation::GL.Vec3)
+	orientation = degrees2radians(orientation)
+	x = cos(orientation[1]) * cos(orientation[2])
+	y = cos(orientation[1]) * sin(orientation[2])
+	z = sin(orientation[1])
+	eyedir = GL.Vec3(x, y, z)
+	eyedir /= norm(eyedir)
+	updir = GL.Vec3(0, 0, 1)
+	rightdir = cross(eyedir, updir)
+	rightdir /= norm(rightdir)
+	return eyedir, updir, rightdir
+end
+
+function movedir!(player::State, delta::GL.Vec3, apply::Bool)
+	if apply
+		player.move_velocity += delta
+	else
+		player.move_velocity -= delta
+	end
+end
+
+# update position using eyedir, move_velocity, and speed
+function move!(player::State)
+	now = time_ns()
+	time = (now - player.last_think) / 1000000000
+	dist = player.speed * time
+	lookdir!(player, player.look_velocity[1] * time, player.look_velocity[2] * time)
+	eyedir, updir, rightdir = sphere2cartesian(player.orientation)
+	player.position += dist * player.move_velocity[1] * eyedir
+	player.position += dist * player.move_velocity[2] * rightdir
+	player.position += dist * player.move_velocity[3] * updir
+	player.last_think = now
+end
+
+self = State()
+
+export forward, back, moveleft, moveright, moveup, movedown, speed, left, right, lookup, lookdown
+
+forward(apply::Bool)   = movedir!(self, GL.Vec3( 1,  0,  0), apply)
+back(apply::Bool)      = movedir!(self, GL.Vec3(-1,  0,  0), apply)
+moveleft(apply::Bool)  = movedir!(self, GL.Vec3( 0, -1,  0), apply)
+moveright(apply::Bool) = movedir!(self, GL.Vec3( 0,  1,  0), apply)
+moveup(apply::Bool)    = movedir!(self, GL.Vec3( 0,  0,  1), apply)
+movedown(apply::Bool)  = movedir!(self, GL.Vec3( 0,  0, -1), apply)
+
+function speed(apply::Bool)
+	if apply
+		self.speed *= 5
+	else
+		self.speed /= 5
+	end
+end
+
+left(apply::Bool)     = lookdir!(self, GL.Vec3(  0,  60,  0), apply)
+right(apply::Bool)    = lookdir!(self, GL.Vec3(  0, -60,  0), apply)
+lookup(apply::Bool)   = lookdir!(self, GL.Vec3( 60,   0,  0), apply)
+lookdown(apply::Bool) = lookdir!(self, GL.Vec3(-60,   0,  0), apply)
+
+end
+
+module Tree
+
+importall ImmutableArrays
+import ..Mesh.Face
+import Base:cmp,search
+
+type Leaf
+	faces::Vector{Face}
+end
+
+type Node
+	front::Union(Node,Leaf)
+	back::Union(Node,Leaf)
+	normal::Vector3{Float32}
+	distance::Float32
+end
+
+cmp(pos::Vector3, node::Node) = sign(dot(pos,node.normal)-node.distance)
+
+function search(tree::Node, pos::Vector3)
+	if cmp(pos, tree) < 0
+		return search(tree.back, pos)
+	else
+		return search(tree.front, pos)
+	end
+end
+search(leaf::Leaf, ::Vector3) = leaf
+
+end
+
+
+module Threshold
+export
+    # threshold
+    threshold!,
+    threshold,
+    HardTH,
+    SoftTH,
+    SemiSoftTH,
+    SteinTH,
+    BiggestTH,
+    PosTH,
+    NegTH,
+    # denoising
+    DNFT,
+    VisuShrink,
+    denoise,
+    noisest,
+    # basis functions
+    matchingpursuit,
+    bestbasistree,
+    # entropy
+    coefentropy,
+    Entropy,
+    ShannonEntropy,
+    LogEnergyEntropy
+using ..Util, ..WT, ..Transforms
+
+# THRESHOLD TYPES AND FUNCTIONS
+
+abstract type THType end
+struct HardTH     <: THType end
+struct SoftTH     <: THType end
+struct SemiSoftTH <: THType end
+struct SteinTH    <: THType end
+struct BiggestTH  <: THType end
+struct PosTH      <: THType end
+struct NegTH      <: THType end
+
+const DEFAULT_TH = HardTH()
+
+# biggest m-term approximation (best m-term approximation for orthogonal transforms)
+# result is m-sparse
+function threshold!{T<:Number}(x::AbstractArray{T}, TH::BiggestTH, m::Int)
+    @assert m >= 0
+    n = length(x)
+    m > n && (m = n)
+    ind = sortperm(x, alg=QuickSort, by=abs)
+    @inbounds begin
+        for i = 1:n-m
+            x[ind[i]] = 0
+        end
+    end
+    return x
+end
+
+# hard
+function threshold!{T<:Number}(x::AbstractArray{T}, TH::HardTH, t::Real)
+    @assert t >= 0
+    @inbounds begin
+        for i in eachindex(x)
+            if abs(x[i]) <= t
+                x[i] = 0
+            end
+        end
+    end
+    return x
+end
+
+# soft
+function threshold!{T<:Number}(x::AbstractArray{T}, TH::SoftTH, t::Real)
+    @assert t >= 0
+    @inbounds begin
+        for i in eachindex(x)
+            sh = abs(x[i]) - t
+            if sh < 0
+                x[i] = 0
+            else
+                x[i] = sign(x[i])*sh
+            end
+        end
+    end
+    return x
+end
+
+# semisoft
+function threshold!{T<:Number}(x::AbstractArray{T}, TH::SemiSoftTH, t::Real)
+    @assert t >= 0
+    @inbounds begin
+        for i in eachindex(x)
+            if x[i] <= 2*t
+                sh = abs(x[i]) - t
+                if sh < 0
+                    x[i] = 0
+                elseif sh - t < 0
+                    x[i] = sign(x[i])*sh*2
+                end
+            end
+        end
+    end
+    return x
+end
+
+# stein
+function threshold!{T<:Number}(x::AbstractArray{T}, TH::SteinTH, t::Real)
+    @assert t >= 0
+    @inbounds begin
+        for i in eachindex(x)
+            sh = 1 - t*t/(x[i]*x[i])
+            if sh < 0
+                x[i] = 0
+            else
+                x[i] = x[i]*sh
+            end
+        end
+    end
+    return x
+end
+
+# shrink negative elements to 0
+function threshold!{T<:Number}(x::AbstractArray{T}, TH::NegTH)
+    @inbounds begin
+        for i in eachindex(x)
+            if x[i] < 0
+                x[i] = 0
+            end
+        end
+    end
+    return x
+end
+
+# shrink positive elements to 0
+function threshold!{T<:Number}(x::AbstractArray{T}, TH::PosTH)
+    @inbounds begin
+        for i in eachindex(x)
+            if x[i] > 0
+                x[i] = 0
+            end
+        end
+    end
+    return x
+end
+
+# the non inplace functions
+function threshold{T<:Number}(x::AbstractArray{T}, TH::THType, t::Real)
+    y = Vector{T}(size(x))
+    return threshold!(copy!(y,x), TH, t)
+end
+function threshold{T<:Number}(x::AbstractArray{T}, TH::THType)
+    y = Vector{T}(size(x))
+    return threshold!(copy!(y,x), TH)
+end
+
+
+# DENOISING
+
+abstract type DNFT end
+
+struct VisuShrink <: DNFT
+    th::THType      # threshold type
+    t::Float64      # threshold for noise level sigma=1, use sigma*t in application
+    VisuShrink(th, t) = new(th, t)
+end
+# define type for signal length n
+function VisuShrink(n::Int)
+    return VisuShrink(DEFAULT_TH, sqrt(2*log(n)))
+end
+
+const DEFAULT_WAVELET = wavelet(WT.sym5, WT.Filter)    # default wavelet type
+
+# denoise signal x by thresholding in wavelet space
+# estnoise is (x::AbstractArray, wt::Union{DiscreteWavelet,Void})
+function denoise{S<:DNFT}(x::AbstractArray,
+                        wt::Union{DiscreteWavelet,Void}=DEFAULT_WAVELET;
+                        L::Int=min(maxtransformlevels(x),6),
+                        dnt::S=VisuShrink(size(x,1)),
+                        estnoise::Function=noisest,
+                        TI::Bool=false,
+                        nspin::Union{Int,Tuple}=tuple([8 for i=1:ndims(x)]...) )
+    iscube(x) || throw(ArgumentError("array must be square/cube"))
+    sigma = estnoise(x, wt)
+
+    if TI
+        wt == nothing && error("TI not supported with wt=nothing")
+        y = zeros(eltype(x), size(x))
+        xt = similar(x)
+        pns = prod(nspin)
+
+        if ndims(x) == 1
+            z = similar(x)
+            for i = 1:pns
+                shift = nspin2circ(nspin, i)[1]
+                Util.circshift!(z, x, shift)
+
+                Transforms.dwt_oop!(xt, z, wt, L)
+                threshold!(xt, dnt.th, sigma*dnt.t)
+                Transforms.idwt_oop!(z, xt, wt, L)
+
+                Util.circshift!(xt, z, -shift)
+                arrayadd!(y, xt)
+            end
+        else # ndims > 1
+            for i = 1:pns
+                shift = nspin2circ(nspin, i)
+                z = circshift(x, shift)
+
+                Transforms.dwt_oop!(xt, z, wt, L)
+                threshold!(xt, dnt.th, sigma*dnt.t)
+                Transforms.idwt_oop!(z, xt, wt, L)
+
+                z = circshift(z, -shift)
+                arrayadd!(y, z)
+            end
+        end
+        scale!(y, 1/pns)
+    else # !TI
+        if wt == nothing
+            y = copy(x)
+            threshold!(y, dnt.th, sigma*dnt.t)
+        else
+            y = dwt(x, wt, L)
+            threshold!(y, dnt.th, sigma*dnt.t)
+            if isa(wt, GLS)
+                idwt!(y, wt, L)
+            else
+                y2 = idwt(y, wt, L)
+                y = y2
+            end
+        end
+    end
+
+    return y
+end
+# add z to y
+function arrayadd!(y::AbstractArray, z::AbstractArray)
+    length(y) == length(z) || throw(DimensionMismatch("lengths must be equal"))
+    for i in eachindex(y)
+        @inbounds y[i] += z[i]
+    end
+    return y
+end
+
+
+# estimate the std. dev. of the signal noise, assuming Gaussian distribution
+function noisest(x::AbstractArray, wt::Union{DiscreteWavelet,Void}=DEFAULT_WAVELET, L::Integer = 1)
+    if wt == nothing
+        y = x
+    else
+        y = dwt(x, wt, L)
+    end
+    dr = y[detailrange(y, L)]
+    return mad!(dr)/0.6745
+end
+# Median absolute deviation
+function mad!(y::AbstractArray)
+    m = median!(y)
+    for i in eachindex(y)
+        y[i] = abs(y[i]-m)
+    end
+    return median!(y)
+end
+#function mad(x::AbstractArray)
+#    y = copy(x)
+#    mad!(y)
+#end
+
+# convert index i to a circshift array starting at 0 shift
+nspin2circ(nspin::Int, i::Int) = nspin2circ((nspin,), i)
+function nspin2circ(nspin::Tuple, i::Int)
+    c1 = ind2sub(nspin,i)
+    c = Vector{Int}(length(c1))
+    for k in 1:length(c1)
+        c[k] = c1[k]-1
+    end
+    return c
+end
+
+
+# BASIS FUNCTIONS
+
+# Matching Pursuit
+# see: Mallat (2009) p.642 "A wavelet tour of signal processing"
+# find sparse vector y such that ||x - f(y)|| < tol approximately
+# f is the operation of a M by N (M<N) dictionary/matrix
+# ft is a function defining the transpose of f
+function matchingpursuit(x::AbstractVector, f::Function, ft::Function, tol::Real, nmax::Int=-1, oop::Bool=false, N::Int=0)
+    @assert nmax >= -1
+    @assert tol > 0
+    r = x
+    n = 1
+
+    if !oop
+        y = zeros(eltype(x), length(ft(x)))
+    else # out of place functions f and ft
+        y = zeros(eltype(x), N)
+        tmp = similar(x, N)
+        ftr = similar(x, N)
+        aphi = similar(x, length(x))
+    end
+    spat = zeros(eltype(x), length(y))  # sparse for atom computation
+    nmax == -1 && (nmax = length(y))
+
+    while vecnorm(r) > tol && n <= nmax
+        # find largest inner product
+        !oop && (ftr = ft(r))
+        oop  && ft(ftr, r, tmp)
+        i = findmaxabs(ftr)
+
+        # project on i-th atom
+        spat[i] = ftr[i]
+        !oop && (aphi = f(spat))
+        oop  && f(aphi, spat, tmp)
+        spat[i] = 0
+
+        # update residual, r = r - aphi
+        broadcast!(-, r, r, aphi)
+
+        y[i] += ftr[i]
+        n += 1
+    end
+    return y
+end
+function findmaxabs(x::AbstractVector)
+    m = abs(x[1])
+    k = 1
+    @inbounds for i in eachindex(x)
+        if abs(x[i]) > m
+            k = i
+            m = abs(x[i])
+        end
+    end
+    return k
+end
+
+
+# ENTROPY MEASURES
+
+abstract type Entropy end
+struct ShannonEntropy <: Entropy end  #Coifman-Wickerhauser
+struct LogEnergyEntropy <: Entropy end
+
+# Entropy measures: Additive with coefentropy(0) = 0
+# all coefs assumed to be on [-1,1] after normalization with nrm
+# given x and y, where x has "more concentrated energy" than y
+# then coefentropy(x, et, norm) <= coefentropy(y, et, norm) should be satisfied.
+
+function coefentropy{T<:AbstractFloat}(x::T, et::ShannonEntropy, nrm::T)
+    s = (x/nrm)^2
+    if s == 0.0
+        return -zero(T)
+    else
+        return -s*log(s)
+    end
+end
+function coefentropy{T<:AbstractFloat}(x::T, et::LogEnergyEntropy, nrm::T)
+    s = (x/nrm)^2
+    if s == 0.0
+        return -zero(T)
+    else
+        return -log(s)
+    end
+end
+function coefentropy{T<:AbstractFloat}(x::AbstractArray{T}, et::Entropy, nrm::T=vecnorm(x))
+    @assert nrm >= 0
+    sum = zero(T)
+    nrm == sum && return sum
+    for i in eachindex(x)
+        @inbounds sum += coefentropy(x[i], et, nrm)
+    end
+    return sum
+end
+
+
+# find the best tree that is a subset of the input tree (use :full to find the best tree)
+# for wpt
+function bestbasistree{T<:AbstractFloat}(y::AbstractVector{T}, wt::DiscreteWavelet, L::Integer=maxtransformlevels(y), et::Entropy=ShannonEntropy())
+    bestbasistree(y, wt, maketree(length(y), L, :full), et)
+end
+function bestbasistree{T<:AbstractFloat}(y::AbstractVector{T}, wt::DiscreteWavelet, tree::BitVector, et::Entropy=ShannonEntropy())
+
+    isvalidtree(y, tree) || throw(ArgumentError("invalid tree"))
+
+    tree[1] || copy(tree)      # do nothing
+
+    x = copy(y)
+    n = length(y)
+    tmp = Vector{T}(n)
+    ntree = length(tree)
+    entr_bf = Vector{T}(ntree)
+    nrm = vecnorm(y)
+
+    Lmax = maxtransformlevels(n)
+    L = Lmax
+    k = 1
+    while L > 0
+        ix = 1
+        Lfw = Lmax-L
+        nj = detailn(n, Lfw)
+
+        @assert nj <= n
+        dtmp = Transforms.unsafe_vectorslice(tmp, 1, nj)
+        while ix <= n
+            @assert nj+ix-1 <= n
+            dx = Transforms.unsafe_vectorslice(x, ix, nj)
+
+            entr_bf[k] = coefentropy(dx, et, nrm)
+
+            dwt!(dtmp, dx, wt, 1)
+            copy!(dx, dtmp)
+
+            ix += nj
+            k += 1
+        end
+        L -= 1
+    end
+
+    # entropy of fully transformed signal (end nodes)
+    n_af = 2^(Lmax-1)
+    entr_af = Vector{T}(n_af)
+    n_coef_af = div(n, n_af)
+    for i in 1:n_af
+        range = (i-1)*n_coef_af+1 : i*n_coef_af
+        entr_af[i] = coefentropy(x[range], et, nrm)
+    end
+
+    # make the best tree
+    besttree = copy(tree)
+    for i in 1:ntree
+        if (i>1 && !besttree[i>>1]) || !tree[i]  # parent is 0 or input tree-node is 0
+            besttree[i] = false
+        else
+            if entr_bf[i] <= bestsubtree_entropy(entr_bf, entr_af, i)
+                besttree[i] = false
+            else
+                besttree[i] = true
+            end
+        end
+    end
+
+    @assert isvalidtree(y, besttree)
+    return besttree::BitVector
+end
+
+# the entropy of best subtree
+function bestsubtree_entropy(entr_bf::Array, entr_af::Array, i::Int)
+    n = length(entr_bf)
+    n_af = length(entr_af)
+    @assert isdyadic(n+1)
+    @assert isdyadic(n_af)
+    @assert n + 1 == n_af<<1
+
+    if n < (i<<1)  # bottom of tree
+        sum  = entr_af[i - n_af + 1]
+    else
+        sum  = bestsubtree_entropy(entr_bf, entr_af, i<<1)
+        sum += bestsubtree_entropy(entr_bf, entr_af, i<<1+1)
+    end
+
+    lowestentropy = min(entr_bf[i], sum)
+    return lowestentropy
+end
+
+
+end # module
+
+
+type MainToolbar <: Gtk.GtkToolbar
+  handle::Ptr{Gtk.GObject}
+  btnNew
+  btnOpen
+  btnSave
+  btnSaveAs 
+  btnUndo
+  btnRedo
+  btnRun
+  btnIndent
+  btnUnindent
+  btnComment
+  spinner
+end
+
+function MainToolbar()
+  btnNew = @ToolButton("gtk-new")
+  btnOpen = @ToolButton("gtk-open")
+  btnSave = @ToolButton("gtk-save")
+  btnSaveAs = @ToolButton("gtk-save-as")  
+  btnUndo = @ToolButton("gtk-undo")
+  btnRedo = @ToolButton("gtk-redo")
+  btnRun = @ToolButton("gtk-media-play")
+  btnIndent = @ToolButton("gtk-indent")
+  btnUnindent = @ToolButton("gtk-unindent")
+  btnComment = @ToolButton("gtk-indent")
+  btnUncomment = @ToolButton("gtk-unindent")  
+  btnAbout = @ToolButton("gtk-about")
+  
+  toolbar = @Toolbar()
+  push!(toolbar,btnNew,btnOpen,btnSave,btnSaveAs,@SeparatorToolItem())
+  push!(toolbar,btnUndo,btnRedo,@SeparatorToolItem())
+  push!(toolbar,btnRun,@SeparatorToolItem())
+  push!(toolbar,btnIndent,btnUnindent,@SeparatorToolItem()) 
+  push!(toolbar,btnComment,btnUncomment,@SeparatorToolItem()) 
+  G_.style(toolbar,GtkToolbarStyle.ICONS) #BOTH
+  #G_.icon_size(toolbar,GtkIconSize.MENU)
+
+  
+  btnHelp = @ToolButton("gtk-help")
+  btnSettings = @ToolButton("gtk-preferences")
+  btnClear = @ToolButton("gtk-clear")
+  push!(toolbar,btnHelp,btnSettings,btnClear, btnAbout)
+  
+  # Add spinner
+  spItem = @ToolItem()
+  spinner = @Spinner()
+  G_.size_request(spinner, 23,-1)
+  push!(spItem,spinner)
+  spSep = @SeparatorToolItem()
+  setproperty!(spSep,:draw,false)
+  setproperty!(spItem,:margin, 5)
+  push!(toolbar,spSep,spItem)
+  G_.expand(spSep,true) 
+  
+  maintoolbar = MainToolbar(toolbar.handle, 
+  btnNew,
+  btnOpen,
+  btnSave,
+  btnSaveAs,
+  btnUndo,
+  btnRedo,
+  btnRun,
+  btnIndent,
+  btnUnindent,
+  btnComment,
+  spinner
+  ) 
+  
+  signal_connect(btnNew, "clicked") do widget
+    push!(julietta.editor, SourceDocument(julietta.editor.lang,julietta.editor.style))
+  end  
+  
+  signal_connect(btnOpen, "clicked") do widget
+    doc = SourceDocument(julietta.editor.lang,julietta.editor.style)
+    if open(doc)
+      push!(julietta.editor, doc)
+    end
+  end
+  
+  signal_connect(btnSave, "clicked") do widget
+    save(julietta.editor.currentDoc)
+  end  
+  
+  signal_connect(btnSaveAs, "clicked") do widget
+    saveas(julietta.editor.currentDoc)
+  end    
+
+  signal_connect(btnUndo, "clicked") do widget
+    buf = julietta.editor.currentDoc.buffer
+    undo!(buf) #TODO use active buffer
+    G_.sensitive(btnUndo, canundo(buf))
+    G_.sensitive(btnRedo, canredo(buf))
+  end
+  
+  signal_connect(btnRedo, "clicked") do widget
+    buf = julietta.editor.currentDoc.buffer  
+    redo!(buf) #TODO use active buffer
+    G_.sensitive(btnUndo, canundo(buf))
+    G_.sensitive(btnRedo, canredo(buf))    
+  end
+  
+  signal_connect(btnIndent, "clicked") do widget
+    indent!(julietta.editor.currentDoc)
+  end
+  
+  signal_connect(btnUnindent, "clicked") do widget
+    unindent!(julietta.editor.currentDoc)
+  end
+  
+  signal_connect(btnComment, "clicked") do widget
+    comment!(julietta.editor.currentDoc)
+  end  
+  
+  signal_connect(btnUncomment, "clicked") do widget
+    uncomment!(julietta.editor.currentDoc)
+  end
+
+  #signal_connect(currentDoc.buffer, "changed") do widget, args...
+  #  G_.sensitive(btnUndo, canundo(currentDoc.buffer))
+  #  G_.sensitive(btnRedo, canredo(currentDoc.buffer))
+  #end    
+  
+  signal_connect(btnRun, "clicked") do widget
+    script = text(julietta.editor.currentDoc)
+    if julietta != nothing
+      execute(julietta.term, script)
+    end
+  end 
+  
+  
+  signal_connect(btnHelp, "clicked") do widget
+    m = ModuleBrowser()
+    showall(m)
+  end
+
+  signal_connect(btnSettings, "clicked") do widget
+    dlg = SettingsDialog()
+    
+    ret = run(dlg)
+    if ret == GtkResponseType.ACCEPT
+      acceptSettings(dlg)
+      applySettings(dlg)
+    end
+    destroy(dlg)    
+  end  
+  
+  signal_connect(btnClear, "clicked") do widget
+    start(julietta.maintoolbar.spinner)
+    @async begin
+      rmprocs(2)
+      addprocs(1)
+      update!(julietta.work)
+      stop(julietta.maintoolbar.spinner)
+    end
+  end  
+  
+  
+  signal_connect(btnAbout, "clicked") do widget
+    dlg = @AboutDialog()
+    G_.program_name(dlg,"Julietta")
+    G_.version(dlg,"0.0.0")
+    
+    ret = run(dlg)
+    destroy(dlg)
+  end     
+  
+  Gtk.gc_move_ref(maintoolbar, toolbar)
+  maintoolbar
+end
+
+export MongoCursor,
+       query, fields, limit, skip
+
+type MongoCursor
+    client::MongoClient
+    namespace::String
+    query::BSONObject
+    fields::BSONObject
+    limit::Int
+    skip::Int
+    _cursor::Ptr{Void}
+
+    function MongoCursor(client::MongoClient, namespace::String, q, f, l, s)
+        p = ccall((:mongo_cursor_alloc, MONGO_LIB), Ptr{Void}, ())
+        if p == C_NULL
+            error("Unable to create mongo cursor – mongo_cursor_alloc() failed")
+        end
+
+        ccall((:mongo_cursor_init, MONGO_LIB),
+            Void,
+            (Ptr{Void}, Ptr{Void}, Ptr{Uint8}),
+            p, client._mongo, bytestring(namespace))
+
+        cursor = new(client, namespace, q, f, l, s, p)
+        finalizer(cursor, destroy)
+
+        query(cursor, q)
+        fields(cursor, f)
+        limit(cursor, l)
+        skip(cursor, s)
+
+        return cursor
+    end
+end
+
+MongoCursor(client::MongoClient, namespace::String) = MongoCursor(client, namespace, BSONObject(), BSONObject(), 0, 0)
+
+
+query(cursor::MongoCursor, query::Dict) = query(cursor, BSONObject(query))
+function query(cursor::MongoCursor, query::BSONObject)
+    cursor.query = query
+    ccall((:mongo_cursor_set_query, MONGO_LIB), Void, (Ptr{Void}, Ptr{Void}), cursor._cursor, query._bson)
+end
+
+fields(cursor::MongoCursor, fields::Dict) = query(cursor, BSONObject(fields))
+function fields(cursor::MongoCursor, fields::BSONObject)
+    cursor.fields = fields
+    ccall((:mongo_cursor_set_fields, MONGO_LIB), Void, (Ptr{Void}, Ptr{Void}), cursor._cursor, fields._bson)
+end
+
+function limit(cursor::MongoCursor, limit::Int)
+    cursor.limit = limit
+    ccall((:mongo_cursor_set_limit, MONGO_LIB), Void, (Ptr{Void}, Int32), cursor._cursor, limit)
+end
+
+function skip(cursor::MongoCursor, skip::Int)
+    cursor.skip = skip
+    ccall((:mongo_cursor_set_skip, MONGO_LIB), Void, (Ptr{Void}, Int32), cursor._cursor, skip)
+end
+
+
+## Iterator ##
+import Base.start, Base.next, Base.done
+
+start(c::MongoCursor) = ccall((:mongo_cursor_next, MONGO_LIB), Int32, (Ptr{Void},), c._cursor)
+done(c::MongoCursor, errno::Int32) = begin
+    if errno != MONGO_OK
+        reset(c)
+        return true
+    end
+    return false
+end
+
+next(c::MongoCursor, errno::Int32) = begin
+    _current_bson = ccall((:mongo_cursor_bson, MONGO_LIB), Ptr{Void}, (Ptr{Void},), c._cursor)
+
+    # Create a copy of the bson
+    _bson = ccall((:bson_alloc, MONGO_LIB), Ptr{Void}, ())
+    errno = ccall((:bson_copy, MONGO_LIB), Int32, (Ptr{Void}, Ptr{Void}), _bson, _current_bson)
+    if errno == BSON_ERROR
+      error("Could not copy BSON object")
+    end
+
+    errno = ccall((:mongo_cursor_next, MONGO_LIB), Int32, (Ptr{Void},), c._cursor)
+
+    (dict(BSONObject(_bson)), errno)
+end
+
+
+## Private Methods ##
+
+function destroy(cursor::MongoCursor)
+    errno = ccall((:mongo_cursor_destroy, MONGO_LIB), Int32, (Ptr{Void},), cursor._cursor)
+    if errno == MONGO_ERROR
+        error("Unable to destroy mongo cursor – mongo_cursor_destroy() failed")
+    end
+end
+
+function reset(cursor::MongoCursor)
+    ccall((:mongo_cursor_init, MONGO_LIB), Void,
+      (Ptr{Void}, Ptr{Void}, Ptr{Uint8}),
+      cursor._cursor, cursor.client._mongo, bytestring(cursor.namespace))
+end
+
+module SVM
+
+using StatsBase
+import StatsBase: predict
+
+export svm, cddual, pegasos, predict
+
+type SVMFit
+    w::Vector{Float64}
+    pass::Int
+    converged::Bool
+end
+
+function Base.show(io::IO, fit::SVMFit)
+    @printf(io, "Fitted linear SVM\n")
+    @printf(io, " * Non-zero weights: %d\n", countnz(fit.w))
+    @printf(io, " * Iterations: %d\n", fit.pass)
+    @printf(io, " * Converged: %s\n", string(fit.converged))
+end
+
+function predict{T<:Real}(fit::SVMFit, X::AbstractMatrix{T})
+    n, l = size(X)
+    preds = Array{Float64,1}(l)
+    for i in 1:l
+        tmp = 0.0
+        for j in 1:n
+            tmp += fit.w[j] * X[j, i]
+        end
+        preds[i] = sign(tmp)
+    end
+    return preds
+end
+
+include("pegasos.jl")
+include("cddual.jl")
+
+function svm{T<:Real}(X::AbstractMatrix{T},
+                      Y::AbstractVector{T};
+                      k::Integer = 5,
+                      lambda::Real = 0.1,
+                      maxpasses::Integer = 100)
+    pegasos(X, Y, k = k, lambda = lambda, maxpasses = maxpasses)
+end
+
+end # module

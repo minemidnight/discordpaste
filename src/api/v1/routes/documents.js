@@ -1,5 +1,7 @@
 const router = module.exports = express.Router(); // eslint-disable-line new-cap
 const shortid = require("shortid");
+const { classify } = require(`${__dirname}/../../../classify/index.js`);
+const validLang = require(`${__dirname}/../../../classify/validLang.js`);
 
 // POST /documents (create document)
 router.post("/", async (req, res) => {
@@ -10,8 +12,12 @@ router.post("/", async (req, res) => {
 	} else if(content.length >= 100000) {
 		res.status(400).json({ message: "Content over 100,000 characters" }).end();
 	} else {
+		let lang = req.headers.pastelanguage;
+		if(lang && validLang(lang)) lang = validLang(lang);
+		else lang = classify(content);
+
+		let insertion = { id, content, possibleLanguage: lang };
 		let id = shortid.generate();
-		let insertion = { id, content };
 		await r.table("documents").insert(insertion).run();
 		res.status(201).json(insertion).end();
 	}

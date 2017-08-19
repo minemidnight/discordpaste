@@ -1,0 +1,780 @@
+module avr_interface #(
+    parameter CLK_RATE = 50000000,
+    parameter SERIAL_BAUD_RATE = 500000
+  )(
+    input clk,
+    input rst,
+    
+    // cclk, or configuration clock is used when the FPGA is begin configured.
+    // The AVR will hold cclk high when it has finished initializing.
+    // It is important not to drive the lines connecting to the AVR
+    // until cclk is high for a short period of time to avoid contention.
+    input cclk,
+    
+    // AVR SPI Signals
+    output spi_miso,
+    input spi_mosi,
+    input spi_sck,
+    input spi_ss,
+    output [3:0] spi_channel,
+    
+    // AVR Serial Signals
+    output tx,
+    input rx,
+    
+    // ADC Interface Signals
+    input [3:0] channel,
+    output new_sample,
+    output [9:0] sample,
+    output [3:0] sample_channel,
+    
+    // Serial TX User Interface
+    input [7:0] tx_data,
+    input new_tx_data,
+    output tx_busy,
+    input tx_block,
+    
+    // Serial Rx User Interface
+    output [7:0] rx_data,
+    output new_rx_data
+  );
+  
+  wire ready;
+  wire n_rdy = !ready;
+  wire spi_done;
+  wire [7:0] spi_dout;
+  
+  wire tx_m;
+  wire spi_miso_m;
+  
+  reg byte_ct_d, byte_ct_q;
+  reg [9:0] sample_d, sample_q;
+  reg new_sample_d, new_sample_q;
+  reg [3:0] sample_channel_d, sample_channel_q;
+  reg [3:0] block_d, block_q;
+  reg busy_d, busy_q;
+  
+  // cclk_detector is used to detect when cclk is high signaling when
+  // the AVR is ready
+  cclk_detector #(.CLK_RATE(CLK_RATE)) cclk_detector (
+    .clk(clk),
+    .rst(rst),
+    .cclk(cclk),
+    .ready(ready)
+  );
+  
+  spi_slave spi_slave (
+    .clk(clk),
+    .rst(n_rdy),
+    .ss(spi_ss),
+    .mosi(spi_mosi),
+    .miso(spi_miso_m),
+    .sck(spi_sck),
+    .done(spi_done),
+    .din(8'hff),
+    .dout(spi_dout)
+  );
+  
+  // CLK_PER_BIT is the number of cycles each 'bit' lasts for
+  // rtoi converts a 'real' number to an 'integer'
+  parameter CLK_PER_BIT = $rtoi($ceil(CLK_RATE/SERIAL_BAUD_RATE));
+  
+  serial_rx #(.CLK_PER_BIT(CLK_PER_BIT)) serial_rx (
+    .clk(clk),
+    .rst(n_rdy),
+    .rx(rx),
+    .data(rx_data),
+    .new_data(new_rx_data)
+  );
+  
+  serial_tx #(.CLK_PER_BIT(CLK_PER_BIT)) serial_tx (
+    .clk(clk),
+    .rst(n_rdy),
+    .tx(tx_m),
+    .block(busy_q),
+    .busy(tx_busy),
+    .data(tx_data),
+    .new_data(new_tx_data)
+  );
+  
+  // Output declarations
+  assign new_sample = new_sample_q;
+  assign sample = sample_q;
+  assign sample_channel = sample_channel_q;
+  
+  // these signals connect to the AVR and should be Z when the AVR isn't ready
+  assign spi_channel = ready ? channel : 4'bZZZZ;
+  assign spi_miso = ready && !spi_ss ? spi_miso_m : 1'bZ;
+  assign tx = ready ? tx_m : 1'bZ;
+  
+  always @(*) begin
+    byte_ct_d = byte_ct_q;
+    sample_d = sample_q;
+    new_sample_d = 1'b0;
+    sample_channel_d = sample_channel_q;
+
+    busy_d = busy_q;
+    block_d = {block_q[2:0], tx_block};
+
+    if (block_q[3] ^ block_q[2])
+      busy_d = 1'b0;
+
+    if (!tx_busy && new_tx_data)
+      busy_d = 1'b1;
+    
+    if (spi_ss) begin // device is not selected
+      byte_ct_d = 1'b0;
+    end
+    
+    if (spi_done) begin // sent/received data from SPI
+      if (byte_ct_q == 1'b0) begin
+        sample_d[7:0] = spi_dout; // first byte is the 8 LSB of the sample
+        byte_ct_d = 1'b1;
+      end else begin
+        sample_d[9:8] = spi_dout[1:0]; // second byte is the channel 2 MSB of the sample
+        sample_channel_d = spi_dout[7:4]; // and the channel that was sampled
+        byte_ct_d = 1'b1; // slave-select must be brought high before the next transfer
+        new_sample_d = 1'b1;
+      end
+    end
+  end
+  
+  always @(posedge clk) begin
+    if (n_rdy) begin
+      byte_ct_q <= 1'b0;
+      sample_q <= 10'b0;
+      new_sample_q <= 1'b0;
+    end else begin
+      byte_ct_q <= byte_ct_d;
+      sample_q <= sample_d;
+      new_sample_q <= new_sample_d;
+    end
+    
+    block_q <= block_d;
+    busy_q <= busy_d;
+    sample_channel_q <= sample_channel_d;
+  end
+  
+endmodule
+
+module serial_rx #(
+        parameter CLK_PER_BIT = 50
+    )(
+        input clk,
+        input rst,
+        input rx,
+        output [7:0] data,
+        output new_data
+    );
+
+    // clog2 is 'ceiling of log base 2' which gives you the number of bits needed to store a value
+    parameter CTR_SIZE = $clog2(CLK_PER_BIT);
+
+    localparam STATE_SIZE = 2;
+    localparam IDLE = 2'd0,
+    WAIT_HALF = 2'd1,
+    WAIT_FULL = 2'd2,
+    WAIT_HIGH = 2'd3;
+
+    reg [CTR_SIZE-1:0] ctr_d, ctr_q;
+    reg [2:0] bit_ctr_d, bit_ctr_q;
+    reg [7:0] data_d, data_q;
+    reg new_data_d, new_data_q;
+    reg [STATE_SIZE-1:0] state_d, state_q = IDLE;
+    reg rx_d, rx_q;
+
+    assign new_data = new_data_q;
+    assign data = data_q;
+
+    always @(*) begin
+        rx_d = rx;
+        state_d = state_q;
+        ctr_d = ctr_q;
+        bit_ctr_d = bit_ctr_q;
+        data_d = data_q;
+        new_data_d = 1'b0;
+
+        case (state_q)
+            IDLE: begin
+                bit_ctr_d = 3'b0;
+                ctr_d = 1'b0;
+                if (rx_q == 1'b0) begin
+                    state_d = WAIT_HALF;
+                end
+            end
+            WAIT_HALF: begin
+                ctr_d = ctr_q + 1'b1;
+                if (ctr_q == (CLK_PER_BIT >> 1)) begin
+                    ctr_d = 1'b0;
+                    state_d = WAIT_FULL;
+                end
+            end
+            WAIT_FULL: begin
+                ctr_d = ctr_q + 1'b1;
+                if (ctr_q == CLK_PER_BIT - 1) begin
+                    data_d = {rx_q, data_q[7:1]};
+                    bit_ctr_d = bit_ctr_q + 1'b1;
+                    ctr_d = 1'b0;
+                    if (bit_ctr_q == 3'd7) begin
+                        state_d = WAIT_HIGH;
+                        new_data_d = 1'b1;
+                    end
+                end
+            end
+            WAIT_HIGH: begin
+                if (rx_q == 1'b1) begin
+                    state_d = IDLE;
+                end
+            end
+            default: begin
+                state_d = IDLE;
+            end
+        endcase
+
+    end
+
+    always @(posedge clk) begin
+        if (rst) begin
+            ctr_q <= 1'b0;
+            bit_ctr_q <= 3'b0;
+            new_data_q <= 1'b0;
+            state_q <= IDLE;
+        end else begin
+            ctr_q <= ctr_d;
+            bit_ctr_q <= bit_ctr_d;
+            new_data_q <= new_data_d;
+            state_q <= state_d;
+        end
+
+        rx_q <= rx_d;
+        data_q <= data_d;
+    end
+
+endmodule
+
+module spi_slave(
+    input clk,
+    input rst,
+    input ss,
+    input mosi,
+    output miso,
+    input sck,
+    output done,
+    input [7:0] din,
+    output [7:0] dout
+    );
+
+reg mosi_d, mosi_q;
+reg ss_d, ss_q;
+reg sck_d, sck_q;
+reg sck_old_d, sck_old_q;
+reg [7:0] data_d, data_q;
+reg done_d, done_q;
+reg [2:0] bit_ct_d, bit_ct_q;
+reg [7:0] dout_d, dout_q;
+reg miso_d, miso_q;
+
+assign miso = miso_q;
+assign done = done_q;
+assign dout = dout_q;
+
+always @(*) begin
+    ss_d = ss;
+    mosi_d = mosi;
+    miso_d = miso_q;
+    sck_d = sck;
+    sck_old_d = sck_q;
+    data_d = data_q;
+    done_d = 1'b0;
+    bit_ct_d = bit_ct_q;
+    dout_d = dout_q;
+
+    if (ss_q) begin
+        bit_ct_d = 3'b0;
+        data_d = din;
+        miso_d = data_q[7];
+    end else begin
+        if (!sck_old_q && sck_q) begin // rising edge
+            data_d = {data_q[6:0], mosi_q};
+            bit_ct_d = bit_ct_q + 1'b1;
+            if (bit_ct_q == 3'b111) begin
+                dout_d = {data_q[6:0], mosi_q};
+                done_d = 1'b1;
+                data_d = din;
+            end
+        end else if (sck_old_q && !sck_q) begin // falling edge
+            miso_d = data_q[7];
+        end
+    end
+end
+
+always @(posedge clk) begin
+    if (rst) begin
+        done_q <= 1'b0;
+        bit_ct_q <= 3'b0;
+        dout_q <= 8'b0;
+        miso_q <= 1'b1;
+    end else begin
+        done_q <= done_d;
+        bit_ct_q <= bit_ct_d;
+        dout_q <= dout_d;
+        miso_q <= miso_d;
+    end
+
+    sck_q <= sck_d;
+    mosi_q <= mosi_d;
+    ss_q <= ss_d;
+    data_q <= data_d;
+    sck_old_q <= sck_old_d;
+
+end
+
+
+endmodule
+
+`timescale 1 ns/100 ps
+// Version: v11.1 11.1.0.14
+
+
+module p3_fifo(
+       DATA,
+       Q,
+       WE,
+       RE,
+       WCLOCK,
+       RCLOCK,
+       FULL,
+       EMPTY,
+       RESET,
+       AEMPTY,
+       AFULL
+    );
+input  [16:0] DATA;
+output [16:0] Q;
+input  WE;
+input  RE;
+input  WCLOCK;
+input  RCLOCK;
+output FULL;
+output EMPTY;
+input  RESET;
+output AEMPTY;
+output AFULL;
+
+    wire WEBP, RESETP, WRITE_FSTOP_ENABLE, WRITE_ENABLE_I, 
+        READ_ESTOP_ENABLE, READ_ENABLE_I, \FULLX_I[0] , \EMPTYX_I[0] , 
+        \AFULLX_I[0] , \AEMPTYX_I[0] , \FULLX_I[1] , \EMPTYX_I[1] , 
+        \AFULLX_I[1] , \AEMPTYX_I[1] , VCC, GND;
+    wire GND_power_net1;
+    wire VCC_power_net1;
+    assign GND = GND_power_net1;
+    assign VCC = VCC_power_net1;
+    
+    OR2 OR2_EMPTY (.A(\EMPTYX_I[0] ), .B(\EMPTYX_I[1] ), .Y(EMPTY));
+    NAND2A WRITE_AND (.A(WEBP), .B(WRITE_FSTOP_ENABLE), .Y(
+        WRITE_ENABLE_I));
+    OR2 OR2_FULL (.A(\FULLX_I[0] ), .B(\FULLX_I[1] ), .Y(FULL));
+    OR2 OR2_AEMPTY (.A(\AEMPTYX_I[0] ), .B(\AEMPTYX_I[1] ), .Y(AEMPTY));
+    OR2 OR2_AFULL (.A(\AFULLX_I[0] ), .B(\AFULLX_I[1] ), .Y(AFULL));
+    NAND2 READ_ESTOP_GATE (.A(EMPTY), .B(VCC), .Y(READ_ESTOP_ENABLE));
+    INV RESETBUBBLEA (.A(RESET), .Y(RESETP));
+    NAND2 WRITE_FSTOP_GATE (.A(FULL), .B(VCC), .Y(WRITE_FSTOP_ENABLE));
+    AND2 READ_AND (.A(RE), .B(READ_ESTOP_ENABLE), .Y(READ_ENABLE_I));
+    FIFO4K18 \FIFOBLOCK[0]  (.AEVAL11(GND), .AEVAL10(GND), .AEVAL9(GND)
+        , .AEVAL8(GND), .AEVAL7(GND), .AEVAL6(GND), .AEVAL5(GND), 
+        .AEVAL4(GND), .AEVAL3(VCC), .AEVAL2(GND), .AEVAL1(GND), 
+        .AEVAL0(GND), .AFVAL11(GND), .AFVAL10(GND), .AFVAL9(GND), 
+        .AFVAL8(GND), .AFVAL7(GND), .AFVAL6(GND), .AFVAL5(GND), 
+        .AFVAL4(VCC), .AFVAL3(GND), .AFVAL2(GND), .AFVAL1(GND), 
+        .AFVAL0(GND), .WD17(GND), .WD16(GND), .WD15(GND), .WD14(GND), 
+        .WD13(GND), .WD12(GND), .WD11(GND), .WD10(GND), .WD9(GND), 
+        .WD8(DATA[8]), .WD7(DATA[7]), .WD6(DATA[6]), .WD5(DATA[5]), 
+        .WD4(DATA[4]), .WD3(DATA[3]), .WD2(DATA[2]), .WD1(DATA[1]), 
+        .WD0(DATA[0]), .WW0(VCC), .WW1(VCC), .WW2(GND), .RW0(VCC), 
+        .RW1(VCC), .RW2(GND), .RPIPE(GND), .WEN(WRITE_ENABLE_I), .REN(
+        READ_ENABLE_I), .WBLK(GND), .RBLK(GND), .WCLK(WCLOCK), .RCLK(
+        RCLOCK), .RESET(RESETP), .ESTOP(VCC), .FSTOP(VCC), .RD17(), 
+        .RD16(), .RD15(), .RD14(), .RD13(), .RD12(), .RD11(), .RD10(), 
+        .RD9(), .RD8(Q[8]), .RD7(Q[7]), .RD6(Q[6]), .RD5(Q[5]), .RD4(
+        Q[4]), .RD3(Q[3]), .RD2(Q[2]), .RD1(Q[1]), .RD0(Q[0]), .FULL(
+        \FULLX_I[0] ), .AFULL(\AFULLX_I[0] ), .EMPTY(\EMPTYX_I[0] ), 
+        .AEMPTY(\AEMPTYX_I[0] ));
+    FIFO4K18 \FIFOBLOCK[1]  (.AEVAL11(GND), .AEVAL10(GND), .AEVAL9(GND)
+        , .AEVAL8(GND), .AEVAL7(GND), .AEVAL6(GND), .AEVAL5(GND), 
+        .AEVAL4(GND), .AEVAL3(VCC), .AEVAL2(GND), .AEVAL1(GND), 
+        .AEVAL0(GND), .AFVAL11(GND), .AFVAL10(GND), .AFVAL9(GND), 
+        .AFVAL8(GND), .AFVAL7(GND), .AFVAL6(GND), .AFVAL5(GND), 
+        .AFVAL4(VCC), .AFVAL3(GND), .AFVAL2(GND), .AFVAL1(GND), 
+        .AFVAL0(GND), .WD17(GND), .WD16(GND), .WD15(GND), .WD14(GND), 
+        .WD13(GND), .WD12(GND), .WD11(GND), .WD10(GND), .WD9(GND), 
+        .WD8(GND), .WD7(DATA[16]), .WD6(DATA[15]), .WD5(DATA[14]), 
+        .WD4(DATA[13]), .WD3(DATA[12]), .WD2(DATA[11]), .WD1(DATA[10]), 
+        .WD0(DATA[9]), .WW0(VCC), .WW1(VCC), .WW2(GND), .RW0(VCC), 
+        .RW1(VCC), .RW2(GND), .RPIPE(GND), .WEN(WRITE_ENABLE_I), .REN(
+        READ_ENABLE_I), .WBLK(GND), .RBLK(GND), .WCLK(WCLOCK), .RCLK(
+        RCLOCK), .RESET(RESETP), .ESTOP(VCC), .FSTOP(VCC), .RD17(), 
+        .RD16(), .RD15(), .RD14(), .RD13(), .RD12(), .RD11(), .RD10(), 
+        .RD9(), .RD8(), .RD7(Q[16]), .RD6(Q[15]), .RD5(Q[14]), .RD4(
+        Q[13]), .RD3(Q[12]), .RD2(Q[11]), .RD1(Q[10]), .RD0(Q[9]), 
+        .FULL(\FULLX_I[1] ), .AFULL(\AFULLX_I[1] ), .EMPTY(
+        \EMPTYX_I[1] ), .AEMPTY(\AEMPTYX_I[1] ));
+    INV WEBUBBLEA (.A(WE), .Y(WEBP));
+    GND GND_power_inst1 (.Y(GND_power_net1));
+    VCC VCC_power_inst1 (.Y(VCC_power_net1));
+    
+endmodule
+
+module reset_block(
+    clk, async_rst_i, rst_i, rst_o
+  );
+  parameter DELAY = 10;
+  parameter WIDTH = 50;
+  input  clk;
+  input  async_rst_i;
+  input  rst_i;
+  output rst_o;
+
+  reg [31:0] delay_counter;
+  reg [31:0] width_counter;
+
+  reg rst_o;
+
+  always @(posedge clk or posedge async_rst_i) begin
+    if (async_rst_i) begin
+      delay_counter<=32'b0;
+      width_counter<=32'b0;
+      rst_o <= 1'b0;
+`ifdef DEBUG
+      $display("rb: got async rst");
+`endif
+    end else begin
+      rst_o <= (width_counter < WIDTH && delay_counter >= DELAY);
+`ifdef SIMULATION
+      /* fake initialization */
+      if (delay_counter === 32'hxxxx_xxxx) begin
+        delay_counter <= 32'b0;
+      end else if (width_counter === 32'hxxxx_xxxx) begin
+        width_counter <= 32'b0;
+      end else
+`endif
+      if (delay_counter < DELAY) begin
+        delay_counter<=delay_counter + 1;
+      end else if (width_counter < WIDTH) begin
+        width_counter<=width_counter + 1;
+      end else if (rst_i == 1'b1) begin
+        delay_counter<=32'b0;
+        width_counter<=32'b0;
+      end
+    end
+  end
+
+endmodule
+
+
+`timescale 1ns / 1ps
+module adsr_mngt(
+    input clk,
+    input rst,
+    input new_sample,
+    input new_note_pulse,
+    input release_note_pulse,
+    input [17:0] sustain_value,
+    output reg [17:0] volume_d,
+    input [17:0] volume,
+    output reg [4:0] state
+    );
+
+`define ATTACK 3'd1
+`define DECAY 3'd2
+`define SUSTAIN 3'd3
+`define RELEASE 3'd4
+`define BLANK 3'd5
+
+`define VOLUME_RESET 18'h00000
+//`define VOLUME_RESET 18'h00800
+//`define VOLUME_MAX 18'h01000
+`define VOLUME_MAX 18'h1FFFF
+
+`define VOLUME_SUSTAIN 18'h000C00
+
+reg latch_new_note;
+reg latch_release_note;
+
+always @(posedge clk)
+if (rst==1'b1) begin
+  latch_new_note <= 1'b0;
+  latch_release_note <= 1'b0;
+end
+else begin
+  if (new_note_pulse == 1'b1)
+    latch_new_note <= 1'b1;
+  if (release_note_pulse== 1'b1)
+    latch_release_note <= 1'b1; 
+	 
+  if (state[2:0] == `ATTACK && latch_new_note == 1'b1)
+    latch_new_note <= 1'b0;
+  if((state[2:0] == `RELEASE || state[2:0] == `BLANK) && 
+     latch_release_note == 1'b1)
+    latch_release_note <= 1'b0;
+
+end
+
+
+
+always @(posedge clk) begin
+  if (rst== 1'b1) begin
+    state <= `BLANK;
+    volume_d <= `VOLUME_RESET;
+  end
+  else
+    begin	
+    if (new_sample == 1'b1) begin
+      volume_d <= volume;
+      case (state[2:0])
+	`BLANK: 
+	begin
+	  if (latch_new_note == 1'b1)
+	    state[2:0] <= `ATTACK;
+	  else
+	    state[2:0] <= `BLANK;			 
+	 end
+	`ATTACK: 
+	begin
+          if ( `VOLUME_RESET <= volume && volume < `VOLUME_MAX )
+	    state[2:0] <= `ATTACK;
+	  else
+	    state[2:0] <= `DECAY;
+	end
+	`DECAY:
+	begin
+	  if (latch_new_note == 1'b1)
+	    state[2:0] <= `ATTACK;
+	  else if (latch_release_note == 1'b1)
+	    state[2:0] <= `RELEASE;
+	  else if (volume > sustain_value)
+	    state[2:0] <= `DECAY;
+	  else
+	    state[2:0] <= `SUSTAIN;
+	end
+	`SUSTAIN:
+	begin
+	if (latch_new_note == 1'b1)
+	  state[2:0] <= `ATTACK;
+	else if (latch_release_note == 1'b1)
+	  state[2:0] <= `RELEASE;
+	else
+	  state[2:0]<= `SUSTAIN;
+	end				
+	`RELEASE:
+	begin
+	  if (latch_new_note == 1'b1)
+	    state[2:0] <= `ATTACK;
+	  else if (volume > `VOLUME_RESET && volume[17] == 1'b0)
+	    state[2:0] <= `RELEASE;
+	  else 
+	    state[2:0] <= `BLANK;
+	end
+      endcase
+    end
+  state[3] <= latch_new_note;
+  state[4] <= latch_release_note;
+  end
+end
+
+
+endmodule
+
+`timescale 1ns / 1ps
+module channel_mixer(
+    input clk,
+    input rst,
+    input calcul_en,
+    input [17:0] ch0_sound,
+    input [17:0] ch1_sound,
+    input [17:0] ch2_sound,
+    input [17:0] ch3_sound,
+    input [17:0] ch4_sound,
+    input [17:0] ch5_sound,
+    input [17:0] ch6_sound,
+    input [17:0] ch7_sound,
+    input [17:0] ch8_sound,
+    input [17:0] ch9_sound,
+    input [17:0] ch10_sound,
+    input [17:0] ch11_sound,
+    input [17:0] ch12_sound,
+    input [17:0] ch13_sound,
+    input [17:0] ch14_sound,
+    input [17:0] ch15_sound,
+    output reg [17:0] data_out,
+    output reg valid_out
+);
+
+/*
+ * Base on
+ * Viktor T. Toth - Mixing digital audio
+ * http://www.vttoth.com/CMS/index.php/technical-notes/68 
+ */
+
+
+reg [4:0] count;
+reg [17:0] inter_calcul;
+reg [17:0] A,B;
+wire [35:0] product;
+wire [18:0]const;
+assign const = 1<<18;
+wire [18:0] product_remove;
+
+wire [21:0] add_value =
+(count == 1) ? ((ch1_sound << 1) + (inter_calcul<<1)):
+(count == 2) ? ((ch2_sound << 1) + (inter_calcul<<1)):
+(count == 3) ? ((ch3_sound << 1) + (inter_calcul<<1)):
+(count == 4) ? ((ch4_sound << 1) + (inter_calcul<<1)):
+(count == 5) ? ((ch5_sound << 1) + (inter_calcul<<1)):
+(count == 6) ? ((ch6_sound << 1) + (inter_calcul<<1)):
+(count == 7) ? ((ch7_sound << 1) + (inter_calcul<<1)):
+(count == 8) ? ((ch8_sound << 1) + (inter_calcul<<1)):
+(count == 9) ? ((ch9_sound << 1) + (inter_calcul<<1)):
+(count == 10) ? ((ch10_sound << 1) + (inter_calcul<<1)):
+(count == 11) ? ((ch11_sound << 1) + (inter_calcul<<1)):
+(count == 12) ? ((ch12_sound << 1) + (inter_calcul<<1)):
+(count == 13) ? ((ch13_sound << 1) + (inter_calcul<<1)):
+(count == 14) ? ((ch14_sound << 1) + (inter_calcul<<1)):
+(count == 15) ? ((ch15_sound << 1) + (inter_calcul<<1)):
+21'h000000;
+
+
+
+assign product_remove = product[35:17];
+
+wire [30:0] calcul = add_value - product_remove - const;
+
+assign product = A * B;
+
+always @(posedge clk)
+if (rst == 1'b1) begin
+  count <= 5'h00;
+  inter_calcul <= 18'h00000;
+  valid_out <= 1'b0;
+  A <= 18'h00000;
+  B <= 18'h00000;
+  data_out <= 18'h00000;
+end
+else begin
+ if (calcul_en == 1'b1) begin
+   valid_out <= 1'b0;
+   count <= 5'h00;
+	data_out <= 18'h00000;
+	end
+ else
+   case (count)
+	5'd0 : begin
+	A <= ch0_sound;
+	B <= ch1_sound;
+	count <= count +1;
+	end
+	5'd1 : begin
+	B <= ch2_sound;
+	A <= calcul[17:0];
+	// A & inter_calcul have result of muxing 2 channel
+	count <= count +1;
+	end
+	5'd2 : begin
+	B <= ch3_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 3 channel
+	count <= count +1;
+	end
+	5'd3 : begin
+	B <= ch4_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 4 channel
+	count <= count +1;
+	end			
+	5'd4 : begin
+	B <= ch5_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 5 channel
+	count <= count +1;
+	end
+	5'd5 : begin
+	B <= ch6_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 6 channel
+	count <= count +1;
+	end
+	5'd6 : begin
+	B <= ch7_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 7 channel
+	count <= count +1;
+	end
+	5'd7 : begin
+	B <= ch8_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 8 channel
+	count <= count +1;
+	end
+	5'd8 : begin
+	B <= ch9_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 9 channel
+	count <= count +1;
+	end
+	5'd9 : begin
+	B <= ch10_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 10 channel
+	count <= count +1;
+	end
+	5'd10 : begin
+	B <= ch11_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 11 channel
+	count <= count +1;
+	end
+	5'd11 : begin
+	B <= ch12_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 12 channel
+	count <= count +1;
+	end
+	5'd12 : begin
+	B <= ch13_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 13 channel
+	count <= count +1;
+	end
+	5'd13 : begin
+	B <= ch14_sound;
+	A <= calcul[17:0];
+	count <= count +1;
+	end
+	5'd14 : begin
+	B <= ch15_sound;
+	A <= calcul[17:0];
+	// inter_calcul have result of muxing 15 channel
+	count <= count +1;
+	end
+	5'd15 : begin
+	A <= 17'h00000;
+	B <= 17'h00000;
+	data_out <= calcul[17:0];
+	valid_out <= 1'b1;
+	// inter_calcul have result of muxing 16 channel
+	count <= count +1;
+	end
+	5'd16 : begin
+	valid_out <= 1'b0;
+	count <= count +1;
+	end
+	default : 
+	begin
+	A <= 17'h00000;
+	B <= 17'h00000;
+	valid_out <= 1'b0;
+	end	  
+	endcase
+
+end
+
+endmodule

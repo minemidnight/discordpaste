@@ -1,0 +1,40 @@
+FROM ubuntu:12.04
+
+MAINTAINER Kimbro Staken version: 0.1
+
+RUN apt-get update && apt-get install -y apache2 && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV APACHE_RUN_USER www-data
+ENV APACHE_RUN_GROUP www-data
+ENV APACHE_LOG_DIR /var/log/apache2
+
+EXPOSE 80
+
+CMD ["/usr/sbin/apache2", "-D", "FOREGROUND"]
+
+FROM ubuntu
+MAINTAINER Kimbro Staken
+
+RUN apt-get install -y python-software-properties python
+RUN add-apt-repository ppa:chris-lea/node.js
+RUN echo "deb http://us.archive.ubuntu.com/ubuntu/ precise universe" >> /etc/apt/sources.list
+RUN apt-get update
+RUN apt-get install -y nodejs git
+RUN npm install -g docpad@6.44
+
+CMD ["/bin/bash"] 
+
+FROM ubuntu
+MAINTAINER Kimbro Staken
+
+RUN apt-get install -y software-properties-common python
+RUN add-apt-repository ppa:chris-lea/node.js
+RUN echo "deb http://us.archive.ubuntu.com/ubuntu/ precise universe" >> /etc/apt/sources.list
+RUN apt-get update
+RUN apt-get install -y nodejs
+#RUN apt-get install -y nodejs=0.6.12~dfsg1-1ubuntu1
+RUN mkdir /var/www
+
+ADD app.js /var/www/app.js
+
+CMD ["/usr/bin/node", "/var/www/app.js"] 
