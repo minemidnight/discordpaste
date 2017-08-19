@@ -31,7 +31,10 @@ function classify(code) {
 	let totals = {};
 	Object.keys(langData).forEach(lang => {
 		totals[lang] = Math.log(trains[lang]) +
-			getWords(code).map(word => Math.log(langData[lang][word])).reduce((a, b) => a + b, 0);
+			getWords(code).map(word => {
+				if(langData[lang][word]) return Math.log(langData[lang][word]);
+				else return 0;
+			}).reduce((a, b) => a + b, 0);
 	});
 
 	return Object.keys(totals).reduce((a, b) => totals[a] > totals[b] ? a : b);
