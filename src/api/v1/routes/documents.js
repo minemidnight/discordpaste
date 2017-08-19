@@ -4,7 +4,7 @@ const { classify } = require(`${__dirname}/../../../classify/index.js`);
 const validLang = require(`${__dirname}/../../../classify/validLang.js`);
 
 // POST /documents (create document)
-router.post("/", async (req, res) => {
+router.post("/", app.ratelimit(5, 5), async (req, res) => {
 	let content = req.body.content;
 
 	if(!content) {
@@ -25,7 +25,7 @@ router.post("/", async (req, res) => {
 });
 
 // GET /documents/id (get document)
-router.get("/:id", async (req, res) => {
+router.get("/:id", app.ratelimit(1, 2.5), async (req, res) => {
 	let id = req.params.id;
 	let document = await r.table("documents").get(id).run();
 	if(document) {
