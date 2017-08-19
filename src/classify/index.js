@@ -1,5 +1,6 @@
 const langData = {}, trains = {};
 const fs = Promise.promisifyAll(require("fs"));
+const validLang = require(`${__dirname}/validLang.js`);
 
 async function init() {
 	let files = await fs.readdirAsync(`${__dirname}/files`);
@@ -40,7 +41,7 @@ function classify(code) {
 			}).reduce((a, b) => a + b, 0);
 	});
 
-	return Object.keys(totals).reduce((a, b) => totals[a] > totals[b] ? a : b);
+	return validLang(Object.keys(totals).reduce((a, b) => totals[a] > totals[b] ? a : b)).extension;
 }
 
 module.exports = { train, classify };

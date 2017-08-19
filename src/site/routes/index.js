@@ -12,6 +12,7 @@ router.get("/:id", async (req, res) => {
 		lang = id.substring(id.indexOf(".") + 1).toLowerCase();
 		id = id.substring(0, id.indexOf("."));
 		lang = validLang(lang);
+		if(lang) lang = lang.codeMirror;
 	}
 
 	try {

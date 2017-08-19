@@ -15,7 +15,7 @@ router.post("/", async (req, res) => {
 		let id = shortid.generate();
 
 		let lang = req.headers.pastelanguage;
-		if(lang && validLang(lang)) lang = validLang(lang);
+		if(lang && validLang(lang)) lang = validLang(lang).extension;
 		else lang = classify(content);
 
 		let insertion = { id, content, possibleLanguage: lang };
