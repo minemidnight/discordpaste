@@ -21,7 +21,7 @@
 
 	window.options = {
 		lineNumbers: true,
-		indentWithTabs: localStorage.tabType === "hard",
+		indentWithTabs: localStorage.tabType ? localStorage.tabType === "hard" : true,
 		tabSize: localStorage.tabSize ? parseInt(localStorage.tabSize) : 2,
 		autofocus: true,
 		theme: localStorage.theme || "pastel-on-dark",

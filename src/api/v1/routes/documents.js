@@ -19,6 +19,7 @@ router.post("/", app.ratelimit(5, 5), async (req, res) => {
 		else lang = classify(content);
 
 		let insertion = { id, content, possibleLanguage: lang };
+		console.log(`New paste (${id}) - Language: ${lang}`);
 		await r.table("documents").insert(insertion).run();
 		res.status(201).json(insertion).end();
 	}
