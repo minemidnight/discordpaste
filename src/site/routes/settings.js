@@ -9,7 +9,12 @@ router.post("/", async (req, res) => {
 	} else if(Object.keys(req.body).some(key => !~keys.indexOf(key))) {
 		res.status(400).send({ message: "Invalid keys" }).end();
 	} else {
-		await r.table("settings").insert({ id: req.user.id, settings: req.body }).run();
+		if(req.user.options) {
+			await r.table("settings").insert({ id: req.user.id, settings: req.body }).run();
+		} else {
+			await r.table("settings").get(req.user.id).update({ settings: req.body }).run();
+		}
+
 		res.status(204).end();
 	}
 });
