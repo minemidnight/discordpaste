@@ -30,7 +30,8 @@ $(window).on("load", () => {
 	$("#close").click(toggleOptions);
 
 	$("#save_options").click(async () => {
-		options.mode = $("[name=mode]").val();
+		options.mode = $("[name=mode]").find(":checked").attr("codemirrormode");
+		options.modeExt = $("[name=mode]").val();
 		options.tabType = $("[name=tabType]").val();
 		options.tabSize = parseInt($("[name=tabSize]").val());
 		options.theme = $("[name=theme]").val();
@@ -48,7 +49,7 @@ $(window).on("load", () => {
 			await superagent.post(`${window.location.origin}/settings`).send(settings);
 			window.location.reload();
 		} else {
-			options.mode = $("[name=mode]").attr("codemirrormode");
+			options.mode = $("[name=mode]").find(":checked").attr("codemirrormode");
 			options.modeExt = $("[name=mode]").val();
 			Object.keys(settings).forEach(setting => localStorage[setting] = settings[setting]);
 			window.location.reload();

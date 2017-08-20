@@ -29,7 +29,7 @@
 		readOnly: {{#if view}}true{{else}}false{{/if}}
 	}
 
-	if(options.readOnly && localStorage.mode) {
+	if(!options.readOnly && localStorage.mode) {
 		options.mode = localStorage.mode;
 	}
 

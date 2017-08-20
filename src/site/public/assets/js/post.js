@@ -8,6 +8,7 @@ $(window).on("load", () => {
 		let content = editor.getValue();
 		if(!content) return;
 
+		let lang = localStorage.modeExt;
 		let { body: { id, possibleLanguage } } = await superagent
 			.post(`${window.location.origin}/api/v1/documents`).send({ content });
 

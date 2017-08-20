@@ -1,5 +1,5 @@
 const router = module.exports = express.Router(); // eslint-disable-line new-cap
-const keys = ["mode", "tabType", "tabSize", "theme", "keyMap"];
+const keys = ["mode", "modeExt", "tabType", "tabSize", "theme", "keyMap"];
 
 router.post("/", async (req, res) => {
 	if(!req.user) {
