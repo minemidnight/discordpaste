@@ -55,14 +55,14 @@
 		}
 	}
 
-	if(CodeMirror.toUse === "htmlembbeded" || codeMirror.toUse === "htmlmixed") {
+	if(options.mode === "htmlembbeded" || options.mode === "htmlmixed") {
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/xml/xml.min.js").appendTo("head");
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/javascript/javascript.min.js").appendTo("head");
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/css/css.min.js").appendTo("head");
-	} else if(CodeMirror.toUse === "skript") {
+	} else if(options.mode === "skript") {
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/mode/simple.min.js").appendTo("head");
 		$("<script>").attr("src", "{{baseURL}}/assets/js/skriptMode.js").appendTo("head");
-	} else if(CodeMirror.toUse !== "text") {
+	} else if(options.mode !== "text") {
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/{{lang}}/{{lang}}.min.js").appendTo("head");
 	}
 </script>
