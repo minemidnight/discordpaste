@@ -13,6 +13,7 @@
 <script>
 	{{#if user}}window.user = true{{/if}}
 	{{#if options.mode}}localStorage.mode = "{{options.mode}}"{{/if}}
+	{{#if options.modeExt}}localStorage.modeExt = "{{options.modeExt}}"{{/if}}
 	{{#if options.tabType}}localStorage.tabType = "{{options.tabType}}"{{/if}}
 	{{#if options.tabSize}}localStorage.tabSize = "{{options.tabSize}}"{{/if}}
 	{{#if options.theme}}localStorage.theme = "{{options.theme}}"{{/if}}
@@ -31,6 +32,8 @@
 
 	if(!options.readOnly && localStorage.mode) {
 		options.mode = localStorage.mode;
+	} else if({{#if lang}}true{{else}}false{{/if}}) {
+		options.mode = "{{lang}}";
 	}
 
 	if(localStorage.tabType === "space") {
@@ -65,7 +68,7 @@
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/mode/simple.min.js").appendTo("head");
 		$("<script>").attr("src", "{{baseURL}}/assets/js/skriptMode.js").appendTo("head");
 	} else if(options.mode !== "text") {
-		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/{{lang}}/{{lang}}.min.js").appendTo("head");
+		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/" + options.mode "/" + options.mode + ".min.js").appendTo("head");
 	}
 </script>
 
