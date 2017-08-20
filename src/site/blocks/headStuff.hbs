@@ -37,7 +37,7 @@
 		options.mode = "{{lang}}";
 	}
 
-	if(theme !== "default") {
+	if(options.theme !== "default") {
 		$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/theme/" + options.theme + ".css").appendTo("head");
 	}
 	
