@@ -11,11 +11,12 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/simplescrollbars.min.css" />
 
 <script>
+	{{#if user}}window.user = true{{/if}}
 	{{#if options.mode}}localStorage.mode = "{{options.mode}}"{{/if}}
-	{{#if options.tabtype}}localStorage.tabType = "{{options.tabtype}}"{{/if}}
-	{{#if options.tabsize}}localStorage.tabSize = "{{options.tabsize}}"{{/if}}
+	{{#if options.tabType}}localStorage.tabType = "{{options.tabType}}"{{/if}}
+	{{#if options.tabSize}}localStorage.tabSize = "{{options.tabSize}}"{{/if}}
 	{{#if options.theme}}localStorage.theme = "{{options.theme}}"{{/if}}
-	{{#if options.keymap}}localStorage.keymap = "{{options.keyMap}}"{{/if}}
+	{{#if options.keyMap}}localStorage.keymap = "{{options.keyMap}}"{{/if}}
 
 	window.options = {
 		lineNumbers: true,

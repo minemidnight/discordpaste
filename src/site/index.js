@@ -47,7 +47,10 @@ module.exports = async port => {
 
 	app.page = (req, page, context = {}) => {
 		context.baseURL = app.config.baseURL;
-		if(req.user) context.user = req.user;
+		if(req.user) {
+			context.user = req.user;
+			context.options = req.options;
+		}
 
 		for(let block in app.blocks) context[block] = handlebars.compile(app.blocks[block])(context);
 		return handlebars.compile(app.hbs[page])(context);
@@ -97,6 +100,7 @@ module.exports = async port => {
 				let token = JSON.parse(req.cookies.token);
 				req.token = token;
 				req.user = await req.discordInfo("users/@me");
+				req.options = await r.table("settings").get(req.user.id).run();
 			} catch(err) {
 				req.scriptAddition += `<script>document.cookie = "token=; expires=Thu, 01 Jan 1970 00:00:00 UTC"</script>`;
 			}

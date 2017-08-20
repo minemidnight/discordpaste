@@ -1,4 +1,5 @@
-/* globals Mousetrap options CodeMirror */
+/* globals Mousetrap options CodeMirror user */
+const superagent = require("superagent");
 $(window).on("load", () => {
 	const editor = window.editor = CodeMirror.fromTextArea($("#editor")[0], options);
 
@@ -27,6 +28,30 @@ $(window).on("load", () => {
 
 	$("#options_button").click(toggleOptions);
 	$("#close").click(toggleOptions);
+
+	$("#save_options").click(async () => {
+		let settings = {
+			mode: options.mode,
+			tabType: options.indentWithTabs ? "hard" : "space",
+			tabSize: options.tabSize,
+			theme: options.theme,
+			keyMap: options.keyMap
+		};
+
+		if(user) {
+			await superagent.post(`${window.location.origin}/settings`).send(settings);
+			window.location.reload();
+		} else {
+			Object.keys(settings).forEach(setting => localStorage[setting] = settings[setting]);
+			window.location.reload();
+		}
+	});
+
+	$(`[name=mode] [value=${options.mode}]`).attr("selected", "true");
+	$(`[name=tabType] [value=${options.indentWithTabs ? "hard" : "space"}]`).attr("selected", "true");
+	$(`[name=tabSize]`).attr("value", options.tabSize);
+	$(`[name=theme] [value=${options.theme}]`).attr("selected", "true");
+	$(`[name=keyMap] [value=${options.keyMap}]`).attr("selected", "true");
 });
 
 function toggleOptions() {

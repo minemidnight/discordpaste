@@ -21,6 +21,9 @@ module.exports = {
 			name: "documents",
 			primary: "id",
 			indexes: ["poster"]
+		}, {
+			name: "settings",
+			primary: "id"
 		}];
 
 		for(let table of tablesExpected) {

@@ -32,24 +32,24 @@
 
 	<nav id="options">
 		<h2>Options</h2>
-		<div id="container" style="margin:20px">
+		<div class="container" style="margin:20px">
 			<button id="close">&times;</button>
 			<p>Syntax Highlighting</p>
 			<select name="mode">
+				<option value="text">Plaintext</option>
 				{{#each modeList}}
 					<option value="{{this.extension}}">{{this.name}}</option>
 				{{/each}}
-				<option value="text" selected>Plaintext</option>
 			</select>
 
 			<p>Tab Type</p>
-			<select name="tabtype">
-				<option selected value="hard">Hard-Tabs</option>
+			<select name="tabType">
+				<option value="hard">Hard-Tabs</option>
 				<option value="space">Spaces</option>
 			</select>
 
 			<p>Tab Size</p>
-			<input name="tabsize" type="number" min="1" max="8" value="2" />
+			<input name="tabSize" type="number" min="1" max="8" />
 
 			<p>Theme</p>
 			<select name="theme">
@@ -86,7 +86,7 @@
 				<option value="panda-syntax">Panda Syntax</option>
 				<option value="paraiso-dark">Paraiso Dark</option>
 				<option value="paraiso-light">Paraiso Light</option>
-				<option value="pastel-on-dark" selected>Pastel on Dark</option>
+				<option value="pastel-on-dark">Pastel on Dark</option>
 				<option value="railscasts">Railscasts</option>
 				<option value="rubyblue">Ruby blue</option>
 				<option value="seti">Seti</option>
@@ -105,12 +105,14 @@
 			</select>
 
 			<p>Keymap</p>
-			<select name="keymap">
-				<option selected value="default">Default</option>
+			<select name="keyMap">
+				<option value="default">Default</option>
 				<option value="vim">VIM</option>
 				<option value="emacs">Emacs</option>
 				<option value="sublime">Sublime Text</option>
 			</select>
+
+			<button id="save_options">Save and Reload</button>
 		</div>
 	</nav>
 </body>
