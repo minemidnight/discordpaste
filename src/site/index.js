@@ -107,6 +107,7 @@ module.exports = async port => {
 				req.token = token;
 				req.user = await req.discordInfo("users/@me");
 				req.options = await r.table("settings").get(req.user.id).run();
+				if(req.options) req.options = req.options.settings;
 			} catch(err) {
 				req.scriptAddition += `<script>document.cookie = "token=; expires=Thu, 01 Jan 1970 00:00:00 UTC"</script>`;
 			}
