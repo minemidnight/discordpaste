@@ -9,7 +9,7 @@
 
 <script>
 	CodeMirror.toUse = "{{lang}}";
-	if(CodeMirror.toUse === "html") {
+	if(CodeMirror.toUse === "htmlembbeded" || codeMirror.toUse = "htmlmixed") {
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/xml/xml.min.js").appendTo("head");
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/javascript/javascript.min.js").appendTo("head");
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/css/css.min.js").appendTo("head");

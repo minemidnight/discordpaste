@@ -1,7 +1,7 @@
 const router = module.exports = express.Router(); // eslint-disable-line new-cap
 const shortid = require("shortid");
-const { classify } = require(`${__dirname}/../../../classify/index.js`);
-const validLang = require(`${__dirname}/../../../classify/validLang.js`);
+const { classify } = require(`${__dirname}/../../../misc/classify.js`);
+const validLang = require(`${__dirname}/../../../misc/validLang.js`);
 
 // POST /documents (create document)
 router.post("/", app.ratelimit(5, 5), async (req, res) => {

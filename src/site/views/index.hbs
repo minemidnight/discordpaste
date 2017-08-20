@@ -36,8 +36,11 @@
 			<button id="close">&times;</button>
 			<p>Syntax Highlighting</p>
 			<select>
-			<option value="javascript">JavaScript</option>
-		</select>
+				{{#each modeList}}
+					<option value="{{this.extension}}">{{this.name}}</option>
+				{{/each}}
+				{{#if currentLang}}<script>localStorage.mode = "{{currentLang}}"</script>{{/if}}
+			</select>
 		</div>
 	</nav>
 </body>
