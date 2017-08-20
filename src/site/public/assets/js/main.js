@@ -23,15 +23,16 @@ $(window).on("load", () => {
 	});
 
 	$("#options_button").click(toggleOptions);
+	$("#close").click(toggleOptions);
 });
 
 function toggleOptions() {
 	let open = $("#options").width();
 	if(!open) {
 		$("#options").css("width", "250px");
-		$("main").css("margin-left", "250px");
+		$("main").css("margin-right", "250px");
 	} else {
 		$("#options").css("width", 0);
-		$("main").css("margin-left", 0);
+		$("main").css("margin-right", 0);
 	}
 }

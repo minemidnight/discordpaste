@@ -95,8 +95,7 @@ body {
 }
 
 main {
-	transition: margin-left .5s;
-    padding: 20px;
+	transition: margin-right .5s;
 }
 
 @media screen and (min-width: 480px) {
