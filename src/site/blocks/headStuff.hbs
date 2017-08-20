@@ -21,12 +21,13 @@
 
 	window.options = {
 		lineNumbers: true,
-		indentWithTabs: true,
-		tabSize: 2,
+		indentWithTabs: localStorage.tabType === "hard",
+		tabSize: localStorage.tabSize ? parseInt(localStorage.tabSize) : 2,
 		autofocus: true,
-		theme: "pastel-on-dark",
+		theme: localStorage.theme || "pastel-on-dark",
 		mode: "text",
-		keyMap: "default",
+		keyMap: localStorage.keyMap || "default",
+		modeExt: localStorage.modeExt || "text",
 		readOnly: {{#if view}}true{{else}}false{{/if}}
 	}
 
@@ -36,28 +37,12 @@
 		options.mode = "{{lang}}";
 	}
 
-	if(localStorage.tabType === "space") {
-		options.indentWithTabs = false;
+	if(theme !== "default") {
+		$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/theme/" + options.theme + ".css").appendTo("head");
 	}
-
-	if(localStorage.tabSize) {
-		options.tabSize = parseInt(localStorage.tabSize);
-	}
-
-	if(localStorage.theme) {
-		options.theme = localStorage.theme;
-		if(options.theme !== "default") {
-			$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/theme/" + options.theme + ".min.css").appendTo("head");
-		}
-	} else {
-		$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/theme/pastel-on-dark.min.css").appendTo("head");
-	}
-
-	if(localStorage.keyMap) {
-		options.keyMap = localStorage.keyMap;
-		if(options.keyMap !== "default") {
+	
+	if(options.keyMap !== "default") {
 			$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/keymap/" + options.theme + ".min.js").appendTo("head");
-		}
 	}
 
 	if(options.mode === "htmlembbeded" || options.mode === "htmlmixed") {

@@ -55,7 +55,7 @@ $(window).on("load", () => {
 		}
 	});
 
-	$(`[name=mode] [value=${options.modeExt || options.mode}]`).attr("selected", "true");
+	$(`[name=mode] [value=${options.modeExt}]`).attr("selected", "true");
 	$(`[name=tabType] [value=${options.indentWithTabs ? "hard" : "space"}]`).attr("selected", "true");
 	$(`[name=tabSize]`).attr("value", options.tabSize);
 	$(`[name=theme] [value=${options.theme}]`).attr("selected", "true");
