@@ -12,7 +12,7 @@ const modeList = Object.keys(languages)
 	}));
 
 router.get("/", async (req, res) => {
-	res.status(200).send(await app.page(req, "index", { post: true, content: "", lang: "text", modeList })).end();
+	res.status(200).send(await app.page(req, "index", { post: true, lang: "text", modeList })).end();
 });
 
 router.get("/:id", async (req, res) => {
