@@ -1,15 +1,18 @@
+body {
+	font-family: Helvetica, sans-serif;
+}
+
 .CodeMirror {
 	height: 100vh;
 }
 
 #legend {
-	font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
 	position: fixed;
 	top: 1%;
 	left: 99%;
 	width: 225px;
 	margin-left: -225px;
-	z-index: 1000;
+	z-index: 5;
 }
 
 #header {
@@ -76,4 +79,28 @@ body {
 
 #footer {
 	display: none;
+}
+
+#options {
+	height: 100vh;
+	width: 0;
+	position: fixed;
+	z-index: 10;
+	top: 0;
+	right: 0;
+	background: #111111;
+	overflow-x: hidden;
+	padding-top: 60px;
+	transform: 0.5s;
+}
+
+main {
+	transition: margin-left .5s;
+    padding: 20px;
+}
+
+@media screen and (min-width: 480px) {
+    #legend {
+        width: 125px;
+    }
 }

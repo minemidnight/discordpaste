@@ -21,4 +21,17 @@ $(window).on("load", () => {
 		document.cookie = "token=; expires=Thu, 01 Jan 1970 00:00:00 UTC";
 		window.location.reload();
 	});
+
+	$("#options_button").click(toggleOptions);
 });
+
+function toggleOptions() {
+	let open = $("#options").width();
+	if(!open) {
+		$("#options").css("width", "250px");
+		$("main").css("margin-left", "250px");
+	} else {
+		$("#options").css("width", 0);
+		$("main").css("margin-left", 0);
+	}
+}

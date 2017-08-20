@@ -21,7 +21,7 @@
 			{{else}}
 				<button id="login" label="Sign in with Discord" shortcut="ctrl + l" class="nochange"><i class="fa fa-sign-in"></i></button>
 			{{/if}}
-			<button id="options" label="Options" shortcut="ctrl + ," class="nochange"><i class="fa fa-cog"></i></button>
+			<button id="options_button" label="Options" shortcut="ctrl + ," class="nochange"><i class="fa fa-cog"></i></button>
 		</div>
 		<div id="tooltips">
 			<div id="label"></div>
@@ -29,5 +29,12 @@
 		</div>
 	</div>
 
-	<textarea id="editor" spellcheck="false">{{content}}</textarea>
+	<main>
+		<textarea id="editor" spellcheck="false">{{content}}</textarea>
+	</main>
+
+	<nav id="options">
+		<h4>Options</h4>
+		<button onclick="toggleOptions()" style="position:absolute,top:0,right:25px,font-size:36px;margin-left:50px">&times;</button>
+	</nav>
 </body>
