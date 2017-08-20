@@ -5,15 +5,20 @@ let languageMap = Object.keys(languages)
 	.reduce((prev, key) => {
 		let data = languages[key];
 		data.extensions.forEach(ext => prev.exts[ext.substring(1)] = data.codemirrorMode);
-		prev.modes[data.codemirrorMode] = data.extensions[0].substring(1);
+		if(!prev.modes[data.codemirrorMode]) prev.modes[data.codemirrorMode] = data.extensions[0].substring(1);
 		return prev;
 	}, { modes: {}, exts: {} });
 
 module.exports = lang => {
-	let mapValue = languageMap.exts[lang], extension;
-	if(!mapValue && languageMap.modes[lang]) extension = languageMap.modes[lang];
-	else if(mapValue) extension = languageMap.modes[mapValue];
-	else return false;
+	let extension;
+	if(languageMap.ext[lang]) {
+		extension = lang;
+		lang = languageMap.ext[lang];
+	} else if(languageMap.modes[lang]) {
+		extension = languageMap.modes[lang];
+	} else {
+		return false;
+	}
 
 	return { codemirror: lang, extension };
 };
