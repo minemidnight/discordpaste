@@ -34,7 +34,7 @@ $(window).on("load", () => {
 		options.tabType = $("[name=tabType]").val();
 		options.tabSize = parseInt($("[name=tabSize]").val());
 		options.theme = $("[name=theme]").val();
-		options.mode = $("[name=keyMap]").val();
+		options.keyMap = $("[name=keyMap]").val();
 
 		let settings = {
 			mode: options.mode,
