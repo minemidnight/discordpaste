@@ -1,4 +1,5 @@
 const babelify = require("express-babelify-middleware"),
+	bodyParser = require("body-parser"),
 	cookieParser = require("cookie-parser"),
 	fs = require("fs"),
 	handlebars = require("handlebars"),
@@ -18,6 +19,8 @@ module.exports = async port => {
 		plugins: ["es6-promise"],
 		presets: ["es2016"]
 	}));
+	app.use(bodyParser.json());
+	app.use(bodyParser.urlencoded({ extended: false }));
 	app.use(express.static(`${__dirname}/public`));
 	app.use(cookieParser());
 
