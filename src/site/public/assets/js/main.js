@@ -30,6 +30,12 @@ $(window).on("load", () => {
 	$("#close").click(toggleOptions);
 
 	$("#save_options").click(async () => {
+		options.mode = $("[name=mode]").val();
+		options.tabType = $("[name=tabType]").val();
+		options.tabSize = parseInt($("[name=tabSize]").val());
+		options.theme = $("[name=theme]").val();
+		options.mode = $("[name=keyMap]").val();
+
 		let settings = {
 			mode: options.mode,
 			tabType: options.indentWithTabs ? "hard" : "space",
@@ -42,12 +48,14 @@ $(window).on("load", () => {
 			await superagent.post(`${window.location.origin}/settings`).send(settings);
 			window.location.reload();
 		} else {
+			options.mode = $("[name=mode]").attr("codemirrormode");
+			options.modeExt = $("[name=mode]").val();
 			Object.keys(settings).forEach(setting => localStorage[setting] = settings[setting]);
 			window.location.reload();
 		}
 	});
 
-	$(`[name=mode] [value=${options.mode}]`).attr("selected", "true");
+	$(`[name=mode] [value=${options.modeExt || options.mode}]`).attr("selected", "true");
 	$(`[name=tabType] [value=${options.indentWithTabs ? "hard" : "space"}]`).attr("selected", "true");
 	$(`[name=tabSize]`).attr("value", options.tabSize);
 	$(`[name=theme] [value=${options.theme}]`).attr("selected", "true");

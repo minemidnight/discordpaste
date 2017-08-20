@@ -5,7 +5,11 @@ const validLang = require(`${__dirname}/../../misc/validLang.js`);
 const languages = require(`${__dirname}/../../misc/languageMap.json`);
 const modeList = Object.keys(languages)
 	.filter(key => languages[key].codemirrorMode && languages[key].extensions)
-	.map(key => ({ extension: languages[key].extensions[0].substring(1), name: key }));
+	.map(key => ({
+		extension: languages[key].extensions[0].substring(1),
+		cmm: languages[key].codemirrorMode,
+		name: key
+	}));
 
 router.get("/", async (req, res) => {
 	res.status(200).send(await app.page(req, "index", { post: true, content: "", lang: "text", modeList })).end();

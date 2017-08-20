@@ -14,7 +14,8 @@ module.exports = async port => {
 	app.server.listen(port, () => console.log(`Website listening on ${port}`));
 	app.config = require(`${__dirname}/../../config.json`);
 
-	app.use(`/assets/js`, babelify(`${__dirname}/public/assets/js`));
+	app.use(`/assets/js`, babelify(`${__dirname}/public/assets/js`,
+		babelify.browserifySettings, { presets: ["es2015"] }));
 	app.use(express.static(`${__dirname}/public`));
 	app.use(cookieParser());
 

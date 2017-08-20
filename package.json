@@ -21,6 +21,7 @@
   },
   "homepage": "https://github.com/minemidnight/discordpaste#readme",
   "dependencies": {
+    "babel-preset-es2015": "^6.24.1",
     "bluebird": "^3.5.0",
     "body-parser": "^1.17.2",
     "cookie-parser": "^1.4.3",

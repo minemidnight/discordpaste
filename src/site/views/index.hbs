@@ -38,7 +38,7 @@
 			<select name="mode">
 				<option value="text">Plaintext</option>
 				{{#each modeList}}
-					<option value="{{this.extension}}">{{this.name}}</option>
+					<option value="{{this.extension}}" codemirrormode="{{this.cmm}}">{{this.name}}</option>
 				{{/each}}
 			</select>
 
