@@ -1,7 +1,7 @@
 const languages = require(`${__dirname}/languageMap.json`);
 
 let languageMap = Object.keys(languages)
-	.filter(key => languages[key].codemirrorMode)
+	.filter(key => languages[key].codemirrorMode && languages[key].extensions)
 	.reduce((prev, key) => {
 		let data = languages[key];
 		data.extensions.forEach(ext => prev[ext] = data.codemirrorMode);
