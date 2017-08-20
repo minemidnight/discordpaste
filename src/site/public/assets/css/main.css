@@ -110,10 +110,31 @@ body {
 	font-size: 24px;
 	transition: 0.3s;
 	cursor: pointer;
+	color: rgba(255, 255, 255, 0.7);
 }
 
 #options button:hover {
 	color: white;
+}
+
+#options select {
+	background: transparent;
+	color: white;
+	border: none;
+	border-bottom: 1px solid;
+	outline: none;
+}
+
+#options option {
+	color: rgba(255, 255, 255, 0.7);
+	background: #111111;
+	outline: none;
+	border: none;
+}
+
+#options option:selected {
+	color: white;
+	background: #191919;
 }
 
 main {
