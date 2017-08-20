@@ -1,17 +1,8 @@
+/* globals editor */
 const superagent = require("superagent");
 $(window).on("load", () => {
 	$("#duplicate").addClass("disabled");
 	$("#raw").addClass("disabled");
-
-	const editor = window.editor = CodeMirror.fromTextArea($("#editor")[0], { // eslint-disable-line no-undef
-		lineNumbers: true,
-		indentWithTabs: true,
-		tabSize: 2,
-		autofocus: true,
-		theme: "pastel-on-dark",
-		scrollbarStyle: "overlay",
-		mode: CodeMirror.toUse // eslint-disable-line no-undef
-	});
 
 	$("#save").on("click", async () => {
 		let content = editor.getValue();

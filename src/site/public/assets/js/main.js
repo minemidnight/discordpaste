@@ -1,4 +1,7 @@
+/* globals Mousetrap options CodeMirror */
 $(window).on("load", () => {
+	const editor = window.editor = CodeMirror.fromTextArea($("#editor")[0], options);
+
 	$("#buttons").children().each((i, ele) => {
 		ele = $(ele);
 
@@ -6,7 +9,7 @@ $(window).on("load", () => {
 			$("#tooltips").addClass("shown").text(`${ele.attr("label")}\n${ele.attr("shortcut")}`);
 		}, event => $("#tooltips").removeClass("shown"));
 
-		Mousetrap.bindGlobal(ele.attr("shortcut").replace(/ /g, ""), event => { // eslint-disable-line no-undef
+		Mousetrap.bindGlobal(ele.attr("shortcut").replace(/ /g, ""), event => {
 			event.preventDefault();
 			ele.trigger("click");
 		});

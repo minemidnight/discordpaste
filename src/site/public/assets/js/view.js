@@ -1,15 +1,7 @@
+/* globals editor */
 const superagent = require("superagent");
 $(window).on("load", () => {
 	$("#save").addClass("disabled");
-	const editor = window.editor = CodeMirror.fromTextArea($("#editor")[0], { // eslint-disable-line no-undef
-		lineNumbers: true,
-		indentWithTabs: true,
-		tabSize: 2,
-		theme: "pastel-on-dark",
-		scrollbarStyle: "overlay",
-		readOnly: true,
-		mode: CodeMirror.toUse // eslint-disable-line no-undef
-	});
 
 	$("#new").on("click", () => {
 		document.title = "DiscordPaste";

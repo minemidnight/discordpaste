@@ -1,5 +1,6 @@
 /* eslint-disable max-len */
-CodeMirror.defineSimpleMode("skript", { // eslint-disable-line no-undef
+/* globals CodeMirror */
+CodeMirror.defineSimpleMode("skript", {
 	start: [
 		{ regex: /#.+$/, token: "comment" },
 		{ regex: /(?:[0-9]+|[0-9][0-2]?(?:a|p)m)/i, token: "number" },

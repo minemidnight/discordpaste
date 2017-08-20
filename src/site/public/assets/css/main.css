@@ -132,7 +132,7 @@ body {
 	border: none;
 }
 
-#options option:selected {
+#options option:checked {
 	color: white;
 	background: #191919;
 }

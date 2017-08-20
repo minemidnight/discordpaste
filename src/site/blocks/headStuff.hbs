@@ -6,12 +6,54 @@
 
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/codemirror.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/simplescrollbars.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/simplescrollbars.min.css" />
 
 <script>
-	{{#if currentLang}}localStorage.mode = "{{currentLang}}"{{/if}}
-	var post = !!{{post}};
-	CodeMirror.toUse = "{{lang}}";
-	if(post && localStorage.mode) codeMirror.toUse = localStorage.mode;
+	{{#if options.mode}}localStorage.mode = "{{options.mode}}"{{/if}}
+	{{#if options.tabtype}}localStorage.tabType = "{{options.tabtype}}"{{/if}}
+	{{#if options.tabsize}}localStorage.tabSize = "{{options.tabsize}}"{{/if}}
+	{{#if options.theme}}localStorage.theme = "{{options.theme}}"{{/if}}
+	{{#if options.keymap}}localStorage.keymap = "{{options.keyMap}}"{{/if}}
+
+	window.options = {
+		lineNumbers: true,
+		indentWithTabs: true,
+		tabSize: 2,
+		autofocus: true,
+		theme: "pastel-on-dark",
+		mode: "text",
+		readOnly: !!{{view}}
+	}
+
+	if(options.readOnly && localStorage.mode) {
+		options.mode = localStorage.mode;
+	}
+
+	if(localStorage.tabType === "space") {
+		options.indentWithTabs = false;
+	}
+
+	if(localStorage.tabSize) {
+		options.tabSize = parseInt(localStorage.tabSize);
+	}
+
+	if(localStorage.theme) {
+		options.theme = localStorage.theme;
+		if(options.theme !== "default") {
+			$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/theme/" + options.theme + ".min.css").appendTo("head");
+		}
+	} else {
+		$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/theme/pastel-on-dark.min.css").appendTo("head");
+	}
+
+	if(localStorage.keyMap) {
+		options.keyMap = localStorage.keyMap;
+		if(options.keyMap !== "default") {
+			$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/keymap/" + options.theme + ".min.js").appendTo("head");
+		}
+	}
 
 	if(CodeMirror.toUse === "htmlembbeded" || codeMirror.toUse = "htmlmixed") {
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/xml/xml.min.js").appendTo("head");
@@ -24,12 +66,6 @@
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/{{lang}}/{{lang}}.min.js").appendTo("head");
 	}
 </script>
-
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/simplescrollbars.min.css" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/simplescrollbars.min.js"></script>
-
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/theme/pastel-on-dark.min.css" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/addon/scroll/annotatescrollbar.min.js"></script>
 
 <link rel="stylesheet" href="{{baseURL}}/assets/css/main.css" />
 <script src="{{baseURL}}/assets/js/main.js"></script>
