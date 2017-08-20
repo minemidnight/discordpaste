@@ -91,7 +91,7 @@ body {
 	background: #111111;
 	overflow-x: hidden;
 	padding-top: 60px;
-	transform: 0.5s;
+	transition: 0.5s;
 }
 
 main {

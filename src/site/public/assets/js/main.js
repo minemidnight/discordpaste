@@ -29,8 +29,8 @@ $(window).on("load", () => {
 function toggleOptions() {
 	let open = $("#options").width();
 	if(!open) {
-		$("#options").css("width", "250px");
-		$("main").css("margin-right", "250px");
+		$("#options").css("width", 250);
+		$("main").css("margin-right", 250);
 	} else {
 		$("#options").css("width", 0);
 		$("main").css("margin-right", 0);
