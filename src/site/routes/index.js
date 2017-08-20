@@ -4,7 +4,7 @@ const validLang = require(`${__dirname}/../../misc/validLang.js`);
 
 const languages = require(`${__dirname}/../../misc/languageMap.json`);
 const modeList = Object.keys(languages)
-	.filter(key => languages[key].codeMirrorMode)
+	.filter(key => languages[key].codemirrorMode)
 	.map(key => ({ extension: languages[key].extensions[0].substring(1), name: key }));
 
 router.get("/", async (req, res) => {
@@ -17,7 +17,7 @@ router.get("/:id", async (req, res) => {
 		lang = id.substring(id.indexOf(".") + 1).toLowerCase();
 		id = id.substring(0, id.indexOf("."));
 		lang = validLang(lang);
-		if(lang) lang = lang.codeMirror;
+		if(lang) lang = lang.codemirror;
 	}
 
 	try {

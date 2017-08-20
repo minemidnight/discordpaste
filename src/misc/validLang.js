@@ -1,11 +1,11 @@
 const languages = require(`${__dirname}/languageMap.json`);
 
 let languageMap = Object.keys(languages)
-	.filter(key => languages[key].codeMirrorMode)
+	.filter(key => languages[key].codemirrorMode)
 	.reduce((prev, key) => {
 		let data = languages[key];
-		data.extensions.forEach(ext => prev[ext] = data.codeMirrorMode);
-		prev[data.codeMirrorMode] = data.extensions[0];
+		data.extensions.forEach(ext => prev[ext] = data.codemirrorMode);
+		prev[data.codemirrorMode] = data.extensions[0];
 		return prev;
 	}, {});
 
@@ -14,5 +14,5 @@ module.exports = lang => {
 	if(!lang) return false;
 
 	let extension = typeof lang === "string" ? lang : languageMap[lang];
-	return { codeMirror: lang, extension };
+	return { codemirror: lang, extension };
 };

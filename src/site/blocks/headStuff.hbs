@@ -8,7 +8,11 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/codemirror.min.js"></script>
 
 <script>
+	{{#if currentLang}}localStorage.mode = "{{currentLang}}"{{/if}}
+	var post = !!{{post}};
 	CodeMirror.toUse = "{{lang}}";
+	if(post && localStorage.mode) codeMirror.toUse = localStorage.mode;
+
 	if(CodeMirror.toUse === "htmlembbeded" || codeMirror.toUse = "htmlmixed") {
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/xml/xml.min.js").appendTo("head");
 		$("<script>").attr("src", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/mode/javascript/javascript.min.js").appendTo("head");
@@ -32,7 +36,7 @@
 
 {{#if post}}
 	<script src="{{baseURL}}/assets/js/post.js"></script>
-{{else}}
+{{else if view}}
 	<script src="{{baseURL}}/assets/js/view.js"></script>
 {{/if}}
 
