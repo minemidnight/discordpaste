@@ -7,7 +7,7 @@ body {
 }
 
 #legend {
-	position: fixed;
+	position: absolute;
 	top: 1%;
 	left: 99%;
 	width: 225px;

@@ -9,27 +9,24 @@
 	{{{headStuff}}}
 </head>
 <body>
-	<div id="legend">
-		<div id="header">Discord Paste</div>
-		<div id="buttons">
-			<button id="save" label="Save" shortcut="ctrl + s"><i class="fa fa-floppy-o"></i></button>
-			<button id="new" label="New" shortcut="alt + n"><i class="fa fa-file-code-o"></i></button>
-			<button id="duplicate" label="Duplicate &amp; Edit" shortcut="ctrl + d"><i class="fa fa-files-o"></i></button>
-			<button id="raw" label="Raw" shortcut="ctrl + r"><i class="fa fa-file-text-o"></i></button>
-			{{#if user}}
-				<button id="logout" label="Sign out with Discord" shortcut="ctrl + o" class="nochange"><i class="fa fa-sign-out"></i></button>
-			{{else}}
-				<button id="login" label="Sign in with Discord" shortcut="ctrl + l" class="nochange"><i class="fa fa-sign-in"></i></button>
-			{{/if}}
-			<button id="options_button" label="Options" shortcut="ctrl + ," class="nochange"><i class="fa fa-cog"></i></button>
-		</div>
-		<div id="tooltips">
-			<div id="label"></div>
-			<div id="shortcut"></div>
-		</div>
-	</div>
-
 	<main>
+		<div id="legend">
+			<div id="header">Discord Paste</div>
+			<div id="buttons">
+				<button id="save" label="Save" shortcut="ctrl + s"><i class="fa fa-floppy-o"></i></button>
+				<button id="new" label="New" shortcut="alt + n"><i class="fa fa-file-code-o"></i></button>
+				<button id="duplicate" label="Duplicate &amp; Edit" shortcut="ctrl + d"><i class="fa fa-files-o"></i></button>
+				<button id="raw" label="Raw" shortcut="ctrl + r"><i class="fa fa-file-text-o"></i></button> {{#if user}}
+				<button id="logout" label="Sign out with Discord" shortcut="ctrl + o" class="nochange"><i class="fa fa-sign-out"></i></button>				{{else}}
+				<button id="login" label="Sign in with Discord" shortcut="ctrl + l" class="nochange"><i class="fa fa-sign-in"></i></button>				{{/if}}
+				<button id="options_button" label="Options" shortcut="ctrl + ," class="nochange"><i class="fa fa-cog"></i></button>
+			</div>
+			<div id="tooltips">
+				<div id="label"></div>
+				<div id="shortcut"></div>
+			</div>
+		</div>
+
 		<textarea id="editor" spellcheck="false">{{content}}</textarea>
 	</main>
 
