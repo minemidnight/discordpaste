@@ -11,9 +11,9 @@ let languageMap = Object.keys(languages)
 
 module.exports = lang => {
 	let extension;
-	if(languageMap.ext[lang]) {
+	if(languageMap.exts[lang]) {
 		extension = lang;
-		lang = languageMap.ext[lang];
+		lang = languageMap.exts[lang];
 	} else if(languageMap.modes[lang]) {
 		extension = languageMap.modes[lang];
 	} else {
