@@ -98,8 +98,9 @@ main {
 	transition: margin-right .5s;
 }
 
-@media screen and (min-width: 480px) {
+@media screen and (max-width: 480px) {
     #legend {
-        width: 125px;
+		width: 125px;
+		margin-left: -125px;
     }
 }
