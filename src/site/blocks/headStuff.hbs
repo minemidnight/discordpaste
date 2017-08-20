@@ -24,7 +24,7 @@
 		autofocus: true,
 		theme: "pastel-on-dark",
 		mode: "text",
-		readOnly: !!{{view}}
+		readOnly: {{#if view}}true{{else}}false{{/if}}
 	}
 
 	if(options.readOnly && localStorage.mode) {
