@@ -117,6 +117,14 @@ body {
 	color: white;
 }
 
+#options input {
+	background: transparent;
+	color: white;
+	border: none;
+	border-bottom: 1px solid;
+	outline: none;
+}
+
 #options select {
 	background: transparent;
 	color: white;
