@@ -12,11 +12,11 @@ async function init() {
 init();
 
 function getWords(code) {
-	return code.split(/[^a-zA-Z]/).filter(word => word);
+	return code.replace(/(["'])(?:(?=(\\?))\2.)*?\1/g, "").split(/[^a-zA-Z]/).filter(word => word);
 }
 
 function train(lang, code) {
-	let trainCount = code.length / 750;
+	let trainCount = code.length / 1000;
 
 	if(!langData[lang]) langData[lang] = {};
 	if(!trains[lang]) trains[lang] = trainCount;

@@ -12,15 +12,16 @@
 
 <script>
 	{{#if user}}window.user = true{{/if}}
-	{{#if options.mode}}localStorage.mode = "{{options.mode}}"{{/if}}
-	{{#if options.modeExt}}localStorage.modeExt = "{{options.modeExt}}"{{/if}}
-	{{#if options.tabType}}localStorage.tabType = "{{options.tabType}}"{{/if}}
-	{{#if options.tabSize}}localStorage.tabSize = "{{options.tabSize}}"{{/if}}
-	{{#if options.theme}}localStorage.theme = "{{options.theme}}"{{/if}}
-	{{#if options.keyMap}}localStorage.keymap = "{{options.keyMap}}"{{/if}}
+	{{#if options.mode}}localStorage.mode = "{{options.mode}}";{{/if}}
+	{{#if options.modeExt}}localStorage.modeExt = "{{options.modeExt}}";{{/if}}
+	{{#if options.tabType}}localStorage.tabType = "{{options.tabType}}";{{/if}}
+	{{#if options.tabSize}}localStorage.tabSize = "{{options.tabSize}}";{{/if}}
+	{{#if options.theme}}localStorage.theme = "{{options.theme}}";{{/if}}
+	{{#if options.keyMap}}localStorage.keymap = "{{options.keyMap}}";{{/if}}
 
 	window.options = {
 		lineNumbers: true,
+		scrollbarStyle: "overlay",
 		indentWithTabs: localStorage.tabType ? localStorage.tabType === "hard" : true,
 		tabSize: localStorage.tabSize ? parseInt(localStorage.tabSize) : 2,
 		autofocus: true,
@@ -42,7 +43,7 @@
 	}
 	
 	if(options.keyMap !== "default") {
-			$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/keymap/" + options.theme + ".min.js").appendTo("head");
+		$("<link>").attr("rel", "stylesheet").attr("href", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.28.0/keymap/" + options.theme + ".min.js").appendTo("head");
 	}
 
 	if(options.mode === "htmlembbeded" || options.mode === "htmlmixed") {
