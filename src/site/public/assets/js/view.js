@@ -19,7 +19,7 @@ $(window).on("load", () => {
 			let content = editor.getValue();
 			if(!content) return;
 
-			let language = CodeMirror.toUse; // eslint-disable-line no-undef
+			let language = localStorage.modeExt; // eslint-disable-line no-undef
 			let { body: { id, possibleLanguage } } = await superagent
 				.post(`${window.location.origin}/api/v1/documents`).send({ content, language });
 			window.location.assign(`${window.location.origin}/${id}.${possibleLanguage}`);
