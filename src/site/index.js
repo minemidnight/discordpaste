@@ -15,10 +15,6 @@ module.exports = async port => {
 	app.server.listen(port, () => console.log(`Website listening on ${port}`));
 	app.config = require(`${__dirname}/../../config.json`);
 
-	app.use(`/js_test`, babelify(`${__dirname}/public/assets/js`, babelify.browserifySettings, {
-		plugins: ["es6-promise"],
-		presets: ["es2016"]
-	}));
 	app.use(`/assets/js`, babelify(`${__dirname}/public/assets/js`, babelify.browserifySettings, {
 		plugins: ["es6-promise"],
 		presets: ["es2016"]

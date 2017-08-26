@@ -4,7 +4,7 @@ const { classify } = require(`${__dirname}/../../../misc/classify.js`);
 const validLang = require(`${__dirname}/../../../misc/validLang.js`);
 
 // POST /documents (create document)
-router.post("/", app.ratelimit(5, 5), async (req, res) => {
+router.post("/", app.ratelimit(1, 2.5), async (req, res) => {
 	let content = req.body.content;
 
 	if(!content) {
@@ -15,7 +15,7 @@ router.post("/", app.ratelimit(5, 5), async (req, res) => {
 		let id = shortid.generate();
 
 		let lang = req.body.language, fulllang;
-		if(lang) ({ extensionextension: lang, codemirror: fulllang } = validLang(lang));
+		if(lang) ({ extension: lang, codemirror: fulllang } = validLang(lang));
 		if(!lang) lang = fulllang = classify(content);
 
 		let insertion = { id, content, possibleLanguage: lang };
@@ -26,7 +26,7 @@ router.post("/", app.ratelimit(5, 5), async (req, res) => {
 });
 
 // GET /documents/id (get document)
-router.get("/:id", app.ratelimit(1, 2.5), async (req, res) => {
+router.get("/:id", app.ratelimit(5, 5), async (req, res) => {
 	let id = req.params.id;
 	let document = await r.table("documents").get(id).run();
 	if(document) {
