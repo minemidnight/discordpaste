@@ -7,7 +7,7 @@ $(window).on("load", () => {
 		ele = $(ele);
 
 		ele.hover(event => {
-			$("#tooltips").addClass("shown").text(`${ele.attr("label")}\n${ele.attr("shortcut")}`);
+			$("#tooltips").addClass("shown").text(`${ele.attr("label").replace(/\\n/g, "\n")}\n${ele.attr("shortcut")}`);
 		}, event => $("#tooltips").removeClass("shown"));
 
 		Mousetrap.bindGlobal(ele.attr("shortcut").replace(/ /g, ""), event => {
